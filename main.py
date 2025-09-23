@@ -1735,24 +1735,31 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
             plotter = QtInteractor(self.widget_3d)
             self.vlayout_3d.addWidget(plotter.interactor)
-            
-                    # ▼▼▼ [수정 시작] Scene 객체 처리 로직 추가 ▼▼▼
+                
+            # ▼▼▼ [수정 시작] PointCloud 처리 로직 추가 ▼▼▼
 
-            # trimesh.load의 결과가 Scene인지, 단일 Trimesh인지 확인
             if isinstance(mesh, trimesh.Scene):
-                # Scene 객체일 경우, 포함된 모든 메시(부품)를 하나씩 추가
+                # Scene 객체일 경우 (조립품)
                 self.statusBar().showMessage(f"{len(mesh.geometry)}개의 부품을 렌더링합니다...")
                 for geom in mesh.geometry.values():
                     pv_mesh = pv.wrap(geom)
                     plotter.add_mesh(pv_mesh, cmap="viridis", show_edges=True)
+
+            elif isinstance(mesh, trimesh.PointCloud):
+                # PointCloud 객체일 경우 (점 구름)
+                self.statusBar().showMessage(f"{len(mesh.vertices)}개의 점을 렌더링합니다...")
+                # 점 데이터를 pyvista가 이해하는 PolyData로 변환
+                pv_mesh = pv.PolyData(mesh.vertices)
+                # 점이 잘 보이도록 구슬처럼 렌더링하는 옵션 추가
+                plotter.add_mesh(pv_mesh, cmap="viridis", render_points_as_spheres=True)
+
             else:
-                # 단일 Trimesh 객체일 경우, 바로 추가
+                # 단일 Trimesh 객체일 경우 (단일 부품)
                 pv_mesh = pv.wrap(mesh)
                 plotter.add_mesh(pv_mesh, cmap="viridis", show_edges=True)
 
             self.statusBar().clearMessage()
-            # ▲▲▲ [수정 끝] ▲▲▲
-            
+            # ▲▲▲ [수정 끝] ▲▲▲            
             
             # 5. 3D 뷰어 탭으로 자동 전환
             self.tab_widget.setCurrentWidget(self.widget_3d)
