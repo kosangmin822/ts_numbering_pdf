@@ -1709,44 +1709,44 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     
     # PdfAnnotator 클래스에 새 메서드로 추가
 
-def open_3d_model(self):
-    # 1. trimesh와 pyvista 라이브러리를 함수 안에서 import 합니다.
-    import trimesh
-    import pyvista as pv
-    from pyvistaqt import QtInteractor
+    def open_3d_model(self):
+        # 1. trimesh와 pyvista 라이브러리를 함수 안에서 import 합니다.
+        import trimesh
+        import pyvista as pv
+        from pyvistaqt import QtInteractor
 
-    # 2. 파일 열기 대화상자 실행
-    path, _ = QtWidgets.QFileDialog.getOpenFileName(
-        self, "Open 3D Model", "", "CAD Files (*.stp *.step *.igs *.iges *.x_t)"
-    )
-    if not path:
-        return
+        # 2. 파일 열기 대화상자 실행
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Open 3D Model", "", "CAD Files (*.stp *.step *.igs *.iges *.x_t)"
+        )
+        if not path:
+            return
 
-    try:
-        # 3. trimesh로 3D 모델 불러오기 (백그라운드에서 처리)
-        self.statusBar().showMessage("3D 모델을 불러오는 중입니다...")
-        mesh = trimesh.load(path)
-        self.statusBar().clearMessage()
+        try:
+            # 3. trimesh로 3D 모델 불러오기 (백그라운드에서 처리)
+            self.statusBar().showMessage("3D 모델을 불러오는 중입니다...")
+            mesh = trimesh.load(path)
+            self.statusBar().clearMessage()
 
-        # 4. pyvista로 3D 뷰어 위젯 생성 및 모델 추가
-        # 기존에 3D 뷰어가 있다면 지우고 새로 만듭니다.
-        for i in reversed(range(self.vlayout_3d.count())):
-            self.vlayout_3d.itemAt(i).widget().deleteLater()
+            # 4. pyvista로 3D 뷰어 위젯 생성 및 모델 추가
+            # 기존에 3D 뷰어가 있다면 지우고 새로 만듭니다.
+            for i in reversed(range(self.vlayout_3d.count())):
+                self.vlayout_3d.itemAt(i).widget().deleteLater()
 
-        plotter = QtInteractor(self.widget_3d)
-        self.vlayout_3d.addWidget(plotter.interactor)
+            plotter = QtInteractor(self.widget_3d)
+            self.vlayout_3d.addWidget(plotter.interactor)
 
-        # trimesh 메시를 pyvista 메시로 변환하여 플로터에 추가
-        pv_mesh = pv.wrap(mesh)
-        plotter.add_mesh(pv_mesh, cmap="viridis", show_edges=True)
+            # trimesh 메시를 pyvista 메시로 변환하여 플로터에 추가
+            pv_mesh = pv.wrap(mesh)
+            plotter.add_mesh(pv_mesh, cmap="viridis", show_edges=True)
 
-        # 5. 3D 뷰어 탭으로 자동 전환
-        self.tab_widget.setCurrentWidget(self.widget_3d)
+            # 5. 3D 뷰어 탭으로 자동 전환
+            self.tab_widget.setCurrentWidget(self.widget_3d)
 
-    except Exception as e:
-        _log_error(self, "3D 모델 로딩 오류", e)
-        self.statusBar().showMessage("3D 모델을 불러오는 데 실패했습니다.", 5000)
-    
+        except Exception as e:
+            _log_error(self, "3D 모델 로딩 오류", e)
+            self.statusBar().showMessage("3D 모델을 불러오는 데 실패했습니다.", 5000)
+        
     
         
     def _apply_initial_layout(self):
