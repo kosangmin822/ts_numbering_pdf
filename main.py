@@ -1270,7 +1270,25 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         
 
         # --- UI 위젯 설정 (Scene, View, Table, Dock) ---
-        self.scene=PdfScene(self); self.view=PdfView(self.scene,self); self.setCentralWidget(self.view)
+        # self.scene=PdfScene(self); self.view=PdfView(self.scene,self); self.setCentralWidget(self.view)
+        # 3d로 하면서 이 부분 추석처리.
+        
+                # ▼▼▼ [수정 후 코드] ▼▼▼
+        # 1. 탭 위젯을 생성하고 중앙에 배치합니다.
+        self.tab_widget = QtWidgets.QTabWidget()
+        self.setCentralWidget(self.tab_widget)
+
+        # 2. 기존의 PDF 뷰어를 첫 번째 탭에 추가합니다.
+        self.scene = PdfScene(self)
+        self.view = PdfView(self.scene, self)
+        self.tab_widget.addTab(self.view, "2D View")
+
+        # 3. 3D 뷰어를 위한 두 번째 탭을 만듭니다. (지금은 빈 공간)
+        self.vlayout_3d = QtWidgets.QVBoxLayout()
+        self.widget_3d = QtWidgets.QWidget()
+        self.widget_3d.setLayout(self.vlayout_3d)
+        self.tab_widget.addTab(self.widget_3d, "3D View")
+        # ▲▲▲ [수정 끝] ▲▲▲
         self.scene.clicked.connect(self.on_clicked); self.scene.moved.connect(self.on_scene_moved)
         self.view.zoom_changed.connect(self._on_zoom_changed)
         
@@ -1398,6 +1416,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         a_open=m_file.addAction("Open Project…"); a_open.triggered.connect(self.open_project_dialog)
         a_save=m_file.addAction("Save Project"); a_save.triggered.connect(self.save_project)
         a_saveas=m_file.addAction("Save Project As…"); a_saveas.triggered.connect(self.save_project_as)
+        m_file.addSeparator()
+        
+        # ▼▼▼ 3D 모델 열기 메뉴 추가 ▼▼▼
+        a_open_3d = m_file.addAction("Open 3D Model...")
+        a_open_3d.triggered.connect(self.open_3d_model)
+        # ▲▲▲
         m_file.addSeparator()
         # ▼▼▼ 발행 기능 추가 ▼▼▼
         a_publish = m_file.addAction("서버에 발행 (테스트)...")
@@ -1682,6 +1706,46 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 if self._preview_text: self._preview_text.hide()
             else: # 'preview' 모드일 경우
                 self.view.setCursor(QtCore.Qt.BlankCursor)
+    
+    # PdfAnnotator 클래스에 새 메서드로 추가
+
+def open_3d_model(self):
+    # 1. trimesh와 pyvista 라이브러리를 함수 안에서 import 합니다.
+    import trimesh
+    import pyvista as pv
+    from pyvistaqt import QtInteractor
+
+    # 2. 파일 열기 대화상자 실행
+    path, _ = QtWidgets.QFileDialog.getOpenFileName(
+        self, "Open 3D Model", "", "CAD Files (*.stp *.step *.igs *.iges *.x_t)"
+    )
+    if not path:
+        return
+
+    try:
+        # 3. trimesh로 3D 모델 불러오기 (백그라운드에서 처리)
+        self.statusBar().showMessage("3D 모델을 불러오는 중입니다...")
+        mesh = trimesh.load(path)
+        self.statusBar().clearMessage()
+
+        # 4. pyvista로 3D 뷰어 위젯 생성 및 모델 추가
+        # 기존에 3D 뷰어가 있다면 지우고 새로 만듭니다.
+        for i in reversed(range(self.vlayout_3d.count())):
+            self.vlayout_3d.itemAt(i).widget().deleteLater()
+
+        plotter = QtInteractor(self.widget_3d)
+        self.vlayout_3d.addWidget(plotter.interactor)
+
+        # trimesh 메시를 pyvista 메시로 변환하여 플로터에 추가
+        pv_mesh = pv.wrap(mesh)
+        plotter.add_mesh(pv_mesh, cmap="viridis", show_edges=True)
+
+        # 5. 3D 뷰어 탭으로 자동 전환
+        self.tab_widget.setCurrentWidget(self.widget_3d)
+
+    except Exception as e:
+        _log_error(self, "3D 모델 로딩 오류", e)
+        self.statusBar().showMessage("3D 모델을 불러오는 데 실패했습니다.", 5000)
     
     
         
