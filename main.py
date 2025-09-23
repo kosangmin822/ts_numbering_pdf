@@ -54,29 +54,65 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 1. 데이터를 보낼 미니 서버의 주소
         SERVER_URL = "http://127.0.0.1:5000/api/publish"
 
-        # 2. 서버로 보낼 데이터 (Python 딕셔너리)
-        test_data = {
+        items_data = []
+        for item in self.items:
+            item_dict = {
+                "no": item.no,
+                "page_index": item.page_index,
+                "pdf_point": item.pdf_point,
+                "dim_type": item.dim_type,
+                "value": item.value,
+                "tol_plus": item.tol_plus,
+                "tol_minus": item.tol_minus,
+                # custom_style 객체는 to_dict() 메서드를 호출하여 딕셔너리로 변환
+                "custom_style": item.custom_style.to_dict() if item.custom_style else None
+            }
+            items_data.append(item_dict)
+
+        # 2. 최종적으로 서버에 보낼 전체 데이터 묶음
+        project_data = {
             "projectName": self.project_name or "Unnamed Project",
-            "itemCount": len(self.items)
+            "items": items_data
         }
+            # ▼▼▼ [수정 시작] 파일 업로드 로직 추가 ▼▼▼
 
-        # 3. 서버로 데이터 전송
+        # 2. 업로드할 파일 준비
+        if not self.pdf_path or not os.path.exists(self.pdf_path):
+            QtWidgets.QMessageBox.warning(self, "파일 없음", "발행할 PDF 파일이 없습니다.")
+            return
+
         try:
-            # requests.post를 사용해 지정된 URL에 JSON 데이터를 보냄
-            response = requests.post(SERVER_URL, json=test_data)
+            # { 'form 필드 이름': (파일명, 파일 객체, 컨텐츠 타입) } 형식으로 구성
+            files_to_upload = {
+                'pdf_file': (os.path.basename(self.pdf_path), open(self.pdf_path, 'rb'), 'application/pdf')
+            }
+            # 추후 3D 모델 파일도 이런 식으로 추가할 수 있습니다.
+            # 'model_file': ('model.stp', open(self.model_path, 'rb'), 'application/octet-stream')
 
-            # 4. 서버로부터 받은 응답을 확인
+        except IOError as e:
+            QtWidgets.QMessageBox.critical(self, "파일 오류", f"파일을 여는 데 실패했습니다:\n{e}")
+            return
+
+        # 3. 서버로 데이터와 파일 함께 전송
+        try:
+            # files 파라미터를 사용할 때는, json 데이터는 data 파라미터로 보내야 합니다.
+            response = requests.post(
+                SERVER_URL,
+                files=files_to_upload,
+                data={'project_data': json.dumps(project_data)} # JSON을 문자열로 변환
+            )
+
+            # 4. 서버 응답 처리 (기존과 동일)
             if response.status_code == 200:
-                # 성공 시 서버가 보내준 메시지를 표시
                 server_message = response.json().get("message")
                 QtWidgets.QMessageBox.information(self, "성공", f"서버로부터 응답을 받았습니다:\n{server_message}")
             else:
-                # 실패 시 상태 코드와 에러 메시지 표시
                 QtWidgets.QMessageBox.critical(self, "실패", f"서버 응답 오류 (코드: {response.status_code})")
 
         except requests.exceptions.RequestException as e:
-            QtWidgets.QMessageBox.critical(self, "연결 오류", f"테스트 서버에 연결할 수 없습니다.\n혹시 미니 서버를 실행하셨나요?\n\n{e}")
+            QtWidgets.QMessageBox.critical(self, "연결 오류", f"테스트 서버에 연결할 수 없습니다.\n\n{e}")
 
+    # ▲▲▲ [수정 끝] ▲▲▲
     
     def _append_pdf(self, path_to_append: str):
         """선택한 PDF 파일을 원본 그대로 현재 문서 뒤에 이어붙입니다."""

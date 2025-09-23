@@ -11,8 +11,6 @@ import json     # 파일 상단에 import
 from PySide6 import QtCore, QtGui, QtWidgets
 from datetime import datetime # <--- 이 줄을 추가해주세요
 
-import resources_rc
-
 from PySide6 import QtCore
 
 import os, sys, json, zipfile, traceback, random
