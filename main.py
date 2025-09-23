@@ -1735,11 +1735,25 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
             plotter = QtInteractor(self.widget_3d)
             self.vlayout_3d.addWidget(plotter.interactor)
+            
+                    # ▼▼▼ [수정 시작] Scene 객체 처리 로직 추가 ▼▼▼
 
-            # trimesh 메시를 pyvista 메시로 변환하여 플로터에 추가
-            pv_mesh = pv.wrap(mesh)
-            plotter.add_mesh(pv_mesh, cmap="viridis", show_edges=True)
+            # trimesh.load의 결과가 Scene인지, 단일 Trimesh인지 확인
+            if isinstance(mesh, trimesh.Scene):
+                # Scene 객체일 경우, 포함된 모든 메시(부품)를 하나씩 추가
+                self.statusBar().showMessage(f"{len(mesh.geometry)}개의 부품을 렌더링합니다...")
+                for geom in mesh.geometry.values():
+                    pv_mesh = pv.wrap(geom)
+                    plotter.add_mesh(pv_mesh, cmap="viridis", show_edges=True)
+            else:
+                # 단일 Trimesh 객체일 경우, 바로 추가
+                pv_mesh = pv.wrap(mesh)
+                plotter.add_mesh(pv_mesh, cmap="viridis", show_edges=True)
 
+            self.statusBar().clearMessage()
+            # ▲▲▲ [수정 끝] ▲▲▲
+            
+            
             # 5. 3D 뷰어 탭으로 자동 전환
             self.tab_widget.setCurrentWidget(self.widget_3d)
 
