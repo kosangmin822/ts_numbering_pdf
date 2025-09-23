@@ -54,4 +54,4 @@ def handle_publish():
 if __name__ == "__main__":
     print(f"테스트 서버가 http://127.0.0.1:5000 에서 실행 중입니다...")
     print(f"업로드된 파일은 '{UPLOAD_FOLDER}' 폴더에 저장됩니다.")
-    app.run(port=5000)
+    app.run(port=5000, debug=True)

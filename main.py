@@ -49,60 +49,59 @@ DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
 # =====================================================================
 class PdfAnnotator(QtWidgets.QMainWindow):
     
-    
+    # main.py의 publish_project 함수 (수정 후)
+
     def publish_project(self):
-        # 1. 데이터를 보낼 미니 서버의 주소
         SERVER_URL = "http://127.0.0.1:5000/api/publish"
 
+        # ▼▼▼ [수정 시작] 파일 경로 대신 메모리의 self.doc 객체를 사용 ▼▼▼
+
+        # 1. 현재 문서(self.doc)가 열려있는지 확인
+        if not self.doc:
+            QtWidgets.QMessageBox.warning(self, "문서 없음", "발행할 프로젝트가 열려있지 않습니다.")
+            return
+
+        # 2. JSON 데이터 준비 (기존과 동일)
         items_data = []
         for item in self.items:
             item_dict = {
-                "no": item.no,
-                "page_index": item.page_index,
-                "pdf_point": item.pdf_point,
-                "dim_type": item.dim_type,
-                "value": item.value,
-                "tol_plus": item.tol_plus,
+                "no": item.no, "page_index": item.page_index, "pdf_point": item.pdf_point,
+                "dim_type": item.dim_type, "value": item.value, "tol_plus": item.tol_plus,
                 "tol_minus": item.tol_minus,
-                # custom_style 객체는 to_dict() 메서드를 호출하여 딕셔너리로 변환
                 "custom_style": item.custom_style.to_dict() if item.custom_style else None
             }
             items_data.append(item_dict)
-
-        # 2. 최종적으로 서버에 보낼 전체 데이터 묶음
+        
         project_data = {
-            "projectName": self.project_name or "Unnamed Project",
+            "projectName": self.project_name or "Untitled Project",
             "items": items_data
         }
-            # ▼▼▼ [수정 시작] 파일 업로드 로직 추가 ▼▼▼
 
-        # 2. 업로드할 파일 준비
-        if not self.pdf_path or not os.path.exists(self.pdf_path):
-            QtWidgets.QMessageBox.warning(self, "파일 없음", "발행할 PDF 파일이 없습니다.")
-            return
-
+        # 3. 업로드할 PDF 파일 데이터 준비 (파일을 새로 열지 않고 메모리에서 바로 가져옴)
         try:
-            # { 'form 필드 이름': (파일명, 파일 객체, 컨텐츠 타입) } 형식으로 구성
+            # self.doc.tobytes()를 사용해 현재 PDF 문서의 내용을 바이트 데이터로 변환
+            pdf_bytes = self.doc.tobytes()
+            
+            # 업로드할 때 사용할 파일명 결정
+            pdf_filename = f"{self.project_name or 'source'}.pdf"
+
+            # 파일 객체 대신 메모리의 바이트 데이터를 직접 전송
             files_to_upload = {
-                'pdf_file': (os.path.basename(self.pdf_path), open(self.pdf_path, 'rb'), 'application/pdf')
+                'pdf_file': (pdf_filename, pdf_bytes, 'application/pdf')
             }
-            # 추후 3D 모델 파일도 이런 식으로 추가할 수 있습니다.
-            # 'model_file': ('model.stp', open(self.model_path, 'rb'), 'application/octet-stream')
 
-        except IOError as e:
-            QtWidgets.QMessageBox.critical(self, "파일 오류", f"파일을 여는 데 실패했습니다:\n{e}")
+        except Exception as e:
+            _log_error(self, "PDF 데이터 생성 오류", e)
             return
 
-        # 3. 서버로 데이터와 파일 함께 전송
+        # 4. 서버로 데이터와 파일 함께 전송 (이하 기존과 동일)
         try:
-            # files 파라미터를 사용할 때는, json 데이터는 data 파라미터로 보내야 합니다.
             response = requests.post(
                 SERVER_URL,
                 files=files_to_upload,
-                data={'project_data': json.dumps(project_data)} # JSON을 문자열로 변환
+                data={'project_data': json.dumps(project_data)}
             )
 
-            # 4. 서버 응답 처리 (기존과 동일)
             if response.status_code == 200:
                 server_message = response.json().get("message")
                 QtWidgets.QMessageBox.information(self, "성공", f"서버로부터 응답을 받았습니다:\n{server_message}")
@@ -111,8 +110,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         except requests.exceptions.RequestException as e:
             QtWidgets.QMessageBox.critical(self, "연결 오류", f"테스트 서버에 연결할 수 없습니다.\n\n{e}")
-
-    # ▲▲▲ [수정 끝] ▲▲▲
+        # ▲▲▲ [수정 끝] ▲▲▲
+        
     
     def _append_pdf(self, path_to_append: str):
         """선택한 PDF 파일을 원본 그대로 현재 문서 뒤에 이어붙입니다."""
@@ -1135,6 +1134,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.project_path = None
         self.project_dir = None   # <--- 이 줄 추가
         self.project_name = None  # <--- 이 줄 추가
+        self.pdf_path = None # <<--- 바로 이 줄입니다. 이 줄을 추가해야 합니다.
         self.doc = None
         self.cur_page_index = 0
         self.numbering_mode = 'global' # <--- 이 줄을 추가해주세요
