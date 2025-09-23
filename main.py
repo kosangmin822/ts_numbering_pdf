@@ -1709,13 +1709,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     
     # PdfAnnotator 클래스에 새 메서드로 추가
 
+    # main.py의 open_3d_model 함수 (최종 수정본)
+
     def open_3d_model(self):
-        # 1. trimesh와 pyvista 라이브러리를 함수 안에서 import 합니다.
         import trimesh
         import pyvista as pv
         from pyvistaqt import QtInteractor
 
-        # 2. 파일 열기 대화상자 실행
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Open 3D Model", "", "CAD Files (*.stp *.step *.igs *.iges *.x_t)"
         )
@@ -1723,51 +1723,52 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             return
 
         try:
-            # 3. trimesh로 3D 모델 불러오기 (백그라운드에서 처리)
             self.statusBar().showMessage("3D 모델을 불러오는 중입니다...")
             mesh = trimesh.load(path)
             self.statusBar().clearMessage()
 
-            # 4. pyvista로 3D 뷰어 위젯 생성 및 모델 추가
-            # 기존에 3D 뷰어가 있다면 지우고 새로 만듭니다.
             for i in reversed(range(self.vlayout_3d.count())):
                 self.vlayout_3d.itemAt(i).widget().deleteLater()
-
+            
             plotter = QtInteractor(self.widget_3d)
             self.vlayout_3d.addWidget(plotter.interactor)
-                
-            # ▼▼▼ [수정 시작] PointCloud 처리 로직 추가 ▼▼▼
 
+            # ▼▼▼ [수정 시작] 모든 경우를 처리하는 최종 로직 ▼▼▼
+            
             if isinstance(mesh, trimesh.Scene):
-                # Scene 객체일 경우 (조립품)
-                self.statusBar().showMessage(f"{len(mesh.geometry)}개의 부품을 렌더링합니다...")
+                # 1. 조립품(Scene)일 경우
+                self.statusBar().showMessage(f"{len(mesh.geometry)}개의 지오메트리를 렌더링합니다...")
+                # 조립품 안의 각 부품(geometry)을 순회
                 for geom in mesh.geometry.values():
-                    pv_mesh = pv.wrap(geom)
-                    plotter.add_mesh(pv_mesh, cmap="viridis", show_edges=True)
+                    # 각 부품이 PointCloud인지 Trimesh인지 다시 한번 확인
+                    if isinstance(geom, trimesh.PointCloud):
+                        pv_mesh = pv.PolyData(geom.vertices)
+                        plotter.add_mesh(pv_mesh, cmap="viridis", render_points_as_spheres=True)
+                    else: # Trimesh(단일 부품)라고 가정
+                        pv_mesh = pv.wrap(geom)
+                        plotter.add_mesh(pv_mesh, cmap="viridis", show_edges=True)
 
             elif isinstance(mesh, trimesh.PointCloud):
-                # PointCloud 객체일 경우 (점 구름)
+                # 2. 점 구름(PointCloud)일 경우
                 self.statusBar().showMessage(f"{len(mesh.vertices)}개의 점을 렌더링합니다...")
-                # 점 데이터를 pyvista가 이해하는 PolyData로 변환
                 pv_mesh = pv.PolyData(mesh.vertices)
-                # 점이 잘 보이도록 구슬처럼 렌더링하는 옵션 추가
                 plotter.add_mesh(pv_mesh, cmap="viridis", render_points_as_spheres=True)
 
             else:
-                # 단일 Trimesh 객체일 경우 (단일 부품)
+                # 3. 단일 부품(Trimesh)일 경우
                 pv_mesh = pv.wrap(mesh)
                 plotter.add_mesh(pv_mesh, cmap="viridis", show_edges=True)
-
-            self.statusBar().clearMessage()
-            # ▲▲▲ [수정 끝] ▲▲▲            
             
-            # 5. 3D 뷰어 탭으로 자동 전환
+            self.statusBar().clearMessage()
+            # ▲▲▲ [수정 끝] ▲▲▲
+            
             self.tab_widget.setCurrentWidget(self.widget_3d)
 
         except Exception as e:
             _log_error(self, "3D 모델 로딩 오류", e)
             self.statusBar().showMessage("3D 모델을 불러오는 데 실패했습니다.", 5000)
         
+            
     
         
     def _apply_initial_layout(self):
