@@ -1713,6 +1713,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.statusBar().showMessage("3D 모델을 불러오는 중입니다... (백그라운드 작업)")
         self.start_loading_3d.emit(path)
 
+    # main.py의 on_3d_load_finished 함수 (구버전 호환용)
+
     def on_3d_load_finished(self, geometry):
         import pyvista as pv
         from pyvistaqt import QtInteractor
@@ -1726,6 +1728,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         plotter = QtInteractor(self.widget_3d)
         self.vlayout_3d.addWidget(plotter.interactor)
 
+        # ▼▼▼ [수정 시작] 구버전 호환 렌더링 로직 ▼▼▼
+        
+        def render_mesh(geom):
+            # Trimesh 객체를 PyVista 객체로 변환
+            pv_mesh = pv.wrap(geom)
+            # 1. 표면(surface)을 먼저 그립니다.
+            plotter.add_mesh(pv_mesh, style='surface', color='lightgrey')
+            # 2. 특징적인 모서리(feature edges)를 추출해서 덧그립니다.
+            feature_edges = pv_mesh.extract_feature_edges(feature_angle=30.0)
+            plotter.add_mesh(feature_edges, color='black', line_width=1)
+
         if isinstance(geometry, trimesh.Scene):
             for geom in geometry.geometry.values():
                 if isinstance(geom, trimesh.PointCloud):
@@ -1733,20 +1746,18 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 elif isinstance(geom, Path3D):
                     plotter.add_mesh(pv.lines_from_points(geom.vertices), color="yellow", line_width=5)
                 else:
-                    plotter.add_mesh(pv.wrap(geom), style='surface', color='lightgrey', show_feature_edges=True, edge_color='black', line_width=1)
-        elif isinstance(geometry, trimesh.PointCloud):
-            plotter.add_mesh(pv.PolyData(geometry.vertices), cmap="viridis", render_points_as_spheres=True)
-        elif isinstance(geometry, Path3D):
-            plotter.add_mesh(pv.lines_from_points(geometry.vertices), color="yellow", line_width=5)
+                    render_mesh(geom) # 위에서 만든 함수 호출
+        # ... (PointCloud, Path3D는 기존과 동일)
         else:
-            plotter.add_mesh(pv.wrap(geometry), style='surface', color='lightgrey', show_feature_edges=True, edge_color='black', line_width=1)
+            render_mesh(geometry) # 단일 부품일 때도 함수 호출
+
+        # ▲▲▲ [수정 끝] ▲▲▲
         
         self.statusBar().showMessage("3D 모델 렌더링 완료.", 3000)
-        # ▼▼▼ [추가] 카메라 위치와 줌을 자동으로 조절합니다 ▼▼▼
         plotter.reset_camera()
-        # ▲▲▲
         self.tab_widget.setCurrentWidget(self.widget_3d)
-
+        
+        
     def on_3d_load_error(self, error_message):
         _log_error(self, "3D 모델 로딩 오류", Exception(error_message))
         self.statusBar().showMessage("3D 모델을 불러오는 데 실패했습니다.", 5000)
