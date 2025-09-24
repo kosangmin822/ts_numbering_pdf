@@ -60,14 +60,45 @@ class Worker(QObject):
 
     @Slot(str)
     def load_model(self, path):
-        """백그라운드 스레드에서 3D 모델을 로드하는 함수"""
+        """백그라운드에서 3D 모델을 로드하되, 캐시를 활용하여 속도를 높입니다."""
         try:
             import trimesh
-            geometry = trimesh.load(path, process=False)
+            import os
+
+            # 1. 캐시 폴더와 캐시 파일 경로를 생성합니다.
+            cache_dir = os.path.join(os.path.dirname(path), ".cache")
+            os.makedirs(cache_dir, exist_ok=True)
+
+            # 원본 파일 이름에 .glb 확장자를 붙여 캐시 파일명으로 사용
+            cache_filename = os.path.splitext(os.path.basename(path))[0] + ".glb"
+            cache_path = os.path.join(cache_dir, cache_filename)
+
+            # 2. 캐시 파일이 존재하는지 확인합니다.
+            if os.path.exists(cache_path):
+                # 캐시 파일이 있다면, 매우 빠른 glb 파일을 직접 로드합니다.
+                print(f"'{cache_filename}' 캐시 파일을 로드합니다.")
+                geometry = trimesh.load(cache_path, process=False)
+            else:
+                # 캐시 파일이 없다면, 느린 원본 파일을 로드합니다.
+                print(f"첫 로딩입니다. '{os.path.basename(path)}' 파일을 변환하고 캐시를 생성합니다.")
+                geometry = trimesh.load(path, process=False)
+
+                # 3. 로드 결과를 다음 사용을 위해 캐시 파일로 저장합니다.
+                #    (이 과정도 약간의 시간이 걸리지만, 한 번만 하면 됩니다.)
+                print(f"'{cache_filename}' 캐시 파일을 저장 중입니다...")
+                if isinstance(geometry, trimesh.Scene):
+                    # Scene 객체는 모든 부품을 하나의 파일로 합쳐서 저장
+                    merged_mesh = geometry.dump(concatenate=True)
+                    merged_mesh.export(cache_path)
+                else:
+                    geometry.export(cache_path)
+                print("캐시 파일 저장 완료.")
+
             self.finished.emit(geometry)
+
         except Exception as e:
             self.error.emit(str(e))
-            
+                
 class PdfAnnotator(QtWidgets.QMainWindow):
     # Worker를 시작시키는 신호 추가
     start_loading_3d = Signal(str)
@@ -1445,6 +1476,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         # --- 5. 백그라운드 스레드 설정 ---
         self.thread = QThread()
+        self.thread.setPriority(QThread.LowestPriority) # <<--- 이 줄 추가
         self.worker = Worker()
         self.worker.moveToThread(self.thread)
         self.start_loading_3d.connect(self.worker.load_model)
@@ -1710,35 +1742,59 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         )
         if not path:
             return
-        self.statusBar().showMessage("3D 모델을 불러오는 중입니다... (백그라운드 작업)")
+        
+        # ▼▼▼ [수정 시작] QProgressDialog 생성 및 표시 ▼▼▼
+        
+        # 1. 프로그레스 대화상자를 생성합니다.
+        self.progress_dialog = QtWidgets.QProgressDialog(
+            f"'{os.path.basename(path)}' 파일을 불러오는 중입니다...", # 대화상자에 표시될 텍스트
+            "취소",  # 취소 버튼 텍스트
+            0,      # 최소값
+            0,      # 최대값 (0으로 설정하면 '계속 진행 중' 상태로 보임)
+            self
+        )
+        self.progress_dialog.setWindowTitle("3D 모델 로딩 중")
+        self.progress_dialog.setModal(True) # 다른 창을 클릭할 수 없도록 설정
+        self.progress_dialog.show()
+        
+        # 2. 백그라운드 스레드에 작업 시작 신호를 보냅니다.
         self.start_loading_3d.emit(path)
+        # ▲▲▲ [수정 끝] ▲▲▲
+        self.last_opened_3d_path = path
 
+        
     # main.py의 on_3d_load_finished 함수 (구버전 호환용)
-
+    # on_3d_load_finished 함수를 아래 코드로 통째로 교체하세요.
     def on_3d_load_finished(self, geometry):
         import pyvista as pv
         from pyvistaqt import QtInteractor
         from trimesh.path.path import Path3D
         import trimesh
+        import os
+
+        # 1. "로딩 중..." 대화상자를 닫습니다.
+        if hasattr(self, 'progress_dialog'):
+            self.progress_dialog.close()
 
         self.statusBar().showMessage("3D 모델 렌더링 중...")
+        
+        # 2. 이전에 있던 3D 뷰어를 깨끗이 치웁니다.
         for i in reversed(range(self.vlayout_3d.count())):
             self.vlayout_3d.itemAt(i).widget().deleteLater()
         
+        # 3. 새로운 3D 뷰어(plotter)를 만듭니다.
         plotter = QtInteractor(self.widget_3d)
         self.vlayout_3d.addWidget(plotter.interactor)
 
-        # ▼▼▼ [수정 시작] 구버전 호환 렌더링 로직 ▼▼▼
-        
-        def render_mesh(geom):
-            # Trimesh 객체를 PyVista 객체로 변환
+        # 4. 3D 모델을 뷰어에 추가하는 내부 함수 정의
+        def render_solid_mesh(geom):
             pv_mesh = pv.wrap(geom)
-            # 1. 표면(surface)을 먼저 그립니다.
             plotter.add_mesh(pv_mesh, style='surface', color='lightgrey')
-            # 2. 특징적인 모서리(feature edges)를 추출해서 덧그립니다.
             feature_edges = pv_mesh.extract_feature_edges(feature_angle=30.0)
-            plotter.add_mesh(feature_edges, color='black', line_width=1)
+            if feature_edges.n_points > 0:
+                plotter.add_mesh(feature_edges, color='black', line_width=1)
 
+        # 4-1. 불러온 데이터 타입에 따라 렌더링 실행
         if isinstance(geometry, trimesh.Scene):
             for geom in geometry.geometry.values():
                 if isinstance(geom, trimesh.PointCloud):
@@ -1746,23 +1802,38 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 elif isinstance(geom, Path3D):
                     plotter.add_mesh(pv.lines_from_points(geom.vertices), color="yellow", line_width=5)
                 else:
-                    render_mesh(geom) # 위에서 만든 함수 호출
-        # ... (PointCloud, Path3D는 기존과 동일)
-        else:
-            render_mesh(geometry) # 단일 부품일 때도 함수 호출
-
-        # ▲▲▲ [수정 끝] ▲▲▲
+                    render_solid_mesh(geom)
+        elif isinstance(geometry, (trimesh.Trimesh, pv.PolyData)):
+            render_solid_mesh(geometry)
+        elif isinstance(geometry, trimesh.PointCloud):
+            plotter.add_mesh(pv.PolyData(geometry.vertices), cmap="viridis", render_points_as_spheres=True)
+        elif isinstance(geometry, Path3D):
+            plotter.add_mesh(pv.lines_from_points(geometry.vertices), color="yellow", line_width=5)
         
-        self.statusBar().showMessage("3D 모델 렌더링 완료.", 3000)
+        # 5. 카메라 위치를 모델에 맞게 재설정합니다.
         plotter.reset_camera()
+        
+        # 6. 화면을 3D 탭으로 전환합니다.
         self.tab_widget.setCurrentWidget(self.widget_3d)
+
+        # 7. 마지막으로 사용자에게 성공 메시지를 보여줍니다.
+        filename = ""
+        if hasattr(self, 'last_opened_3d_path'):
+            filename = os.path.basename(self.last_opened_3d_path)
         
-        
+        self.statusBar().clearMessage() # '렌더링 중' 메시지 지우기
+        QtWidgets.QMessageBox.information(self, "로딩 완료", f"'{filename}' 파일을 성공적으로 불러왔습니다.")
+
+
+    # on_3d_load_error 함수를 아래 코드로 통째로 교체하세요. (중복 코드 정리)
     def on_3d_load_error(self, error_message):
+        # 로딩 대화상자가 있다면 닫습니다.
+        if hasattr(self, 'progress_dialog'):
+            self.progress_dialog.close()
+
         _log_error(self, "3D 모델 로딩 오류", Exception(error_message))
         self.statusBar().showMessage("3D 모델을 불러오는 데 실패했습니다.", 5000)
-
-        
+            
     def _apply_initial_layout(self):
         try: self.showMaximized()
         except: pass
