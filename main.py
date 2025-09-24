@@ -2035,39 +2035,43 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         
     # 스페셜 서식 적용 위해 교체 v2.95에서 함..
     
-    def open_project(self,path):
+    # main.py의 PdfAnnotator 클래스 내부
+
+    # main.py의 PdfAnnotator 클래스 내부
+
+    # main.py의 PdfAnnotator 클래스 내부
+
+    def open_project(self, path):
+        try:
+            # 1. 파일을 먼저 열고 모든 데이터를 메모리로 읽어들입니다.
+            with zipfile.ZipFile(path, "r") as zf:
+                pdf_bytes = zf.read(TSN_PDF_NAME)
+                meta = json.loads(zf.read(TSN_META_NAME).decode("utf-8"))
+                
+                model_path_info = meta.get("3d_model_path", None)
+                model_bytes = None
+                if model_path_info and model_path_info.startswith("embedded:"):
+                    if "model.data" in zf.namelist():
+                        model_bytes = zf.read("model.data")
+
+        except Exception as e:
+            _log_error(self, "프로젝트 파일 열기 오류", e)
+            QtWidgets.QMessageBox.critical(self, "오류", f"프로젝트 파일을 여는 데 실패했습니다:\n{e}")
+            return
+
+        # 2. 파일 읽기에 완전히 성공했다면, 그 때서야 현재 상태를 초기화합니다.
         self._close_current_doc()
-        self._reset_all_tables() # <-- [수정] 함수 이름을 올바르게 변경
+        self._reset_all_tables()
         self._reset_state_for_new()
 
-        with zipfile.ZipFile(path,"r") as zf:
-            pdf_bytes=zf.read(TSN_PDF_NAME); meta=json.loads(zf.read(TSN_META_NAME).decode("utf-8"))
-        
-        self.doc=fitz.open(stream=pdf_bytes,filetype="pdf")
-        self.next_no=float(meta.get("next_no",1))
-        self.cur_page_index=int(meta.get("current_page",0))
-        self.render_scale=int(meta.get("render_scale",2))
-        self.style.from_dict(meta.get("style",{}))
-        
-        
-        # ▼▼▼ 여기에 스탬프 설정 불러오기 코드를 추가합니다 ▼▼▼
-        stamp_settings = meta.get("stamp_settings", {})
-        self.stamp_opacity = float(stamp_settings.get("opacity", 1.0))
-        self.stamp_rotation = float(stamp_settings.get("rotation", 0.0))
-        self.stamp_opacity_random = bool(stamp_settings.get("opacity_random", True))
-        self.stamp_rotation_random = bool(stamp_settings.get("rotation_random", True))
-        self.stamp_opacity_min = float(stamp_settings.get("opacity_min", 0.9))
-        self.stamp_opacity_max = float(stamp_settings.get("opacity_max", 1.0))
-        self.stamp_rotation_min = float(stamp_settings.get("rotation_min", -5.0))
-        self.stamp_rotation_max = float(stamp_settings.get("rotation_max", 5.0))
-        # ▲▲▲ 여기까지 추가 ▲▲▲
-        
-        self.registered_stamps = meta.get("registered_stamps", {})
-        for s_data in meta.get("stamps", []):
-            # StampItem에 custom_settings가 없으므로 해당 키를 제거
-            s_data.pop("custom_settings", None)
-            self.stamps.append(StampItem(**s_data))
-       
+        # 3. 읽어들인 데이터로 프로그램 상태를 하나씩 복원합니다.
+        self.doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        self.numbering_mode = meta.get("numbering_mode", "global")
+        self.cur_page_index = int(meta.get("current_page", 0))
+        self.render_scale = int(meta.get("render_scale", 2))
+        self.style.from_dict(meta.get("style", {}))
+    
+        # 넘버링/스탬프 데이터 복원
         for m in meta.get("items",[]):
             custom_style = None
             if "custom_style" in m and m["custom_style"]:
@@ -2080,44 +2084,64 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                         custom_style=custom_style)
             self.items.append(it)
         
-        # ▼▼▼ [수정 시작] 3D 모델 로딩 로직 수정 ▼▼▼
-        model_path_info = meta.get("3d_model_path", None)
-
+        self.registered_stamps = meta.get("registered_stamps", {})
+        for s_data in meta.get("stamps", []):
+            self.stamps.append(StampItem(**s_data))
+        
+        # 넘버링 모드에 따라 다음 번호 결정
+        if self.numbering_mode == 'global':
+            if self.items:
+                max_no = 0
+                for item in self.items:
+                    if item.no % 1 == 0: max_no = max(max_no, int(item.no))
+                
+                suggested_no = max_no + 1
+                new_next_no, ok = QtWidgets.QInputDialog.getInt(
+                    self,                                                         # 1. 부모 위젯
+                    "다음 번호 지정",                                               # 2. 창 제목
+                    f"마지막 번호는 {max_no}번입니다. 이어갈 번호를 지정해 주세요.",    # 3. 라벨 텍스트
+                    suggested_no,                                                 # 4. 기본값 (value)
+                    1                                                             # 5. 최소값 (minValue)
+                )
+                self.next_no = float(new_next_no) if ok else float(suggested_no)
+            else:
+                self.next_no = 1.0
+        
+        # 3D 모델 로드 준비
         if model_path_info:
             if model_path_info.startswith("embedded:"):
-                # 1. 파일이 포함된 경우
-                import tempfile
-
-                original_filename = model_path_info.split(":", 1)[1]
-                # 임시 폴더에 model.data 파일을 추출
-                temp_dir = tempfile.gettempdir()
-                self.model_path = os.path.join(temp_dir, original_filename)
-                zf.extract("model.data", path=temp_dir)
-                # 임시 파일의 이름을 원래 이름으로 변경
-                os.rename(os.path.join(temp_dir, "model.data"), self.model_path)
-
-                print(f"포함된 3D 모델을 임시 경로에 풀어놓고 로드합니다: {self.model_path}")
-                self.start_loading_3d.emit(self.model_path)
-
+                if model_bytes:
+                    import tempfile
+                    original_filename = model_path_info.split(":", 1)[1]
+                    temp_dir = tempfile.gettempdir()
+                    self.model_path = os.path.join(temp_dir, f"tsn_temp_{original_filename}")
+                    with open(self.model_path, "wb") as f: f.write(model_bytes)
+                    self.start_loading_3d.emit(self.model_path)
             else:
-                # 2. 경로만 저장된 경우 (기존 방식)
                 self.model_path = model_path_info
                 if os.path.exists(self.model_path):
-                    print(f"연결된 3D 모델을 로드합니다: {self.model_path}")
                     self.start_loading_3d.emit(self.model_path)
                 else:
                     self.statusBar().showMessage(f"연결된 3D 모델을 찾을 수 없습니다: {self.model_path}", 5000)
-        # ▲▲▲ [수정 끝] ▲▲▲
+
+        # ▼▼▼ [핵심] 누락되었던 최종 UI 업데이트 단계 ▼▼▼
+        # 5. 모든 데이터 로딩이 끝난 후, UI를 새로고침합니다.
+        self.project_path = path
+        self.project_name = os.path.splitext(os.path.basename(path))[0]
+        self.project_dir = os.path.dirname(path)
         
-        self.load_page(self.cur_page_index)
-        self.project_path=path
+        # 이 함수가 PDF 뷰어, 테이블, 썸네일 등 모든 것을 화면에 다시 그립니다.
+        self.load_page(self.cur_page_index) 
+        
         self._set_dirty(False)
+        self._update_window_title()
         self._update_undo_redo_hint()
         self._update_status()
         self._update_page_navigation_ui()
         self._populate_thumbnails()
-        self._update_stamp_button_icon()     
-            
+        self._update_stamp_button_icon()
+
+
         
     def save_project(self) -> bool:
         if self.doc is None:
@@ -2169,11 +2193,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         
     
     # 스페셜 서식 적용 위해 교체 v2.95에서...
+    # main.py의 PdfAnnotator 클래스 내부
+
+    # main.py의 PdfAnnotator 클래스 내부
+
     def _write_tsn(self, path, save_option="link"):
-        pdf_bytes=self.doc.tobytes()
+        pdf_bytes = self.doc.tobytes()
         items_data = []
         for it in self.items:
-            # ... (기존 넘버링 아이템 저장 로직은 동일) ...
             item_dict = {
                 "no": it.no, "page_index": it.page_index, "pdf_point": list(it.pdf_point),
                 "dim_type": it.dim_type, "value": it.value, "tol_plus": it.tol_plus, "tol_minus": it.tol_minus
@@ -2182,35 +2209,32 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 item_dict["custom_style"] = it.custom_style.to_dict()
             items_data.append(item_dict)
 
-        meta={"app":APP_NAME,"app_version":APP_VER,"tsn_version":TSN_VERSION,
-              "next_no":self.next_no,"current_page":self.cur_page_index,"render_scale":self.render_scale,
-              "style":self.style.to_dict(),
-              "items": items_data,
-              # [추가] 등록된 스탬프와 찍힌 스탬프 목록을 메타데이터에 추가
-              "registered_stamps": self.registered_stamps,
-              "stamps": [s.__dict__ for s in self.stamps],
-                # ▼▼▼ 여기에 스탬프 설정 저장 코드를 추가합니다 ▼▼▼
-              "stamp_settings": {
-                  "opacity": self.stamp_opacity, "rotation": self.stamp_rotation,
-                  "opacity_random": self.stamp_opacity_random, "rotation_random": self.stamp_rotation_random,
-                  "opacity_min": self.stamp_opacity_min, "opacity_max": self.stamp_opacity_max,
-                  "rotation_min": self.stamp_rotation_min, "rotation_max": self.stamp_rotation_max,
-              }
-              # ▲▲▲ 여기까지 추가 ▲▲▲
+        meta = {
+            "app": APP_NAME, "app_version": APP_VER, "tsn_version": TSN_VERSION,
+            "next_no": self.next_no,
+            "numbering_mode": self.numbering_mode, # <<--- [추가] 넘버링 모드 저장
+            "current_page": self.cur_page_index, "render_scale": self.render_scale,
+            "style": self.style.to_dict(), "items": items_data,
+            "registered_stamps": self.registered_stamps,
+            "stamps": [s.__dict__ for s in self.stamps],
+            "stamp_settings": {
+                "opacity": self.stamp_opacity, "rotation": self.stamp_rotation,
+                "opacity_random": self.stamp_opacity_random, "rotation_random": self.stamp_rotation_random,
+                "opacity_min": self.stamp_opacity_min, "opacity_max": self.stamp_opacity_max,
+                "rotation_min": self.stamp_rotation_min, "rotation_max": self.stamp_rotation_max,
             }
-            # ▼▼▼ 바로 이 한 줄을 if문 앞에 추가해주시면 됩니다 ▼▼▼
-        save_option = "link"  # 3D 모델이 없을 경우를 대비한 기본값 설정
-        # ▼▼▼ [수정 시작] 저장 옵션에 따라 분기 처리 ▼▼▼
-        if save_option == "link" or not self.model_path:
-            meta["3d_model_path"] = self.model_path
-        else: # "embed" 옵션일 경우
-            # 경로 대신 "embedded:파일명" 형태로 저장하여 포함된 파일임을 표시
+        }
+
+        if save_option == "embed" and self.model_path and os.path.exists(self.model_path):
             meta["3d_model_path"] = f"embedded:{os.path.basename(self.model_path)}"
-        # ▲▲▲ [수정 끝] ▲▲▲
+        else:
+            meta["3d_model_path"] = self.model_path
         
-        with zipfile.ZipFile(path,"w",compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(TSN_META_NAME,json.dumps(meta,ensure_ascii=False,indent=2))
-            zf.writestr(TSN_PDF_NAME,pdf_bytes)
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(TSN_META_NAME, json.dumps(meta, ensure_ascii=False, indent=2))
+            zf.writestr(TSN_PDF_NAME, pdf_bytes)
+            if save_option == "embed" and self.model_path and os.path.exists(self.model_path):
+                zf.write(self.model_path, arcname="model.data")
     
     
     def import_pdf(self):
