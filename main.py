@@ -1146,6 +1146,29 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 QtWidgets.QMessageBox.information(self, "환영합니다", f"평가판이 시작되었습니다. {days_left}일 동안 사용하실 수 있습니다.")
         
         self.setWindowTitle(f"{APP_NAME} ({APP_VER}){trial_message}"); self.resize(1600,1000)
+        
+        # ▼▼▼ 탭 위젯 설정 코드 (삽입) ▼▼▼
+        # 1. 탭 위젯을 생성하고 중앙에 배치합니다.
+        self.tab_widget = QtWidgets.QTabWidget()
+        self.setCentralWidget(self.tab_widget)
+
+        # 2. 기존의 PDF 뷰어를 첫 번째 탭에 추가합니다.
+        self.scene = PdfScene(self)
+        self.view = PdfView(self.scene, self)
+        self.tab_widget.addTab(self.view, "2D View")
+
+        # 3. 3D 뷰어를 위한 두 번째 탭을 만듭니다. (지금은 빈 공간)
+        self.vlayout_3d = QtWidgets.QVBoxLayout()
+        self.widget_3d = QtWidgets.QWidget()
+        self.widget_3d.setLayout(self.vlayout_3d)
+        self.tab_widget.addTab(self.widget_3d, "3D View")
+
+        # 신호/슬롯 연결
+        self.scene.clicked.connect(self.on_clicked)
+        self.scene.moved.connect(self.on_scene_moved)
+        self.view.zoom_changed.connect(self._on_zoom_changed)
+        # ▲▲▲ 여기까지 삽입 ▲▲▲
+        
         self._ee_armed = False
         self._ee_prev_state = False
         self._ee_orig_vol = 0.7
@@ -1288,14 +1311,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._egg_timer.setSingleShot(True)
         self._egg_timer.timeout.connect(self._reset_egg_sequence)
         
-
-        # --- UI 위젯 설정 (Scene, View, Table, Dock) ---
-        # self.scene=PdfScene(self); self.view=PdfView(self.scene,self); self.setCentralWidget(self.view)
-        # 3d로 하면서 이 부분 추석처리.
-        
-        
-        
-                # ▼▼▼ [수정 후 코드] ▼▼▼
         # 1. 탭 위젯을 생성하고 중앙에 배치합니다.
         self.tab_widget = QtWidgets.QTabWidget()
         self.setCentralWidget(self.tab_widget)
@@ -1364,10 +1379,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._highlighted_stamp_rect = None # 하이라이트 그래픽 아이템
         
         self.stamp_table.cellClicked.connect(self._highlight_stamp_from_table)
-        QtGui.QShortcut(QtGui.QKeySequence.Delete, self.stamp_table, 
-                        activated=self._delete_selected_stamps)
-        # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
-        
+
 
         # --- 1. 왼쪽 '페이지' 도크 생성 (새로운 부분) ---
         self.page_dock = QtWidgets.QDockWidget("페이지", self)
@@ -1426,7 +1438,183 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.dock)
         
         
-        # --- 메뉴바 및 액션 설정 ---
+        # --- 4. 메뉴바, 툴바, 단축키 생성 ---
+        self._create_menus() 
+        self._create_toolbar() 
+        self._create_shortcuts()
+
+        # --- 5. 백그라운드 스레드 설정 ---
+        self.thread = QThread()
+        self.worker = Worker()
+        self.worker.moveToThread(self.thread)
+        self.start_loading_3d.connect(self.worker.load_model)
+        self.worker.finished.connect(self.on_3d_load_finished)
+        self.worker.error.connect(self.on_3d_load_error)
+        self.thread.start()
+
+        # --- 6. 사운드 예열 ---
+        try:
+            from PySide6.QtMultimedia import QSoundEffect
+            prime_effect = QSoundEffect(self)
+            silent_url = QtCore.QUrl.fromLocalFile(resource_path("resources/ester_egg/silent_prime.wav"))
+            prime_effect.setSource(silent_url)
+            prime_effect.play()
+            self.sound_effect = QSoundEffect(self)
+            self.sound_effect.setSource(self.gun_sound_url)
+            self.sound_effect.setVolume(1.0)
+            QThread.msleep(20) 
+            print("Sound system pre-loaded successfully.")
+        except Exception as e:
+            print(f"Sound pre-loading failed: {e}")
+
+        # --- 7. 스타일시트 적용 ---
+        self.setStyleSheet("""
+            QToolBar { border: none; background-color: #F0F0F0; }
+            QToolBar QToolButton { border: 1px solid transparent; border-radius: 4px; padding: 3px; }
+            QToolBar QToolButton:checked { background-color: #D6EAF8; border: 1px solid #A9CCE3; }
+            QGroupBox {
+                border: 1px solid #D5D8DC;
+                border-radius: 6px;
+                margin-top: 15px; /* 제목을 위한 상단 여백 확보 */
+            }
+
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top center;
+                padding: 0 10px; /* 좌우 패딩 */
+            }
+            
+            QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top center; padding: 10px; color: #606060; }
+            QDockWidget { border: 1px solid #C8C8C8; }
+            QDockWidget::title { text-align: center; background-color: #E6E6E6; padding: 4px; }
+        """)
+
+        # --- 8. 최종 상태 업데이트 ---
+        if pdf_path:
+            self.import_pdf_from_path(pdf_path)
+
+        self._apply_initial_layout()
+        self._sync_ui_to_current_mode()
+        self._update_undo_redo_hint()
+        self._update_status()
+        # ▲▲▲ 여기까지 삽입 ▲▲▲
+
+
+    def copy_format(self):
+        """선택된 첫 번째 항목의 개별 서식을 클립보드에 복사합니다."""
+        selected_rows = sorted(list(set(index.row() for index in self.table.selectedIndexes())))
+        if not selected_rows:
+            return
+
+        source_row = selected_rows[0]
+        try:
+            item_no = float(self.table.item(source_row, 0).text())
+            source_item = next((it for it in self.items if it.no == item_no), None)
+            if not source_item: return
+        except (ValueError, AttributeError):
+            return
+
+        # 스타일 객체를 깊은 복사(deepcopy)하여 완전히 독립적인 복사본을 만듭니다.
+        self.style_clipboard = copy.deepcopy(source_item.custom_style)
+        
+        if self.style_clipboard:
+            self.statusBar().showMessage(f"✅ {item_no:g}번의 개별 서식이 복사되었습니다.")
+        else:
+            self.statusBar().showMessage(f"✅ {item_no:g}번의 기본 서식(서식 없음)이 복사되었습니다.")
+
+    def paste_format(self):
+        """클립보드에 복사된 서식을 선택된 모든 항목에 붙여넣습니다."""
+        selected_rows = sorted(list(set(index.row() for index in self.table.selectedIndexes())))
+        if not selected_rows:
+            self.statusBar().showMessage("❗ 서식을 붙여넣을 항목을 먼저 선택해주세요.")
+            return
+
+        # 붙여넣기 전, 복사된 서식이 있는지 확인합니다.
+        if self.style_clipboard is None:
+            self.statusBar().showMessage("❗ 복사된 서식이 없습니다. Ctrl+Shift+C로 먼저 서식을 복사해주세요.")
+            return
+
+        applied_count = 0
+        for row in selected_rows:
+            try:
+                item_no = float(self.table.item(row, 0).text())
+                target_item = next((it for it in self.items if it.no == item_no), None)
+                if target_item:
+                    # 붙여넣을 때도 깊은 복사를 하여 각 항목이 독립적인 스타일 객체를 갖게 합니다.
+                    target_item.custom_style = copy.deepcopy(self.style_clipboard)
+                    applied_count += 1
+            except (ValueError, AttributeError):
+                continue
+        
+        if applied_count > 0:
+            self.statusBar().showMessage(f"🎨 {applied_count}개 항목에 서식을 적용했습니다.")
+            self.load_page(self.cur_page_index) # 변경 사항을 화면에 즉시 반영
+            self._set_dirty() # 파일이 수정되었음을 표시
+    
+    
+    
+    def closeEvent(self, event):
+        """창이 닫힐 때 호출되는 이벤트 핸들러입니다."""
+        if self._maybe_save("프로그램 종료", "프로그램을 종료합니다.\n현재 파일을 저장하시겠습니까?"):
+            event.accept()  # 종료 허용
+        else:
+            event.ignore()  # 종료 취소            
+    
+    
+    def _create_shortcuts(self):
+        QtGui.QShortcut(QtGui.QKeySequence.Delete, self.stamp_table, 
+                        activated=self._delete_selected_stamps)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+N"), self, activated=self.new_project)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+O"), self, activated=self.open_project_dialog)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+S"), self, activated=self.save_project)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+S"), self, activated=self.save_project_as)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+I"), self, activated=self.import_pdf)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Z"), self, activated=self.undo)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Y"), self, activated=self.redo)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+E"), self, activated=self._cycle_active_mode)
+        QtGui.QShortcut(QtGui.QKeySequence("Insert"), self.table, activated=self.insert_excel_style)
+        QtGui.QShortcut(QtGui.QKeySequence("Shift+Insert"), self.table, activated=self.insert_precision_style)
+        # 수정 후 코드
+        QtGui.QShortcut(QtGui.QKeySequence("Delete"), self.table, activated=self.delete_items)
+        QtGui.QShortcut(QtGui.QKeySequence("Shift+Delete"), self.table, activated=self.renumber_items_by_unit)
+        QtGui.QShortcut(QtGui.QKeySequence("F2"), self.table, activated=self.set_individual_style)
+        esc_shortcut = QtGui.QShortcut(QtGui.QKeySequence.Cancel, self)
+        esc_shortcut.activated.connect(self.cancel_insert_mode)
+        esc_shortcut.activated.connect(self.clear_selection_and_highlight)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+F"), self, activated=self.fit_to_window)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+R"), self, activated=self.rerender_now)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+F"), self, activated=self.toggle_flow_view)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+P"), self, activated=self.toggle_preview_mode)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl++"), self, activated=self.view.zoom_in)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+-"), self, activated=self.view.zoom_out)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+0"), self, activated=self.view.reset_zoom)
+        QtGui.QShortcut(QtGui.QKeySequence("F1"), self, activated=self.show_shortcut_help)
+        
+        # ===== ▼▼▼ 페이지 이동 단축키 2줄 추가 ▼▼▼ =====
+        QtGui.QShortcut(QtGui.QKeySequence.MoveToPreviousPage, self, activated=self.go_prev)
+        QtGui.QShortcut(QtGui.QKeySequence.MoveToNextPage, self, activated=self.go_next)
+        
+        # ===== ▼▼▼ 사격 모드 단축키 추가 ▼▼▼ =====
+        egg_sc = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+F12"), self)
+        egg_sc.activated.connect(self._on_egg_hotkey)
+        egg_sc.setAutoRepeat(False)   # 꾹 누르고 있는 자동반복으로 4회가 채워지지 않게
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+F11"), self, activated=lambda: self.toggle_shooting_mode(False))
+        
+        
+        QtGui.QShortcut(QtGui.QKeySequence("F5"), self, activated=lambda: self.set_input_mode("number_only"))
+        QtGui.QShortcut(QtGui.QKeySequence("F6"), self, activated=lambda: self.set_input_mode("with_input"))
+        QtGui.QShortcut(QtGui.QKeySequence("Shift+F1"), self, activated=lambda: self.adjust_label_style("radius_view_px", 2))
+        QtGui.QShortcut(QtGui.QKeySequence("Shift+F2"), self, activated=lambda: self.adjust_label_style("radius_view_px", -2))
+        QtGui.QShortcut(QtGui.QKeySequence("Shift+F3"), self, activated=lambda: self.adjust_label_style("stroke_width", 1))
+        QtGui.QShortcut(QtGui.QKeySequence("Shift+F4"), self, activated=lambda: self.adjust_label_style("stroke_width", -1))
+        QtGui.QShortcut(QtGui.QKeySequence("Shift+F5"), self, activated=lambda: self.adjust_label_style("font_size_view_px", 2))
+        QtGui.QShortcut(QtGui.QKeySequence("Shift+F6"), self, activated=lambda: self.adjust_label_style("font_size_view_px", -2))
+        
+        # ===== ▼▼▼ 아래 두 줄을 추가해주세요 ▼▼▼ =====
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+C"), self.table, activated=self.copy_format)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+V"), self.table, activated=self.paste_format)
+    
+    def _create_menus(self):
         mb=self.menuBar()
         m_file=mb.addMenu("파일")
         a_new=m_file.addAction("New Project"); a_new.triggered.connect(self.new_project)
@@ -1493,211 +1681,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         m_help=mb.addMenu("도움말")
         a_about=m_help.addAction("정보..."); a_about.triggered.connect(self.show_about_dialog)
-
-        # --- 단축키 설정 ---
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+N"), self, activated=self.new_project)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+O"), self, activated=self.open_project_dialog)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+S"), self, activated=self.save_project)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+S"), self, activated=self.save_project_as)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+I"), self, activated=self.import_pdf)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Z"), self, activated=self.undo)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Y"), self, activated=self.redo)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+E"), self, activated=self._cycle_active_mode)
-        QtGui.QShortcut(QtGui.QKeySequence("Insert"), self.table, activated=self.insert_excel_style)
-        QtGui.QShortcut(QtGui.QKeySequence("Shift+Insert"), self.table, activated=self.insert_precision_style)
-        # 수정 후 코드
-        QtGui.QShortcut(QtGui.QKeySequence("Delete"), self.table, activated=self.delete_items)
-        QtGui.QShortcut(QtGui.QKeySequence("Shift+Delete"), self.table, activated=self.renumber_items_by_unit)
-        QtGui.QShortcut(QtGui.QKeySequence("F2"), self.table, activated=self.set_individual_style)
-        esc_shortcut = QtGui.QShortcut(QtGui.QKeySequence.Cancel, self)
-        esc_shortcut.activated.connect(self.cancel_insert_mode)
-        esc_shortcut.activated.connect(self.clear_selection_and_highlight)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+F"), self, activated=self.fit_to_window)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+R"), self, activated=self.rerender_now)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+F"), self, activated=self.toggle_flow_view)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+P"), self, activated=self.toggle_preview_mode)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl++"), self, activated=self.view.zoom_in)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+-"), self, activated=self.view.zoom_out)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+0"), self, activated=self.view.reset_zoom)
-        QtGui.QShortcut(QtGui.QKeySequence("F1"), self, activated=self.show_shortcut_help)
-        
-        # ===== ▼▼▼ 페이지 이동 단축키 2줄 추가 ▼▼▼ =====
-        QtGui.QShortcut(QtGui.QKeySequence.MoveToPreviousPage, self, activated=self.go_prev)
-        QtGui.QShortcut(QtGui.QKeySequence.MoveToNextPage, self, activated=self.go_next)
-        
-        # ===== ▼▼▼ 사격 모드 단축키 추가 ▼▼▼ =====
-        egg_sc = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+F12"), self)
-        egg_sc.activated.connect(self._on_egg_hotkey)
-        egg_sc.setAutoRepeat(False)   # 꾹 누르고 있는 자동반복으로 4회가 채워지지 않게
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+F11"), self, activated=lambda: self.toggle_shooting_mode(False))
-        
-        
-        QtGui.QShortcut(QtGui.QKeySequence("F5"), self, activated=lambda: self.set_input_mode("number_only"))
-        QtGui.QShortcut(QtGui.QKeySequence("F6"), self, activated=lambda: self.set_input_mode("with_input"))
-        QtGui.QShortcut(QtGui.QKeySequence("Shift+F1"), self, activated=lambda: self.adjust_label_style("radius_view_px", 2))
-        QtGui.QShortcut(QtGui.QKeySequence("Shift+F2"), self, activated=lambda: self.adjust_label_style("radius_view_px", -2))
-        QtGui.QShortcut(QtGui.QKeySequence("Shift+F3"), self, activated=lambda: self.adjust_label_style("stroke_width", 1))
-        QtGui.QShortcut(QtGui.QKeySequence("Shift+F4"), self, activated=lambda: self.adjust_label_style("stroke_width", -1))
-        QtGui.QShortcut(QtGui.QKeySequence("Shift+F5"), self, activated=lambda: self.adjust_label_style("font_size_view_px", 2))
-        QtGui.QShortcut(QtGui.QKeySequence("Shift+F6"), self, activated=lambda: self.adjust_label_style("font_size_view_px", -2))
-        
-        # ===== ▼▼▼ 아래 두 줄을 추가해주세요 ▼▼▼ =====
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+C"), self.table, activated=self.copy_format)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+V"), self.table, activated=self.paste_format)
-        
-        # 4. 백그라운드 스레드 등 비-UI 컴포넌트 설정 (⭐️ 여기가 좋습니다)
-        # ▼▼▼ 3D 로딩을 위한 스레드 설정 ▼▼▼
-        self.thread = QThread()
-        self.worker = Worker()
-        self.worker.moveToThread(self.thread)
-        self.start_loading_3d.connect(self.worker.load_model)
-        self.worker.finished.connect(self.on_3d_load_finished)
-        self.worker.error.connect(self.on_3d_load_error)
-        self.thread.start()
-        # ▲▲▲ 스레드 설정 끝 ▲▲▲
-        
-        # 5. 최종 윈도우 설정
-        self._apply_initial_layout()
-        self._sync_ui_to_current_mode()
-        self._update_undo_redo_hint()
-        self._update_status()
-
-        # ===== 사운드 예열 코드 최종 수정본 =====
-        try:
-            from PySide6.QtMultimedia import QSoundEffect
-            
-            # 1. '예열(Priming)' 전용 사운드 객체를 임시로 만듭니다.
-            prime_effect = QSoundEffect(self)
-            silent_url = QtCore.QUrl.fromLocalFile(resource_path("resources/ester_egg/silent_prime.wav"))
-            prime_effect.setSource(silent_url)
-            prime_effect.play() # 무음 파일 재생으로 사운드 시스템만 활성화
-            
-            # 2. 실제 사용할 '총소리' 객체를 따로, 깨끗하게 준비합니다.
-            self.sound_effect = QSoundEffect(self)
-            self.sound_effect.setSource(self.gun_sound_url)
-            self.sound_volume = 1.0
-            self.sound_effect.setVolume(self.sound_volume)
-            
-            # 예열용 객체가 재생될 시간을 아주 잠깐(20ms) 줍니다.
-            QThread.msleep(20) 
-
-            print("Sound system pre-loaded successfully using a separate prime effect.")
-        except Exception as e:
-            print(f"Sound pre-loading failed: {e}")
- 
-        self._create_toolbar() # 1. 툴바를 먼저 생성
-        if pdf_path: self.import_pdf_from_path(pdf_path)
-        
-        self._apply_initial_layout()
-        # 3. 툴바가 만들어진 후에 UI 상태를 동기화합니다. (시동 걸기)
-        self._sync_ui_to_current_mode() 
-        
-        self._update_undo_redo_hint()
-        self._update_status()
-        
-        # ===== ▼▼▼ 이 부분을 최종 코드로 교체해주세요 ▼▼▼ =====
-        self.setStyleSheet("""
-            QToolBar {
-                border: none;
-                background-color: #F0F0F0;
-            }
-            QToolBar QToolButton {
-                border: 1px solid transparent; border-radius: 4px; padding: 3px;
-            }
-            QToolBar QToolButton:hover {
-                
-            }
-            QToolBar QToolButton:checked {
-                background-color: #D6EAF8; border: 1px solid #A9CCE3;
-            }
-            
-            QGroupBox {
-                border: 1px solid #D5D8DC;
-                border-radius: 6px;
-                margin-top: 6px; 
-            }
-
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                subcontrol-position: top center;
-                padding-left: 10px;
-                padding-right: 10px;
-                color: #606060;
-            }
-
-            /* ===== ▼▼▼ 도크 위젯 스타일 추가 (새로운 지시사항) ▼▼▼ ===== */
-            QDockWidget {
-                border: 1px solid #C8C8C8; /* "모든 패널(DockWidget)에 회색 실선 테두리를 그려!" */
-            }
-            
-            QDockWidget::title {
-                text-align: center; /* "패널 제목은 가운데 정렬하고," */
-                background-color: #E6E6E6; /* "배경색은 살짝 어둡게 칠해줘." */
-                padding: 4px;
-            }
-            /* ===== ▲▲▲ 여기까지 추가 ▲▲▲ ===== */
-        """)
- 
-            
-    def copy_format(self):
-        """선택된 첫 번째 항목의 개별 서식을 클립보드에 복사합니다."""
-        selected_rows = sorted(list(set(index.row() for index in self.table.selectedIndexes())))
-        if not selected_rows:
-            return
-
-        source_row = selected_rows[0]
-        try:
-            item_no = float(self.table.item(source_row, 0).text())
-            source_item = next((it for it in self.items if it.no == item_no), None)
-            if not source_item: return
-        except (ValueError, AttributeError):
-            return
-
-        # 스타일 객체를 깊은 복사(deepcopy)하여 완전히 독립적인 복사본을 만듭니다.
-        self.style_clipboard = copy.deepcopy(source_item.custom_style)
-        
-        if self.style_clipboard:
-            self.statusBar().showMessage(f"✅ {item_no:g}번의 개별 서식이 복사되었습니다.")
-        else:
-            self.statusBar().showMessage(f"✅ {item_no:g}번의 기본 서식(서식 없음)이 복사되었습니다.")
-
-    def paste_format(self):
-        """클립보드에 복사된 서식을 선택된 모든 항목에 붙여넣습니다."""
-        selected_rows = sorted(list(set(index.row() for index in self.table.selectedIndexes())))
-        if not selected_rows:
-            self.statusBar().showMessage("❗ 서식을 붙여넣을 항목을 먼저 선택해주세요.")
-            return
-
-        # 붙여넣기 전, 복사된 서식이 있는지 확인합니다.
-        if self.style_clipboard is None:
-            self.statusBar().showMessage("❗ 복사된 서식이 없습니다. Ctrl+Shift+C로 먼저 서식을 복사해주세요.")
-            return
-
-        applied_count = 0
-        for row in selected_rows:
-            try:
-                item_no = float(self.table.item(row, 0).text())
-                target_item = next((it for it in self.items if it.no == item_no), None)
-                if target_item:
-                    # 붙여넣을 때도 깊은 복사를 하여 각 항목이 독립적인 스타일 객체를 갖게 합니다.
-                    target_item.custom_style = copy.deepcopy(self.style_clipboard)
-                    applied_count += 1
-            except (ValueError, AttributeError):
-                continue
-        
-        if applied_count > 0:
-            self.statusBar().showMessage(f"🎨 {applied_count}개 항목에 서식을 적용했습니다.")
-            self.load_page(self.cur_page_index) # 변경 사항을 화면에 즉시 반영
-            self._set_dirty() # 파일이 수정되었음을 표시
     
-    
-    
-    def closeEvent(self, event):
-        """창이 닫힐 때 호출되는 이벤트 핸들러입니다."""
-        if self._maybe_save("프로그램 종료", "프로그램을 종료합니다.\n현재 파일을 저장하시겠습니까?"):
-            event.accept()  # 종료 허용
-        else:
-            event.ignore()  # 종료 취소            
             
     # 프리뷰 모드 선택 추가 함수... v3.01에서...
     def set_preview_mode(self, mode: str):
@@ -1719,11 +1703,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             else: # 'preview' 모드일 경우
                 self.view.setCursor(QtCore.Qt.BlankCursor)
     
-    # PdfAnnotator 클래스에 새 메서드로 추가
-
-    # main.py의 open_3d_model 함수 (최종 수정본)
-    
-    # 3D 모델 열기 (신호만 보내는 역할)
     # ▼▼▼ 3D 뷰어 관련 메서드들 ▼▼▼
     def open_3d_model(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -1763,6 +1742,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             plotter.add_mesh(pv.wrap(geometry), style='surface', color='lightgrey', show_feature_edges=True, edge_color='black', line_width=1)
         
         self.statusBar().showMessage("3D 모델 렌더링 완료.", 3000)
+        # ▼▼▼ [추가] 카메라 위치와 줌을 자동으로 조절합니다 ▼▼▼
+        plotter.reset_camera()
+        # ▲▲▲
         self.tab_widget.setCurrentWidget(self.widget_3d)
 
     def on_3d_load_error(self, error_message):
