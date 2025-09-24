@@ -25,6 +25,7 @@ from PySide6.QtMultimedia import QSoundEffect
 # ▼▼▼ 스레딩 기능에 필요한 모든 부품을 여기서 import 합니다 ▼▼▼
 from PySide6.QtCore import QObject, Signal, Slot, QThread
 
+print("="*20 + ">>> 올바른 최신 main.py 파일이 실행되었습니다! <<<" + "="*20) # <--- 이 줄 추가
 
 # --- 직접 만든 모듈들 ---
 from core.models import MarkItem, StampItem, LabelStyle
@@ -1564,8 +1565,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # ===== 사운드 예열 코드 최종 수정본 =====
         try:
             from PySide6.QtMultimedia import QSoundEffect
-            from PySide6.QtCore import QThread
-
+            
             # 1. '예열(Priming)' 전용 사운드 객체를 임시로 만듭니다.
             prime_effect = QSoundEffect(self)
             silent_url = QtCore.QUrl.fromLocalFile(resource_path("resources/ester_egg/silent_prime.wav"))
@@ -1584,11 +1584,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             print("Sound system pre-loaded successfully using a separate prime effect.")
         except Exception as e:
             print(f"Sound pre-loading failed: {e}")
-        # ▲▲▲ 여기까지 덮어쓰세요 ▲▲▲
-
-        
+ 
+        self._create_toolbar() # 1. 툴바를 먼저 생성
         if pdf_path: self.import_pdf_from_path(pdf_path)
+        
         self._apply_initial_layout()
+        # 3. 툴바가 만들어진 후에 UI 상태를 동기화합니다. (시동 걸기)
+        self._sync_ui_to_current_mode() 
+        
+        self._update_undo_redo_hint()
+        self._update_status()
         
         # ===== ▼▼▼ 이 부분을 최종 코드로 교체해주세요 ▼▼▼ =====
         self.setStyleSheet("""
@@ -1632,17 +1637,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             }
             /* ===== ▲▲▲ 여기까지 추가 ▲▲▲ ===== */
         """)
-        
-        
-        
-        
-        
-        if pdf_path: self.import_pdf_from_path(pdf_path)
-        self._apply_initial_layout()
-        self._sync_ui_to_current_mode() # <-- 이 부분을 수정!
-        self._update_undo_redo_hint()
-        self._update_status()
-            
+ 
             
     def copy_format(self):
         """선택된 첫 번째 항목의 개별 서식을 클립보드에 복사합니다."""
