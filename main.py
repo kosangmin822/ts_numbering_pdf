@@ -4,6 +4,9 @@
 """
 TS Numbering Tool (v6.01) - Refactored Version
 """
+# main.py
+
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 # --- 기본/외부 라이브러리 ---
@@ -13,19 +16,21 @@ from collections import defaultdict
 from datetime import datetime
 from typing import List, Optional, Tuple
 
-import fitz  # PyMuPDF
+import fitz
 import pandas as pd
 import requests
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtMultimedia import QSoundEffect
-from PySide6.QtCore import QThread
+
+# ▼▼▼ 스레딩 기능에 필요한 모든 부품을 여기서 import 합니다 ▼▼▼
+from PySide6.QtCore import QObject, Signal, Slot, QThread
 
 
-# --- 직접 만든 모듈들 가져오기 ---
+# --- 직접 만든 모듈들 ---
 from core.models import MarkItem, StampItem, LabelStyle
 from utils.helpers import (
     resource_path, icon_if, dim_format, normalize_signed_text,
-    strip_prefix_for_value, _log_error, _apply_page_rotation_xy
+    strip_prefix_for_value, _log_error
 )
 from ui.delegates import ComboDelegate, NumericDelegate
 from ui.views import PdfScene, PdfView, ThumbnailLabel
@@ -36,21 +41,36 @@ from ui.dialogs import (
 
 # --- 상수 정의 ---
 APP_NAME = "TS Numbering for PDF"
-APP_VER  = "v6.01 Refactored"
-TSN_VERSION  = "6.01"
+APP_VER  = "v6.02_3D_Viewer"
+TSN_VERSION  = "6.02"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME= "project.json"
 
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
 
-
 # =====================================================================
 #  메인 윈도우 클래스
 # =====================================================================
-class PdfAnnotator(QtWidgets.QMainWindow):
-    
-    # main.py의 publish_project 함수 (수정 후)
 
+
+class Worker(QObject):
+    finished = Signal(object)
+    error = Signal(str)
+
+    @Slot(str)
+    def load_model(self, path):
+        """백그라운드 스레드에서 3D 모델을 로드하는 함수"""
+        try:
+            import trimesh
+            geometry = trimesh.load(path, process=False)
+            self.finished.emit(geometry)
+        except Exception as e:
+            self.error.emit(str(e))
+            
+class PdfAnnotator(QtWidgets.QMainWindow):
+    # Worker를 시작시키는 신호 추가
+    start_loading_3d = Signal(str)
+    
     def publish_project(self):
         SERVER_URL = "http://127.0.0.1:5000/api/publish"
 
@@ -1106,7 +1126,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     
     def __init__(self, pdf_path: Optional[str]=None):
         super().__init__()
-
+        
         # --- 개발자 모드 및 평가판 기능 ---
         DEV_MODE = True # 배포 시 False로 변경
 
@@ -1125,7 +1145,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 QtWidgets.QMessageBox.information(self, "환영합니다", f"평가판이 시작되었습니다. {days_left}일 동안 사용하실 수 있습니다.")
         
         self.setWindowTitle(f"{APP_NAME} ({APP_VER}){trial_message}"); self.resize(1600,1000)
-        
         self._ee_armed = False
         self._ee_prev_state = False
         self._ee_orig_vol = 0.7
@@ -1273,6 +1292,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # self.scene=PdfScene(self); self.view=PdfView(self.scene,self); self.setCentralWidget(self.view)
         # 3d로 하면서 이 부분 추석처리.
         
+        
+        
                 # ▼▼▼ [수정 후 코드] ▼▼▼
         # 1. 탭 위젯을 생성하고 중앙에 배치합니다.
         self.tab_widget = QtWidgets.QTabWidget()
@@ -1383,7 +1404,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.page_dock.setWidget(page_dock_container)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.page_dock) # << 왼쪽 영역에 추가
 
-        # --- 2. 오른쪽 '리스트' 도크 생성 (단순화된 부분) ---
         # --- 2. 오른쪽 '리스트' 도크 생성 (테이블 전환 기능 추가) ---
         self.dock = QtWidgets.QDockWidget("리스트", self)
         dock_container = QtWidgets.QWidget()
@@ -1403,10 +1423,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         dock_layout.addWidget(self.dock_stack) # 스택 위젯을 도크에 추가
         self.dock.setWidget(dock_container)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.dock)
-        
-        
-        
-        
         
         
         # --- 메뉴바 및 액션 설정 ---
@@ -1430,12 +1446,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         m_file.addSeparator()
         a_imp=m_file.addAction("Import PDF…"); a_imp.triggered.connect(self.import_pdf)
         m_file.addSeparator()
-        
-        # 3종세트 저장 메뉴 삭제.
-        # a_bundle = m_file.addAction("Export: save all (Excel, PDF, JPG)"); a_bundle.triggered.connect(self.save_bundle_autoname)
-        # m_file.addSeparator()
-        # 여기까지        
-        
+  
         a_pdf  = m_file.addAction("Export PDF…"); a_pdf.triggered.connect(self._cmd_export_pdf)
         a_csv  = m_file.addAction("Export CSV…"); a_csv.triggered.connect(self.export_csv_dialog)
         a_xlsx = m_file.addAction("Export XLSX…"); a_xlsx.triggered.connect(self.export_xlsx_dialog)
@@ -1447,8 +1458,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.a_highlight = m_view.addAction("항목 하이라이트 켜기"); self.a_highlight.setCheckable(True)
         self.a_highlight.setChecked(True); self.a_highlight.toggled.connect(self.toggle_highlighting)
         self.a_highlight.setShortcut("Ctrl+H")
-        
-          
+
         # 보기 메뉴
         self.a_flow_menu = m_view.addAction("흐름도 보기")
         self.a_flow_menu.setCheckable(True)
@@ -1534,15 +1544,22 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+C"), self.table, activated=self.copy_format)
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+V"), self.table, activated=self.paste_format)
         
+        # 4. 백그라운드 스레드 등 비-UI 컴포넌트 설정 (⭐️ 여기가 좋습니다)
+        # ▼▼▼ 3D 로딩을 위한 스레드 설정 ▼▼▼
+        self.thread = QThread()
+        self.worker = Worker()
+        self.worker.moveToThread(self.thread)
+        self.start_loading_3d.connect(self.worker.load_model)
+        self.worker.finished.connect(self.on_3d_load_finished)
+        self.worker.error.connect(self.on_3d_load_error)
+        self.thread.start()
+        # ▲▲▲ 스레드 설정 끝 ▲▲▲
         
-        # --- 단축키 설정 ---
-        # ... (기존 단축키 설정 코드 생략) ...
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+V"), self.table, activated=self.paste_format)
-     
-        
-        # --- 초기화 및 마무리 ---
-        self._create_toolbar()
-        
+        # 5. 최종 윈도우 설정
+        self._apply_initial_layout()
+        self._sync_ui_to_current_mode()
+        self._update_undo_redo_hint()
+        self._update_status()
 
         # ===== 사운드 예열 코드 최종 수정본 =====
         try:
@@ -1710,66 +1727,53 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     # PdfAnnotator 클래스에 새 메서드로 추가
 
     # main.py의 open_3d_model 함수 (최종 수정본)
-
+    
+    # 3D 모델 열기 (신호만 보내는 역할)
+    # ▼▼▼ 3D 뷰어 관련 메서드들 ▼▼▼
     def open_3d_model(self):
-        import trimesh
-        import pyvista as pv
-        from pyvistaqt import QtInteractor
-
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Open 3D Model", "", "CAD Files (*.stp *.step *.igs *.iges *.x_t)"
         )
         if not path:
             return
+        self.statusBar().showMessage("3D 모델을 불러오는 중입니다... (백그라운드 작업)")
+        self.start_loading_3d.emit(path)
 
-        try:
-            self.statusBar().showMessage("3D 모델을 불러오는 중입니다...")
-            mesh = trimesh.load(path)
-            self.statusBar().clearMessage()
+    def on_3d_load_finished(self, geometry):
+        import pyvista as pv
+        from pyvistaqt import QtInteractor
+        from trimesh.path.path import Path3D
+        import trimesh
 
-            for i in reversed(range(self.vlayout_3d.count())):
-                self.vlayout_3d.itemAt(i).widget().deleteLater()
-            
-            plotter = QtInteractor(self.widget_3d)
-            self.vlayout_3d.addWidget(plotter.interactor)
-
-            # ▼▼▼ [수정 시작] 모든 경우를 처리하는 최종 로직 ▼▼▼
-            
-            if isinstance(mesh, trimesh.Scene):
-                # 1. 조립품(Scene)일 경우
-                self.statusBar().showMessage(f"{len(mesh.geometry)}개의 지오메트리를 렌더링합니다...")
-                # 조립품 안의 각 부품(geometry)을 순회
-                for geom in mesh.geometry.values():
-                    # 각 부품이 PointCloud인지 Trimesh인지 다시 한번 확인
-                    if isinstance(geom, trimesh.PointCloud):
-                        pv_mesh = pv.PolyData(geom.vertices)
-                        plotter.add_mesh(pv_mesh, cmap="viridis", render_points_as_spheres=True)
-                    else: # Trimesh(단일 부품)라고 가정
-                        pv_mesh = pv.wrap(geom)
-                        plotter.add_mesh(pv_mesh, cmap="viridis", show_edges=True)
-
-            elif isinstance(mesh, trimesh.PointCloud):
-                # 2. 점 구름(PointCloud)일 경우
-                self.statusBar().showMessage(f"{len(mesh.vertices)}개의 점을 렌더링합니다...")
-                pv_mesh = pv.PolyData(mesh.vertices)
-                plotter.add_mesh(pv_mesh, cmap="viridis", render_points_as_spheres=True)
-
-            else:
-                # 3. 단일 부품(Trimesh)일 경우
-                pv_mesh = pv.wrap(mesh)
-                plotter.add_mesh(pv_mesh, cmap="viridis", show_edges=True)
-            
-            self.statusBar().clearMessage()
-            # ▲▲▲ [수정 끝] ▲▲▲
-            
-            self.tab_widget.setCurrentWidget(self.widget_3d)
-
-        except Exception as e:
-            _log_error(self, "3D 모델 로딩 오류", e)
-            self.statusBar().showMessage("3D 모델을 불러오는 데 실패했습니다.", 5000)
+        self.statusBar().showMessage("3D 모델 렌더링 중...")
+        for i in reversed(range(self.vlayout_3d.count())):
+            self.vlayout_3d.itemAt(i).widget().deleteLater()
         
-            
-    
+        plotter = QtInteractor(self.widget_3d)
+        self.vlayout_3d.addWidget(plotter.interactor)
+
+        if isinstance(geometry, trimesh.Scene):
+            for geom in geometry.geometry.values():
+                if isinstance(geom, trimesh.PointCloud):
+                    plotter.add_mesh(pv.PolyData(geom.vertices), cmap="viridis", render_points_as_spheres=True)
+                elif isinstance(geom, Path3D):
+                    plotter.add_mesh(pv.lines_from_points(geom.vertices), color="yellow", line_width=5)
+                else:
+                    plotter.add_mesh(pv.wrap(geom), style='surface', color='lightgrey', show_feature_edges=True, edge_color='black', line_width=1)
+        elif isinstance(geometry, trimesh.PointCloud):
+            plotter.add_mesh(pv.PolyData(geometry.vertices), cmap="viridis", render_points_as_spheres=True)
+        elif isinstance(geometry, Path3D):
+            plotter.add_mesh(pv.lines_from_points(geometry.vertices), color="yellow", line_width=5)
+        else:
+            plotter.add_mesh(pv.wrap(geometry), style='surface', color='lightgrey', show_feature_edges=True, edge_color='black', line_width=1)
+        
+        self.statusBar().showMessage("3D 모델 렌더링 완료.", 3000)
+        self.tab_widget.setCurrentWidget(self.widget_3d)
+
+    def on_3d_load_error(self, error_message):
+        _log_error(self, "3D 모델 로딩 오류", Exception(error_message))
+        self.statusBar().showMessage("3D 모델을 불러오는 데 실패했습니다.", 5000)
+
         
     def _apply_initial_layout(self):
         try: self.showMaximized()
@@ -1782,7 +1786,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         ]
         
         self.resizeDocks([self.page_dock, self.dock], sizes, QtCore.Qt.Horizontal)
-    
     
     # 스페셜함수 적용 함수 새로 생성. v2.95에서 함.
     def set_individual_style(self):
