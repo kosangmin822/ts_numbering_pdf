@@ -1827,7 +1827,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         plotter.reset_camera()
         
         # 6. 화면을 3D 탭으로 전환합니다.
-        self.tab_widget.setCurrentWidget(self.widget_3d)
+        # self.tab_widget.setCurrentWidget(self.widget_3d)
+        # ▼▼▼ [수정 3] 대신 상태 표시줄에 완료 메시지를 표시 ▼▼▼
+        filename = ""
+        if hasattr(self, 'last_opened_3d_path'):
+            filename = os.path.basename(self.last_opened_3d_path)
+        self.statusBar().showMessage(f"'{filename}' 3D 모델 로딩 완료.", 4000)
 
         # 7. 마지막으로 사용자에게 성공 메시지를 보여줍니다.
         filename = ""
@@ -2021,9 +2026,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_status()
         self._update_stamp_button_icon()
     
-    
-    
-    
     def open_project_dialog(self):
         # ===== ▼▼▼ 수정 시작 ▼▼▼ =====
         if not self._maybe_save("프로젝트 열기", "새로운 파일을 엽니다.\n현재 파일을 저장하시겠습니까?"):
@@ -2032,15 +2034,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if path: self.open_project(path)
         # ===== ▲▲▲ 수정 끝 ▲▲▲ =====
         
-        
-    # 스페셜 서식 적용 위해 교체 v2.95에서 함..
-    
-    # main.py의 PdfAnnotator 클래스 내부
-
-    # main.py의 PdfAnnotator 클래스 내부
-
-    # main.py의 PdfAnnotator 클래스 내부
-
     def open_project(self, path):
         try:
             # 1. 파일을 먼저 열고 모든 데이터를 메모리로 읽어들입니다.
@@ -2056,7 +2049,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         except Exception as e:
             _log_error(self, "프로젝트 파일 열기 오류", e)
-            QtWidgets.QMessageBox.critical(self, "오류", f"프로젝트 파일을 여는 데 실패했습니다:\n{e}")
             return
 
         # 2. 파일 읽기에 완전히 성공했다면, 그 때서야 현재 상태를 초기화합니다.
@@ -2067,7 +2059,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 3. 읽어들인 데이터로 프로그램 상태를 하나씩 복원합니다.
         self.doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         self.numbering_mode = meta.get("numbering_mode", "global")
-        self.cur_page_index = int(meta.get("current_page", 0))
+        self.cur_page_index = 0 # <<--- [수정 2] 항상 첫 페이지(인덱스 0)로 시작
         self.render_scale = int(meta.get("render_scale", 2))
         self.style.from_dict(meta.get("style", {}))
     
@@ -2088,25 +2080,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         for s_data in meta.get("stamps", []):
             self.stamps.append(StampItem(**s_data))
         
-        # 넘버링 모드에 따라 다음 번호 결정
-        if self.numbering_mode == 'global':
-            if self.items:
-                max_no = 0
-                for item in self.items:
-                    if item.no % 1 == 0: max_no = max(max_no, int(item.no))
-                
-                suggested_no = max_no + 1
-                new_next_no, ok = QtWidgets.QInputDialog.getInt(
-                    self,                                                         # 1. 부모 위젯
-                    "다음 번호 지정",                                               # 2. 창 제목
-                    f"마지막 번호는 {max_no}번입니다. 이어갈 번호를 지정해 주세요.",    # 3. 라벨 텍스트
-                    suggested_no,                                                 # 4. 기본값 (value)
-                    1                                                             # 5. 최소값 (minValue)
-                )
-                self.next_no = float(new_next_no) if ok else float(suggested_no)
-            else:
-                self.next_no = 1.0
-        
+
         # 3D 모델 로드 준비
         if model_path_info:
             if model_path_info.startswith("embedded:"):
@@ -2131,8 +2105,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.project_dir = os.path.dirname(path)
         
         # 이 함수가 PDF 뷰어, 테이블, 썸네일 등 모든 것을 화면에 다시 그립니다.
-        self.load_page(self.cur_page_index) 
-        
+        self.load_page(self.cur_page_index) # <<--- [수정 1] 화면을 먼저 로드
+
         self._set_dirty(False)
         self._update_window_title()
         self._update_undo_redo_hint()
@@ -2140,8 +2114,24 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_page_navigation_ui()
         self._populate_thumbnails()
         self._update_stamp_button_icon()
-
-
+            
+        # 6. [수정 1] 모든 화면이 로드된 후, 마지막으로 다음 번호 지정 대화상자 호출
+        if self.numbering_mode == 'global':
+            if self.items:
+                max_no = 0
+                for item in self.items:
+                    if item.no % 1 == 0: max_no = max(max_no, int(item.no))
+                
+                suggested_no = max_no + 1
+                new_next_no, ok = QtWidgets.QInputDialog.getInt(
+                    self, "다음 번호 지정",
+                    f"마지막 번호는 {max_no}번입니다. 이어갈 번호를 지정해 주세요.",
+                    suggested_no, 1
+                )
+                self.next_no = float(new_next_no) if ok else float(suggested_no)
+            else:
+                self.next_no = 1.0
+        
         
     def save_project(self) -> bool:
         if self.doc is None:
@@ -2821,7 +2811,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             except Exception:
                 pass
         self.shell_items = []
-
         
     # 총알구멍 삭제 함수 v3.33에서...
     def clear_bullet_holes(self):
@@ -2829,14 +2818,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         for item in self.bullet_hole_items:
             self.scene.removeItem(item)
         self.bullet_hole_items.clear()
-    
-    
-    # 흐름도 기능 실제 기능 함수 v2.90에서 추가.
-    # 기능을 제대로 하지 않아서 통째로 교체 v2.91에서함.
-    # 선길이 투명도 조절을 위해 v2.92에서 통교체.
-    # 스페셜 서식 적용 위해 통째로 교체. v2.95에서함.
-    # 스페셜 서식 넘버링 흐름도에서 반영하기 위해 수정. v2.96에서...
-    
     
     def _draw_flow_elements(self):
         """(주석 추가됨) 아이콘과 텍스트 라벨을 포함한 흐름도를 그립니다."""
@@ -2974,17 +2955,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 2. 흐름도 보기가 켜져 있을 때만 새로 그림
         if self.flow_view_enabled:
             self._draw_flow_elements()
-    
-    
-    
-    # 스페셜 서식 적용 위해 수정. v2.95에서..
+
+
     def _ellipse_brush(self, style: LabelStyle):
         if style.fill_none or style.fill_color.alpha()==0: return QtCore.Qt.NoBrush
         return QtGui.QBrush(style.fill_color)
 
-
-    # 넘버링 흐름도 보기 기능을 제대로 하지 않아서 수정. v2.91에서함.
-    # 스페셜 서식 적용 위해 통째로 교체. v2.95에서함.
     def _draw_label(self,it:MarkItem):
         # --- 수정: 그리기 전에 사용할 스타일 결정 ---
         style = it.custom_style if it.custom_style else self.style
@@ -3003,9 +2979,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         ellipse.setZValue(2)
         txt.setZValue(2)
 
-    # insert 기능 위해 변경.   v3.14...
-    # 수정함. v3.21
-    
     def _append_table_row(self,it:MarkItem):    
         r=self.table.rowCount(); self.table.insertRow(r)
         
@@ -3026,14 +2999,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.table.setItem(r,3,QtWidgets.QTableWidgetItem(normalize_signed_text(it.tol_plus)))
         self.table.setItem(r,4,QtWidgets.QTableWidgetItem(normalize_signed_text(it.tol_minus)))
     
-    
-    
     def on_table_cell_clicked(self, row: int, col: int):
         # ===== ▼▼▼ 수정: 하이라이트 기능이 켜져 있을 때만 실행하도록 변경 ▼▼▼ =====
         if not self.highlight_enabled:
             return
         self._highlight_from_row(row)
-    
     
     def on_table_selection_changed(self):
         ranges = self.table.selectedRanges()
@@ -3112,8 +3082,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         
         self._set_dirty()
     
-    
-                
         
     def _sync_highlight_from_table(self):
         QtCore.QTimer.singleShot(0, self._apply_highlight_from_table)
@@ -3128,16 +3096,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if row < 0:
             self.clear_highlight()
             return
-        
-        # ===== ▼▼▼ [수정] 낡은 로직을 새롭고 안전한 방식으로 교체 ▼▼▼ =====
-        # 기존의 위험한 방식 대신, 이미 검증된 _highlight_from_row 함수를 호출합니다.
+
         self._highlight_from_row(row)
-        # ===== ▲▲▲ 여기까지 수정 ▲▲▲ =====
+
 
     
-
-    # 스페셜 서식 넘버링 흐름도 포함 저장 위해 수정.... v2.99에서...
-    # 딴거 할라다가 이걸 찾음... 개별서식 하이라이트 크기 적용 오류 해결. v3.09에서...
     def highlight_label(self, it: MarkItem):
             if not it: return
             if it.page_index != self.cur_page_index:
@@ -3179,13 +3142,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self._highlight_ellipse=None
         self._highlight_item_no=None
     
-    # ===== ▼▼▼ 아래 새 함수를 추가해주세요 ▼▼▼ =====
-    # 하이라이트 해제 하려고 함수 추가. 제기랄... 오늘은 v3.00까지만 할랬는데..ㅠㅠㅠ v3.00에서...
+
     def clear_selection_and_highlight(self):
         """테이블의 선택 상태와 화면의 하이라이트를 모두 해제합니다."""
         self.table.clearSelection()
         self.clear_highlight()
-    # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
+
 
     def _reapply_highlight_from_selection(self,same_page_only=False):
         rows=sorted({ix.row() for ix in self.table.selectedIndexes()})
@@ -3203,11 +3165,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     
     
     def on_scene_moved(self, scene_pos: QtCore.QPointF):
-        # ▼▼▼ 여기에 print 문 추가 ▼▼▼
-        # (너무 많이 출력될 수 있으니 #으로 주석 처리해두고, 버그 발생 직후에만 주석을 풀고 테스트해보세요)
-        # print(f"    [탐침 #4] 마우스 움직임 감지됨. 현재 모드: '{self.active_mode}'")
-        # ▲▲▲ 여기까지 추가 ▲▲▲
-        # 1. 모든 미리보기 아이템을 일단 숨깁니다.
         if self._preview_ellipse: self._preview_ellipse.hide()
         if self._preview_text: self._preview_text.hide()
         if self._stamp_preview_item: self._stamp_preview_item.hide()
@@ -3359,8 +3316,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_status()
         self._set_dirty()
     
-    
-    
     def redo(self):
         if not self.redo_stack: return
 
@@ -3387,12 +3342,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_status()
         self._set_dirty()
             
-    
-    # insert 기능 위해서 새롭게 함수 추가.(3개) v3.14.....
-    # 빈행 삽입시 중복번호 오류 관련 수정. v3.16에서...
-    # 빈행 삽입시 나타나는 각종 오류 수정...또함.... v3.18에서...또또또...
-    # 빈행 삽입 후 작업 이어갈 시 소수점이 나타나는 문제 해결.. v3.20에서 함.
-    # start_insert_process 삭제하고 해당 함수 넣음.
     
     def insert_excel_style(self):
         if self.table.currentRow() < 0:
@@ -3457,9 +3406,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.view.setCursor(QtCore.Qt.CrossCursor)
         self._refresh_preview_text()
     
-    
-    
-    # 새로고침 오류 문제로 수정. v3.24에서..
     def delete_items(self):
         """선택한 항목을 삭제합니다. 현재 보이는 목록을 기준으로 안전하게 작동합니다."""
         selected_rows = sorted(list(set(index.row() for index in self.table.selectedIndexes())))
@@ -3506,7 +3452,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 else:
                     # 전체 넘버링 모드일 경우, 다음 번호(next_no)를 미리보기로 표시
                     self._preview_text.setPlainText(str(int(self.next_no)))
-    # 소수점 아래 수 더러워지는거 해결. ex 10.4999998 등... v3.17에서..
+
     def _get_precision_no(self, target_no):
         """0.1 단위로 조절 가능한 소수점 번호 입력창을 엽니다."""
         dialog = QtWidgets.QDialog(self)
@@ -3532,10 +3478,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # ===== ▼▼▼ 수정: 반올림하여 부동소수점 오차 제거 ▼▼▼ =====
             return round(spinbox.value(), 2), True
         return 0.0, False
-
-
     
-    # 빈행 삽입 시 큰수 역순으로 +1씩 밀어내기 적용 v3.17에서..
     def execute_item_insertion(self, pdf_xy):
         """(수정됨) 새 항목을 현재 모드에 맞게 안전하게 삽입하고 화면을 새로고침합니다."""
         choice = self.insert_option
@@ -3564,7 +3507,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         if choice == "precision":
             QtWidgets.QMessageBox.information(self, "삽입 완료", f"{insert_no:g}번이 새롭게 삽입되었습니다.")
-    
                
         
     def cancel_insert_mode(self):
@@ -3573,11 +3515,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.insert_mode = False
             self.view.setCursor(QtCore.Qt.ArrowCursor)
             self._update_status()
-    # 여기까지 3.14에서 추가함...
     
     
-            
-    # 라벨 서식 단축키 지정 위해 함수2개 추가. v3.04에서...
     def adjust_label_style(self, property_name: str, delta: int):
         """전역 라벨 스타일의 숫자 속성을 조절하고 화면을 새로고침합니다."""
         current_value = getattr(self.style, property_name)
@@ -3619,11 +3558,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if self.flow_view_enabled:
             self._draw_flow_elements()
     
-    
-    # 넘버링 흐름도 기능 만드려고 추가함 v2.90에서...
-    # 특정번호 삭제 후 재정렬 위해 신규 생성. v2.89에서 생성(제미나이 추천)
-    # delete 기능 재정의. 재정렬 없이 삭제만... v3.15...
-    # 리넘버링시 실수 항목 불포함 오류 수정.
     # delete_and_renumber_items 삭제후 통합. v3.22에서...
     def toggle_highlighting(self, checked):
         """하이라이트 활성화 상태를 토글합니다."""
