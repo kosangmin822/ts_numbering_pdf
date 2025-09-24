@@ -37,7 +37,8 @@ from ui.delegates import ComboDelegate, NumericDelegate
 from ui.views import PdfScene, PdfView, ThumbnailLabel
 from ui.dialogs import (
     NewProjectDialog, InsertDialog, AppendPdfDialog, StampSettingsDialog,
-    StampManagerDialog, ShortcutHelpDialog, NumberingModeDialog
+    StampManagerDialog, ShortcutHelpDialog, NumberingModeDialog,
+    SaveOptionsDialog # <--- 이 부분을 추가해주세요.
 )
 
 # --- 상수 정의 ---
@@ -88,7 +89,7 @@ class Worker(QObject):
                 print(f"'{cache_filename}' 캐시 파일을 저장 중입니다...")
                 if isinstance(geometry, trimesh.Scene):
                     # Scene 객체는 모든 부품을 하나의 파일로 합쳐서 저장
-                    merged_mesh = geometry.dump(concatenate=True)
+                    merged_mesh = geometry.to_geometry()
                     merged_mesh.export(cache_path)
                 else:
                     geometry.export(cache_path)
@@ -1209,6 +1210,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.project_dir = None   # <--- 이 줄 추가
         self.project_name = None  # <--- 이 줄 추가
         self.pdf_path = None # <<--- 바로 이 줄입니다. 이 줄을 추가해야 합니다.
+        self.model_path = None
         self.doc = None
         self.cur_page_index = 0
         self.numbering_mode = 'global' # <--- 이 줄을 추가해주세요
@@ -1476,13 +1478,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         # --- 5. 백그라운드 스레드 설정 ---
         self.thread = QThread()
+        self.thread.start()
         self.thread.setPriority(QThread.LowestPriority) # <<--- 이 줄 추가
         self.worker = Worker()
         self.worker.moveToThread(self.thread)
         self.start_loading_3d.connect(self.worker.load_model)
         self.worker.finished.connect(self.on_3d_load_finished)
         self.worker.error.connect(self.on_3d_load_error)
-        self.thread.start()
 
         # --- 6. 사운드 예열 ---
         try:
@@ -1588,10 +1590,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def closeEvent(self, event):
         """창이 닫힐 때 호출되는 이벤트 핸들러입니다."""
         if self._maybe_save("프로그램 종료", "프로그램을 종료합니다.\n현재 파일을 저장하시겠습니까?"):
+            # ▼▼▼ [추가] 백그라운드 스레드를 안전하게 종료합니다. ▼▼▼
+            print("백그라운드 스레드를 종료합니다...")
+            self.thread.quit()  # 1. 스레드에게 이벤트 루프를 종료하라고 알림
+            self.thread.wait()  # 2. 스레드가 완전히 끝날 때까지 기다림
+            print("스레드 종료 완료.")
+            # ▲▲▲
             event.accept()  # 종료 허용
         else:
-            event.ignore()  # 종료 취소            
-    
+            event.ignore()  # 종료 취소 
+        
     
     def _create_shortcuts(self):
         QtGui.QShortcut(QtGui.QKeySequence.Delete, self.stamp_table, 
@@ -1656,7 +1664,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         m_file.addSeparator()
         
         # ▼▼▼ 3D 모델 열기 메뉴 추가 ▼▼▼
-        a_open_3d = m_file.addAction("Open 3D Model...")
+        a_open_3d = m_file.addAction("import 3D Model...")
         a_open_3d.triggered.connect(self.open_3d_model)
         # ▲▲▲
         m_file.addSeparator()
@@ -1737,13 +1745,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     
     # ▼▼▼ 3D 뷰어 관련 메서드들 ▼▼▼
     def open_3d_model(self):
+        # ▼▼▼ [추가] 프로젝트가 열려있는지 먼저 확인 ▼▼▼
+        if not self.doc:
+            QtWidgets.QMessageBox.warning(self, "알림", "먼저 프로젝트를 열거나 생성해야 합니다.")
+            return
+        # ▲▲▲
+        
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Open 3D Model", "", "CAD Files (*.stp *.step *.igs *.iges *.x_t)"
         )
         if not path:
             return
-        
-        # ▼▼▼ [수정 시작] QProgressDialog 생성 및 표시 ▼▼▼
         
         # 1. 프로그레스 대화상자를 생성합니다.
         self.progress_dialog = QtWidgets.QProgressDialog(
@@ -1760,6 +1772,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 2. 백그라운드 스레드에 작업 시작 신호를 보냅니다.
         self.start_loading_3d.emit(path)
         # ▲▲▲ [수정 끝] ▲▲▲
+        self.model_path = path # <--- 이 줄을 추가해주세요
         self.last_opened_3d_path = path
 
         
@@ -1975,6 +1988,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.stamps.clear()
         self.registered_stamps.clear()
         self.current_stamp_index = 0
+        
+        # ▼▼▼ [추가] 3D 뷰어 및 관련 상태 초기화 ▼▼▼
+        self._clear_3d_viewer()
+        # ▲▲▲
+
 
         # 되돌리기/되살리기 스택 초기화
         self.undo_stack.clear()
@@ -2062,6 +2080,35 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                         custom_style=custom_style)
             self.items.append(it)
         
+        # ▼▼▼ [수정 시작] 3D 모델 로딩 로직 수정 ▼▼▼
+        model_path_info = meta.get("3d_model_path", None)
+
+        if model_path_info:
+            if model_path_info.startswith("embedded:"):
+                # 1. 파일이 포함된 경우
+                import tempfile
+
+                original_filename = model_path_info.split(":", 1)[1]
+                # 임시 폴더에 model.data 파일을 추출
+                temp_dir = tempfile.gettempdir()
+                self.model_path = os.path.join(temp_dir, original_filename)
+                zf.extract("model.data", path=temp_dir)
+                # 임시 파일의 이름을 원래 이름으로 변경
+                os.rename(os.path.join(temp_dir, "model.data"), self.model_path)
+
+                print(f"포함된 3D 모델을 임시 경로에 풀어놓고 로드합니다: {self.model_path}")
+                self.start_loading_3d.emit(self.model_path)
+
+            else:
+                # 2. 경로만 저장된 경우 (기존 방식)
+                self.model_path = model_path_info
+                if os.path.exists(self.model_path):
+                    print(f"연결된 3D 모델을 로드합니다: {self.model_path}")
+                    self.start_loading_3d.emit(self.model_path)
+                else:
+                    self.statusBar().showMessage(f"연결된 3D 모델을 찾을 수 없습니다: {self.model_path}", 5000)
+        # ▲▲▲ [수정 끝] ▲▲▲
+        
         self.load_page(self.cur_page_index)
         self.project_path=path
         self._set_dirty(False)
@@ -2076,48 +2123,53 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if self.doc is None:
             QtWidgets.QMessageBox.warning(self, "알림", "저장할 PDF 문서가 없습니다.")
             return False
-        # ===== ▼▼▼ 수정 시작 ▼▼▼ =====
         if not self.project_path:
-            # 저장된 적이 없으면 '다른 이름으로 저장'을 실행
             return self.save_project_as()
-        
+
+        save_option = "link"
+        if self.model_path and os.path.exists(self.model_path):
+            option = SaveOptionsDialog.get_save_option(self)
+            if not option:
+                return False
+            save_option = option
+
         self._sync_items_from_table()
-        self._write_tsn(self.project_path)
+        self._write_tsn(self.project_path, save_option)
         self._set_dirty(False)
         self.statusBar().showMessage(f"✅ 프로젝트 저장 완료: {os.path.basename(self.project_path)}")
         return True
-        # ===== ▲▲▲ 수정 끝 ▲▲▲ =====
-
+    
     def save_project_as(self) -> bool:
         if self.doc is None:
             QtWidgets.QMessageBox.warning(self, "알림", "저장할 PDF 문서가 없습니다.")
             return False
             
-        # ===== ▼▼▼ 수정 시작 ▼▼▼ =====
-        # 프로젝트 정보가 있으면 기본 경로와 파일명으로 사용
         default_dir = self.project_dir or ""
         default_filename = f"{self.project_name}.tsn" if self.project_name else "project.tsn"
-        
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "프로젝트 다른 이름으로 저장", os.path.join(default_dir, default_filename), "TS Numbering (*.tsn)")
         
         if not path: return False
         if not path.lower().endswith(".tsn"): path += ".tsn"
         
+        save_option = "link"
+        if self.model_path and os.path.exists(self.model_path):
+            option = SaveOptionsDialog.get_save_option(self)
+            if not option:
+                return False
+            save_option = option
+
         self._sync_items_from_table()
-        self._write_tsn(path)
+        self._write_tsn(path, save_option)
         self.project_path = path
-        
-        # 파일명에서 프로젝트 이름 역추적 (사용자가 이름을 바꿨을 경우 대비)
         self.project_name = os.path.splitext(os.path.basename(path))[0]
         self.project_dir = os.path.dirname(path)
-        
         self._set_dirty(False)
         self.statusBar().showMessage(f"✅ 프로젝트 저장 완료: {os.path.basename(self.project_path)}")
         return True
-        # ===== ▲▲▲ 수정 끝 ▲▲▲ =====
-
+        
+    
     # 스페셜 서식 적용 위해 교체 v2.95에서...
-    def _write_tsn(self,path):
+    def _write_tsn(self, path, save_option="link"):
         pdf_bytes=self.doc.tobytes()
         items_data = []
         for it in self.items:
@@ -2145,7 +2197,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                   "rotation_min": self.stamp_rotation_min, "rotation_max": self.stamp_rotation_max,
               }
               # ▲▲▲ 여기까지 추가 ▲▲▲
-             }
+            }
+            # ▼▼▼ 바로 이 한 줄을 if문 앞에 추가해주시면 됩니다 ▼▼▼
+        save_option = "link"  # 3D 모델이 없을 경우를 대비한 기본값 설정
+        # ▼▼▼ [수정 시작] 저장 옵션에 따라 분기 처리 ▼▼▼
+        if save_option == "link" or not self.model_path:
+            meta["3d_model_path"] = self.model_path
+        else: # "embed" 옵션일 경우
+            # 경로 대신 "embedded:파일명" 형태로 저장하여 포함된 파일임을 표시
+            meta["3d_model_path"] = f"embedded:{os.path.basename(self.model_path)}"
+        # ▲▲▲ [수정 끝] ▲▲▲
+        
         with zipfile.ZipFile(path,"w",compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(TSN_META_NAME,json.dumps(meta,ensure_ascii=False,indent=2))
             zf.writestr(TSN_PDF_NAME,pdf_bytes)
@@ -2340,6 +2402,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.btn_next.setEnabled(False)
             self.spin_page.setEnabled(False)
 
+    def _clear_3d_viewer(self):
+        """3D 뷰어 탭의 모든 위젯을 삭제하고 모델 경로를 초기화합니다."""
+        for i in reversed(range(self.vlayout_3d.count())):
+            widget = self.vlayout_3d.itemAt(i).widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.model_path = None
 
     def _clear_thumbnails(self):
         """썸네일 뷰의 모든 위젯/아이템을 안전하게 삭제합니다."""

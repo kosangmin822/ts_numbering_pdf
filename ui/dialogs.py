@@ -382,3 +382,41 @@ class NumberingModeDialog(QtWidgets.QDialog):
     def select_page(self):
         self.choice = "page_specific"
         self.accept()
+        
+
+
+# ui/dialogs.py 파일 맨 아래에 추가
+class SaveOptionsDialog(QtWidgets.QDialog):
+    """3D 모델 저장 방식을 묻는 대화상자"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("저장 옵션 선택")
+        self.save_option = "link"  # 기본 선택
+
+        layout = QtWidgets.QVBoxLayout(self)
+        label = QtWidgets.QLabel("3D 모델 파일의 저장 방식을 선택해주세요.")
+        layout.addWidget(label)
+
+        self.radio_link = QtWidgets.QRadioButton("경로만 저장 (작은 파일 크기, 원본 파일 유지 필요)")
+        self.radio_link.setChecked(True)
+        self.radio_link.toggled.connect(lambda: self.set_option("link"))
+        layout.addWidget(self.radio_link)
+
+        self.radio_embed = QtWidgets.QRadioButton("파일을 프로젝트에 포함하여 저장 (완전한 백업, 파일 크기 커짐)")
+        self.radio_embed.toggled.connect(lambda: self.set_option("embed"))
+        layout.addWidget(self.radio_embed)
+
+        button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def set_option(self, option):
+        self.save_option = option
+
+    @staticmethod
+    def get_save_option(parent=None):
+        dialog = SaveOptionsDialog(parent)
+        if dialog.exec():
+            return dialog.save_option
+        return None
