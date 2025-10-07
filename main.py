@@ -825,6 +825,118 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         
         return group_box
 
+    def _create_layout_selector_group(self):
+        """화면 분할 레이아웃을 선택할 수 있는 버튼 그룹을 생성합니다."""
+        group_box = QtWidgets.QGroupBox("화면 구성")
+        group_box.setAlignment(QtCore.Qt.AlignCenter)
+        
+        group_layout = QtWidgets.QVBoxLayout(group_box)
+        group_layout.setContentsMargins(0, 12, 0, 2)
+        group_layout.setSpacing(0)
+        
+        button_toolbar = QtWidgets.QToolBar()
+        button_toolbar.setIconSize(QtCore.QSize(36, 36))
+        
+        # 레이아웃 모드 정의
+        layout_modes = [
+            ("default", "기본", "기본 레이아웃"),
+            ("layout1", "레이아웃1", "레이아웃 1"),
+            ("layout2", "레이아웃2", "레이아웃 2"),
+            ("layout3", "레이아웃3", "레이아웃 3"),
+        ]
+        
+        self.layout_buttons = []
+        
+        for mode_id, label, tooltip in layout_modes:
+            # 텍스트 기반 아이콘 생성 (간단한 레이아웃 표현)
+            btn = QtWidgets.QToolButton()
+            btn.setText(label)
+            btn.setToolTip(tooltip)
+            btn.setCheckable(True)
+            btn.setAutoExclusive(True)  # 한 번에 하나만 선택되도록
+            btn.setMinimumSize(50, 36)
+            
+            # 첫 번째 버튼(기본)을 선택 상태로 설정
+            if mode_id == "default":
+                btn.setChecked(True)
+            
+            # 클릭 시 해당 레이아웃 적용
+            btn.clicked.connect(lambda checked, m=mode_id: self._apply_layout_mode(m))
+            
+            button_toolbar.addWidget(btn)
+            self.layout_buttons.append((mode_id, btn))
+        
+        group_layout.addWidget(button_toolbar)
+        return group_box
+
+    def _apply_layout_mode(self, mode: str):
+        """선택된 레이아웃 모드를 적용합니다.
+        
+        Args:
+            mode: 레이아웃 모드 ID ("default", "layout1", "layout2", "layout3")
+        """
+        # 현재 레이아웃 모드 저장
+        self.current_layout_mode = mode
+        
+        print(f"레이아웃 모드 변경: {mode}")
+        self.statusBar().showMessage(f"화면 구성: {mode}", 2000)
+        
+        # TODO: 실제 레이아웃 변경 로직은 나중에 구현
+        # 각 모드에 따라 도크 위젯의 위치와 크기를 조정
+        if mode == "default":
+            # 기본 레이아웃: 왼쪽 페이지, 가운데 뷰어, 오른쪽 리스트
+            self._apply_default_layout()
+        elif mode == "layout1":
+            # 레이아웃 1: [2D 뷰어] | [3D 뷰어] | [리스트(좁게)]
+            self._apply_layout1()
+        elif mode == "layout2":
+            # 레이아웃 2: 사용자 정의 (나중에 구현)
+            self.statusBar().showMessage("레이아웃2 구성 준비 중...", 2000)
+            pass
+        elif mode == "layout3":
+            # 레이아웃 3: 사용자 정의 (나중에 구현)
+            self.statusBar().showMessage("레이아웃3 구성 준비 중...", 2000)
+            pass
+
+    def _apply_default_layout(self):
+        """기본 레이아웃을 적용합니다."""
+        # 왼쪽에 페이지 도크, 오른쪽에 리스트 도크
+        if hasattr(self, 'page_dock'):
+            self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.page_dock)
+            self.page_dock.show()
+        
+        if hasattr(self, 'dock'):
+            self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.dock)
+            self.dock.show()
+
+        
+        # 탭 모드로 전환
+        if hasattr(self, 'central_stack'):
+            self.central_stack.setCurrentIndex(0)
+
+    def _apply_layout1(self):
+        """레이아웃1: [2D 뷰어] | [3D 뷰어] | [리스트(좁게)]"""
+        # 1. 페이지 도크 숨기기
+        if hasattr(self, 'page_dock'):
+            self.page_dock.hide()
+        
+        # 2. 리스트 도크를 오른쪽에 좁게 표시
+        if hasattr(self, 'dock'):
+            self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.dock)
+            self.dock.show()
+            # 리스트 도크 너비를 좁게 설정
+            self.resizeDocks([self.dock], [250], QtCore.Qt.Horizontal)
+        
+        # 3. 분할 뷰 모드로 전환 (2D와 3D 동시 표시)
+        if hasattr(self, 'central_stack'):
+            self.central_stack.setCurrentIndex(1)  # 분할 뷰 표시
+        
+        # 4. 2D와 3D 비율을 1:1로 설정
+        if hasattr(self, 'split_view'):
+            total_width = self.split_view.width()
+            self.split_view.setSizes([total_width // 2, total_width // 2])
+        
+        self.statusBar().showMessage("레이아웃1: 2D+3D 비교 모드", 2000)
 
     # 이스터에그 진/출입 오류 수정.
     def _create_toolbar(self):
@@ -882,6 +994,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # ▼▼▼ 회전 액션 2개 정의 추가 ▼▼▼
         self.action_rotate_left = QtGui.QAction(self.rotate_left_icon, "페이지 좌로 회전", self); self.action_rotate_left.triggered.connect(self.rotate_page_left)
         self.action_rotate_right = QtGui.QAction(self.rotate_right_icon, "페이지 우로 회전", self); self.action_rotate_right.triggered.connect(self.rotate_page_right)
+
+        # ▼▼▼ 화면 레이아웃 선택 버튼 추가 ▼▼▼
+        self.current_layout_mode = "default"  # 현재 레이아웃 모드 저장
+        self.layout_buttons = []  # 레이아웃 버튼들을 저장할 리스트
 
         self._update_line_style_button_icon()
         self._update_line_style_button_icon()
@@ -945,6 +1061,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         main_layout.addWidget(self._create_toolbar_group(group_rotate_actions, "페이지 회전")); main_layout.addSpacing(18)
         main_layout.addWidget(self._create_toolbar_group(group4_actions, "라벨 및 흐름도 서식"))
         main_layout.addStretch(1)
+        
+        # ▼▼▼ 화면 레이아웃 선택 버튼 그룹 추가 ▼▼▼
+        main_layout.addWidget(self._create_layout_selector_group())
 
         self.main_toolbar.addWidget(custom_toolbar_widget)
     
@@ -1180,20 +1299,53 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.setWindowTitle(f"{APP_NAME} ({APP_VER}){trial_message}"); self.resize(1600,1000)
         
         # ▼▼▼ 탭 위젯 설정 코드 (삽입) ▼▼▼
-        # 1. 탭 위젯을 생성하고 중앙에 배치합니다.
-        self.tab_widget = QtWidgets.QTabWidget()
-        self.setCentralWidget(self.tab_widget)
-
-        # 2. 기존의 PDF 뷰어를 첫 번째 탭에 추가합니다.
+        # 1. PDF 뷰어 위젯들을 먼저 생성합니다.
         self.scene = PdfScene(self)
         self.view = PdfView(self.scene, self)
-        self.tab_widget.addTab(self.view, "2D View")
-
-        # 3. 3D 뷰어를 위한 두 번째 탭을 만듭니다. (지금은 빈 공간)
+        
+        # 2. 3D 뷰어를 위한 위젯 생성
         self.vlayout_3d = QtWidgets.QVBoxLayout()
         self.widget_3d = QtWidgets.QWidget()
         self.widget_3d.setLayout(self.vlayout_3d)
+        
+        # 3. 탭 위젯 생성 (기본 레이아웃용)
+        self.tab_widget = QtWidgets.QTabWidget()
+        self.tab_widget.addTab(self.view, "2D View")
         self.tab_widget.addTab(self.widget_3d, "3D View")
+        
+        # 4. 분할 뷰 위젯 생성 (레이아웃1용: 2D와 3D 동시 표시)
+        self.split_view = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        
+        # 2D 뷰를 담을 컨테이너 (분할뷰용)
+        self.view_2d_container = QtWidgets.QWidget()
+        view_2d_layout = QtWidgets.QVBoxLayout(self.view_2d_container)
+        view_2d_layout.setContentsMargins(0, 0, 0, 0)
+        view_2d_label = QtWidgets.QLabel("2D View")
+        view_2d_label.setAlignment(QtCore.Qt.AlignCenter)
+        view_2d_label.setStyleSheet("background-color: #E0E0E0; padding: 2px; font-weight: bold;")
+        view_2d_layout.addWidget(view_2d_label)
+        view_2d_layout.addWidget(self.view)
+        
+        # 3D 뷰를 담을 컨테이너 (분할뷰용)
+        self.view_3d_container = QtWidgets.QWidget()
+        view_3d_layout = QtWidgets.QVBoxLayout(self.view_3d_container)
+        view_3d_layout.setContentsMargins(0, 0, 0, 0)
+        view_3d_label = QtWidgets.QLabel("3D View")
+        view_3d_label.setAlignment(QtCore.Qt.AlignCenter)
+        view_3d_label.setStyleSheet("background-color: #E0E0E0; padding: 2px; font-weight: bold;")
+        view_3d_layout.addWidget(view_3d_label)
+        view_3d_layout.addWidget(self.widget_3d)
+        
+        self.split_view.addWidget(self.view_2d_container)
+        self.split_view.addWidget(self.view_3d_container)
+        self.split_view.setSizes([500, 500])  # 기본 1:1 비율
+        
+        # 5. 중앙 위젯 컨테이너 (탭 모드와 분할 모드를 전환)
+        self.central_stack = QtWidgets.QStackedWidget()
+        self.central_stack.addWidget(self.tab_widget)      # 0: 탭 모드
+        self.central_stack.addWidget(self.split_view)      # 1: 분할 모드
+        self.setCentralWidget(self.central_stack)
+        # ▲▲▲ [수정 끝] ▲▲▲
 
         # 신호/슬롯 연결
         self.scene.clicked.connect(self.on_clicked)
@@ -1344,20 +1496,53 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._egg_timer.setSingleShot(True)
         self._egg_timer.timeout.connect(self._reset_egg_sequence)
         
-        # 1. 탭 위젯을 생성하고 중앙에 배치합니다.
-        self.tab_widget = QtWidgets.QTabWidget()
-        self.setCentralWidget(self.tab_widget)
-
-        # 2. 기존의 PDF 뷰어를 첫 번째 탭에 추가합니다.
+        # 1. PDF 뷰어 위젯들을 먼저 생성합니다.
         self.scene = PdfScene(self)
         self.view = PdfView(self.scene, self)
-        self.tab_widget.addTab(self.view, "2D View")
-
-        # 3. 3D 뷰어를 위한 두 번째 탭을 만듭니다. (지금은 빈 공간)
+        
+        # 2. 3D 뷰어를 위한 위젯 생성
         self.vlayout_3d = QtWidgets.QVBoxLayout()
         self.widget_3d = QtWidgets.QWidget()
         self.widget_3d.setLayout(self.vlayout_3d)
+        
+        # 3. 탭 위젯 생성 (기본 레이아웃용)
+        self.tab_widget = QtWidgets.QTabWidget()
+        self.tab_widget.addTab(self.view, "2D View")
         self.tab_widget.addTab(self.widget_3d, "3D View")
+        
+        # 4. 분할 뷰 위젯 생성 (레이아웃1용: 2D와 3D 동시 표시)
+        self.split_view = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        
+        # 2D 뷰를 담을 컨테이너 (분할뷰용)
+        self.view_2d_container = QtWidgets.QWidget()
+        view_2d_layout = QtWidgets.QVBoxLayout(self.view_2d_container)
+        view_2d_layout.setContentsMargins(0, 0, 0, 0)
+        view_2d_label = QtWidgets.QLabel("2D View")
+        view_2d_label.setAlignment(QtCore.Qt.AlignCenter)
+        view_2d_label.setStyleSheet("background-color: #E0E0E0; padding: 2px; font-weight: bold;")
+        view_2d_layout.addWidget(view_2d_label)
+        view_2d_layout.addWidget(self.view)
+        
+        # 3D 뷰를 담을 컨테이너 (분할뷰용)
+        self.view_3d_container = QtWidgets.QWidget()
+        view_3d_layout = QtWidgets.QVBoxLayout(self.view_3d_container)
+        view_3d_layout.setContentsMargins(0, 0, 0, 0)
+        view_3d_label = QtWidgets.QLabel("3D View")
+        view_3d_label.setAlignment(QtCore.Qt.AlignCenter)
+        view_3d_label.setStyleSheet("background-color: #E0E0E0; padding: 2px; font-weight: bold;")
+        view_3d_layout.addWidget(view_3d_label)
+        view_3d_layout.addWidget(self.widget_3d)
+        
+        self.split_view.addWidget(self.view_2d_container)
+        self.split_view.addWidget(self.view_3d_container)
+        self.split_view.setSizes([500, 500])  # 기본 1:1 비율
+        
+        # 5. 중앙 위젯 컨테이너 (탭 모드와 분할 모드를 전환)
+        self.central_stack = QtWidgets.QStackedWidget()
+        self.central_stack.addWidget(self.tab_widget)      # 0: 탭 모드
+        self.central_stack.addWidget(self.split_view)      # 1: 분할 모드
+        self.setCentralWidget(self.central_stack)
+        # ▲▲▲ [수정 끝] ▲▲▲
         # ▲▲▲ [수정 끝] ▲▲▲
         self.scene.clicked.connect(self.on_clicked); self.scene.moved.connect(self.on_scene_moved)
         self.view.zoom_changed.connect(self._on_zoom_changed)
