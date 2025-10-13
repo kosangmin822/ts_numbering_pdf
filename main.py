@@ -40,6 +40,7 @@ from ui.dialogs import (
     StampManagerDialog, ShortcutHelpDialog, NumberingModeDialog,
     SaveOptionsDialog # <--- 이 부분을 추가해주세요.
 )
+from ui.styles import GLOBAL_STYLESHEET
 
 # --- 상수 정의 ---
 APP_NAME = "TS Numbering for PDF"
@@ -270,8 +271,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self._highlighted_stamp_rect = None
     # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
 
-    def _draw_stamp(self, stamp_item: StampItem):
+    def _draw_stamp(self, stamp_item: StampItem, scene=None):
         """StampItem 정보를 바탕으로 화면에 실제 크기를 반영하여 스탬프를 그립니다."""
+        if scene is None:
+            scene = self.scene
+            
         stamp_info = self.registered_stamps.get(stamp_item.stamp_key)
         if not stamp_info or not isinstance(stamp_info, dict):
             return
@@ -284,7 +288,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if pixmap.isNull():
             return
 
-        item = self.scene.addPixmap(pixmap)
+        item = scene.addPixmap(pixmap)
 
         # 1) 로컬 원점(0,0)을 '이미지 중심'으로 만들기 위해 오프셋을 -w/2, -h/2 로 설정
         rect = pixmap.rect()
@@ -812,7 +816,46 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         # 버튼들을 담을 툴바 생성
         button_toolbar = QtWidgets.QToolBar()
-        button_toolbar.setIconSize(QtCore.QSize(36, 36))
+        button_toolbar.setIconSize(QtCore.QSize(40, 40))  # 아이콘 크기 증가
+        button_toolbar.setContentsMargins(4, 4, 4, 4)    # 여백 추가
+        
+        # 제조업 환경에 최적화된 버튼 스타일 적용
+        button_toolbar.setStyleSheet("""
+            QToolBar {
+                background-color: transparent;
+                border: none;
+                spacing: 4px;
+            }
+            QToolBar QToolButton {
+                background-color: #ffffff;
+                border: 2px solid #e1e5e9;
+                border-radius: 6px;
+                padding: 4px;
+                margin: 1px;
+                min-width: 44px;
+                min-height: 44px;
+                max-width: 44px;
+                max-height: 44px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QToolBar QToolButton:hover {
+                background-color: #f8fafc;
+                border-color: #3b82f6;
+                color: #3b82f6;
+            }
+            QToolBar QToolButton:pressed {
+                background-color: #3b82f6;
+                color: white;
+                border-color: #2563eb;
+            }
+            QToolBar QToolButton:checked {
+                background-color: #3b82f6;
+                color: white;
+                border-color: #2563eb;
+            }
+        """)
+        
         for action in actions:
             if action is None: # None 이면 서브 구분선 추가
                 sub_separator = self._create_sub_separator()
@@ -827,34 +870,78 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
     def _create_layout_selector_group(self):
         """화면 분할 레이아웃을 선택할 수 있는 버튼 그룹을 생성합니다."""
-        group_box = QtWidgets.QGroupBox("화면 구성")
-        group_box.setAlignment(QtCore.Qt.AlignCenter)
+        group_widget = QtWidgets.QWidget()
+        group_layout = QtWidgets.QVBoxLayout(group_widget)
+        group_layout.setContentsMargins(0, 0, 0, 0)
+        group_layout.setSpacing(2)
         
-        group_layout = QtWidgets.QVBoxLayout(group_box)
-        group_layout.setContentsMargins(0, 12, 0, 2)
-        group_layout.setSpacing(0)
+        # 제목 라벨
+        title_label = QtWidgets.QLabel("뷰 모드")
+        title_label.setAlignment(QtCore.Qt.AlignCenter)
+        title_label.setStyleSheet("""
+            QLabel {
+                color: #6b7280;
+                font-size: 10px;
+                font-weight: 500;
+                background-color: transparent;
+                padding: 1px 2px;
+                margin-bottom: 2px;
+            }
+        """)
+        group_layout.addWidget(title_label)
         
-        button_toolbar = QtWidgets.QToolBar()
-        button_toolbar.setIconSize(QtCore.QSize(36, 36))
+        # 버튼들을 담을 수평 레이아웃
+        buttons_layout = QtWidgets.QHBoxLayout()
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_layout.setSpacing(2)
         
         # 레이아웃 모드 정의
         layout_modes = [
-            ("default", "기본", "기본 레이아웃"),
-            ("layout1", "레이아웃1", "레이아웃 1"),
-            ("layout2", "레이아웃2", "레이아웃 2"),
-            ("layout3", "레이아웃3", "레이아웃 3"),
+            ("default", "1", "뷰 모드 1: 기본 레이아웃\n(좌: 페이지 목록 | 중앙: 탭 뷰어 | 우: 넘버링 리스트)"),
+            ("layout1", "2", "뷰 모드 2: 분할 비교 모드\n(좌: 2D 뷰 + 3D 뷰 세로 배치 | 우: 넘버링 리스트)"),
+            ("layout2", "3", "뷰 모드 3: 3x2 그리드 레이아웃\n(좌: 페이지 미리보기 + 3D 뷰포트 | 중앙: 2D+3D 뷰 | 우: 넘버링 리스트)"),
+            ("layout3", "4", "뷰 모드 4: 준비 중"),
         ]
         
         self.layout_buttons = []
         
         for mode_id, label, tooltip in layout_modes:
-            # 텍스트 기반 아이콘 생성 (간단한 레이아웃 표현)
+            # 숫자 버튼 생성
             btn = QtWidgets.QToolButton()
             btn.setText(label)
             btn.setToolTip(tooltip)
             btn.setCheckable(True)
             btn.setAutoExclusive(True)  # 한 번에 하나만 선택되도록
-            btn.setMinimumSize(50, 36)
+            btn.setMinimumSize(32, 32)
+            btn.setIconSize(QtCore.QSize(32, 32))
+            
+            # 버튼 스타일
+            btn.setStyleSheet("""
+                QToolButton {
+                    background-color: transparent;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 4px;
+                    margin: 1px;
+                    min-width: 32px;
+                    min-height: 32px;
+                    font-size: 16px;
+                    font-weight: 700;
+                    color: #64748b;
+                }
+                QToolButton:hover {
+                    background-color: #f3f4f6;
+                    color: #3b82f6;
+                }
+                QToolButton:pressed {
+                    background-color: #3b82f6;
+                    color: white;
+                }
+                QToolButton:checked {
+                    background-color: #3b82f6;
+                    color: white;
+                }
+            """)
             
             # 첫 번째 버튼(기본)을 선택 상태로 설정
             if mode_id == "default":
@@ -863,11 +950,410 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 클릭 시 해당 레이아웃 적용
             btn.clicked.connect(lambda checked, m=mode_id: self._apply_layout_mode(m))
             
-            button_toolbar.addWidget(btn)
+            buttons_layout.addWidget(btn)
             self.layout_buttons.append((mode_id, btn))
         
-        group_layout.addWidget(button_toolbar)
-        return group_box
+        group_layout.addLayout(buttons_layout)
+        return group_widget
+
+    def _create_3d_viewport_buttons(self):
+        """3D 뷰포트 버튼들을 생성합니다."""
+        # 버튼들을 담을 레이아웃
+        buttons_layout = QtWidgets.QVBoxLayout()
+        buttons_layout.setContentsMargins(4, 4, 4, 4)
+        buttons_layout.setSpacing(4)
+        
+        # 3D 뷰포트 버튼들 정의
+        viewport_buttons = [
+            ("정면도", "front", "정면도로 보기"),
+            ("후면도", "back", "후면도로 보기"),
+            ("좌측면도", "left", "좌측면도로 보기"),
+            ("우측면도", "right", "우측면도로 보기"),
+            ("상면도", "top", "상면도로 보기"),
+            ("하면도", "bottom", "하면도로 보기"),
+            ("사용자 정의", "custom", "사용자 정의 뷰")
+        ]
+        
+        self.viewport_buttons = []
+        
+        for label, view_type, tooltip in viewport_buttons:
+            btn = QtWidgets.QPushButton(label)
+            btn.setToolTip(tooltip)
+            btn.setMinimumHeight(32)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #f8f9fa;
+                    border: 1px solid #dee2e6;
+                    border-radius: 4px;
+                    padding: 6px 12px;
+                    font-size: 12px;
+                    font-weight: 500;
+                    color: #495057;
+                }
+                QPushButton:hover {
+                    background-color: #e9ecef;
+                    border-color: #adb5bd;
+                }
+                QPushButton:pressed {
+                    background-color: #dee2e6;
+                }
+                QPushButton:checked {
+                    background-color: #007bff;
+                    color: white;
+                    border-color: #0056b3;
+                }
+            """)
+            
+            # 클릭 이벤트 연결 - 디버깅 추가
+            def make_callback(view_type):
+                def callback():
+                    print(f"=== 버튼 클릭 감지: {view_type} ===")
+                    self._change_3d_viewport(view_type)
+                return callback
+            
+            btn.clicked.connect(make_callback(view_type))
+            
+            buttons_layout.addWidget(btn)
+            self.viewport_buttons.append((view_type, btn))
+            print(f"3D 뷰포트 버튼 생성: {label} ({view_type})")
+        
+        # 스트레치 추가
+        buttons_layout.addStretch()
+        
+        # 뷰포트 위젯에 레이아웃 추가
+        self.viewport_3d_layout.addLayout(buttons_layout)
+
+    def _change_3d_viewport(self, view_type: str):
+        """3D 뷰포트를 변경합니다."""
+        print(f"3D 뷰포트 변경: {view_type}")
+        self.statusBar().showMessage(f"3D 뷰포트: {view_type}", 2000)
+        
+        # 버튼 상태 업데이트
+        for vt, btn in self.viewport_buttons:
+            btn.setChecked(vt == view_type)
+        
+        # 3D 뷰어에서 현재 plotter 가져오기
+        plotter = self._get_current_3d_plotter()
+        if plotter is None:
+            print("3D 뷰어가 없습니다.")
+            return
+        
+        # 뷰포트 변경
+        try:
+            print(f"DEBUG: 뷰포트 변경 시작 - {view_type}")
+
+            view_ops = {
+                "front": lambda p: p.view_xz(negative=False),
+                "back": lambda p: p.view_xz(negative=True),
+                "left": lambda p: p.view_yz(negative=False),
+                "right": lambda p: p.view_yz(negative=True),
+                "top": lambda p: p.view_xy(negative=False),
+                "bottom": lambda p: p.view_xy(negative=True),
+                "custom": lambda p: p.isometric_view(),
+            }
+
+            op = view_ops.get(view_type)
+            if op is None:
+                raise ValueError(f"지원하지 않는 뷰포트 타입입니다: {view_type}")
+
+            op(plotter)
+
+            # PyVista가 내부적으로 카메라를 재조정하도록 요청
+            plotter.reset_camera()
+            plotter.render()
+            print("DEBUG: 뷰포트 변경 완료")
+
+        except Exception as e:
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"3D 뷰포트 변경 중 오류: {e}")
+            print(f"상세 오류 추적:\n{error_trace}")
+            self.statusBar().showMessage(f"3D 뷰포트 변경 실패: {str(e)}", 3000)
+
+    def _setup_cursor_visibility(self):
+        """마우스 커서 가시성을 보장하기 위한 설정을 적용합니다."""
+        try:
+            # 전역 마우스 커서 설정
+            self.setCursor(QtCore.Qt.ArrowCursor)
+            
+            # PDF 뷰어 커서 설정
+            if hasattr(self, 'view'):
+                self.view.setCursor(QtCore.Qt.CrossCursor)
+            
+            # 3D 뷰어 커서 설정
+            if hasattr(self, 'widget_3d'):
+                self.widget_3d.setCursor(QtCore.Qt.CrossCursor)
+            
+            # 모든 위젯에 기본 커서 설정
+            self._apply_cursor_to_all_widgets()
+                
+            print("마우스 커서 가시성 설정 완료")
+            
+        except Exception as e:
+            print(f"마우스 커서 설정 중 오류: {e}")
+
+    def _apply_cursor_to_all_widgets(self):
+        """모든 위젯에 적절한 커서를 적용합니다."""
+        try:
+            # 모든 위젯 찾기
+            all_widgets = self.findChildren(QtWidgets.QWidget)
+            
+            for widget in all_widgets:
+                try:
+                    if isinstance(widget, (QtWidgets.QPushButton, QtWidgets.QToolButton)):
+                        widget.setCursor(QtCore.Qt.PointingHandCursor)
+                    elif isinstance(widget, (QtWidgets.QComboBox, QtWidgets.QCheckBox, QtWidgets.QRadioButton)):
+                        widget.setCursor(QtCore.Qt.PointingHandCursor)
+                    elif isinstance(widget, (QtWidgets.QSlider, QtWidgets.QScrollBar)):
+                        widget.setCursor(QtCore.Qt.PointingHandCursor)
+                    elif isinstance(widget, (QtWidgets.QTabBar, QtWidgets.QMenuBar, QtWidgets.QMenu)):
+                        widget.setCursor(QtCore.Qt.PointingHandCursor)
+                    elif isinstance(widget, (QtWidgets.QListWidget, QtWidgets.QTableWidget, QtWidgets.QTreeWidget)):
+                        widget.setCursor(QtCore.Qt.PointingHandCursor)
+                    else:
+                        widget.setCursor(QtCore.Qt.ArrowCursor)
+                except:
+                    # 개별 위젯 설정 실패 시 무시
+                    pass
+                    
+        except Exception as e:
+            print(f"위젯 커서 설정 중 오류: {e}")
+
+    def _get_current_3d_plotter(self):
+        """현재 3D 뷰어에서 사용 중인 plotter를 가져옵니다."""
+        try:
+            # vlayout_3d에서 plotter 찾기
+            for i in range(self.vlayout_3d.count()):
+                item = self.vlayout_3d.itemAt(i)
+                if item and item.widget():
+                    widget = item.widget()
+                    print(f"vlayout_3d[{i}]: {type(widget)}")
+                    
+                    # PyVista QtInteractor의 경우
+                    if hasattr(widget, '_plotter'):
+                        print(f"widget._plotter found: {widget._plotter}")
+                        return widget._plotter
+                    elif hasattr(widget, 'plotter'):
+                        print(f"widget.plotter found: {widget.plotter}")
+                        return widget.plotter
+                    elif hasattr(widget, 'interactor'):
+                        print(f"widget.interactor found: {widget.interactor}")
+                        return widget
+                    elif hasattr(widget, '_interactor'):
+                        print(f"widget._interactor found: {widget._interactor}")
+                        return widget
+            
+            # widget_3d에서 직접 plotter 찾기
+            print(f"widget_3d type: {type(self.widget_3d)}")
+            if hasattr(self.widget_3d, 'plotter'):
+                print(f"widget_3d.plotter found: {self.widget_3d.plotter}")
+                return self.widget_3d.plotter
+            elif hasattr(self.widget_3d, '_plotter'):
+                print(f"widget_3d._plotter found: {self.widget_3d._plotter}")
+                return self.widget_3d._plotter
+                
+        except Exception as e:
+            print(f"3D plotter 찾기 중 오류: {e}")
+        
+        print("3D plotter를 찾을 수 없습니다.")
+        return None
+
+    def _move_widget_to_layout(self, widget: QtWidgets.QWidget, target_layout: QtWidgets.QLayout, insert_index: Optional[int] = None):
+        """Reparent a widget into the target layout, optionally at a specific index."""
+        if widget is None or target_layout is None:
+            return
+
+        current_parent = widget.parentWidget()
+        if current_parent is not None:
+            current_layout = current_parent.layout()
+            if current_layout is not None:
+                current_layout.removeWidget(widget)
+
+        target_parent = target_layout.parentWidget()
+        if target_parent is not None and widget.parentWidget() is not target_parent:
+            widget.setParent(target_parent)
+
+        if insert_index is None:
+            target_layout.addWidget(widget)
+        else:
+            target_layout.insertWidget(insert_index, widget)
+
+    def _use_view_in_tab(self):
+        """Ensure the PDF/3D widgets are hosted inside the tab layout."""
+        self._move_widget_to_layout(self.view, self._view_tab_layout)
+        self._move_widget_to_layout(self.widget_3d, self._view_3d_tab_layout)
+        if hasattr(self, "central_stack"):
+            self.central_stack.setCurrentIndex(0)
+
+    def _use_view_in_split(self):
+        """Ensure the PDF/3D widgets are hosted inside the split layout."""
+        # index=1 keeps the title label at the top of each pane
+        self._move_widget_to_layout(self.view, self.view_2d_layout, insert_index=1)
+        self._move_widget_to_layout(self.widget_3d, self.view_3d_layout, insert_index=1)
+        if hasattr(self, "central_stack"):
+            self.central_stack.setCurrentIndex(1)
+
+    def _use_view_in_grid(self):
+        """Ensure the PDF/3D widgets are hosted inside the grid layout."""
+        # 페이지 미리보기 영역에 실제 페이지 도크 내용의 독립적인 복제본 추가
+        if hasattr(self, 'page_dock') and hasattr(self.page_dock, 'widget'):
+            if not hasattr(self, '_page_preview_clone_created'):
+                self._create_independent_page_preview_clone()
+                self._page_preview_clone_created = True
+            
+            if hasattr(self, '_page_preview_clone'):
+                self._move_widget_to_layout(self._page_preview_clone, self.page_preview_layout, insert_index=1)
+        
+        # 2D와 3D 뷰를 뷰 모드 3 전용 레이아웃에 배치
+        self._move_widget_to_layout(self.view, self.view_2d_layout_layout3, insert_index=1)
+        self._move_widget_to_layout(self.widget_3d, self.view_3d_layout_layout3, insert_index=1)
+        
+        # 넘버링 리스트를 컬럼 3에 추가
+        if hasattr(self, 'dock') and hasattr(self.dock, 'widget'):
+            list_content = self.dock.widget()
+            if list_content:
+                self._move_widget_to_layout(list_content, self.col3_layout, insert_index=1)
+        
+        if hasattr(self, "central_stack"):
+            self.central_stack.setCurrentIndex(2)  # 그리드 레이아웃 인덱스
+
+    def _create_independent_page_preview_clone(self):
+        """페이지 도크 내용의 완전히 독립적인 복제본을 생성합니다."""
+        try:
+            if hasattr(self, 'page_dock') and hasattr(self.page_dock, 'widget'):
+                original_content = self.page_dock.widget()
+                if original_content:
+                    # 새로운 독립적인 위젯 생성
+                    self._page_preview_clone = QtWidgets.QWidget()
+                    clone_layout = QtWidgets.QVBoxLayout(self._page_preview_clone)
+                    clone_layout.setContentsMargins(5, 5, 5, 5)
+                    
+                    # 원본 레이아웃 복사
+                    if hasattr(original_content, 'layout') and original_content.layout():
+                        original_layout = original_content.layout()
+                        
+                        # 자식 위젯들을 순회하며 복제
+                        for i in range(original_layout.count()):
+                            item = original_layout.itemAt(i)
+                            if item and item.widget():
+                                widget = item.widget()
+                                
+                                # 썸네일 라벨인 경우
+                                if hasattr(widget, 'setPixmap') and hasattr(widget, 'clicked'):
+                                    clone_widget = QtWidgets.QLabel()
+                                    clone_widget.setAlignment(QtCore.Qt.AlignCenter)
+                                    clone_widget.setScaledContents(True)
+                                    clone_widget.setMaximumSize(150, 200)
+                                    
+                                    # 픽스맵 복사
+                                    if hasattr(widget, 'pixmap') and widget.pixmap():
+                                        clone_widget.setPixmap(widget.pixmap())
+                                    
+                                    # 클릭 이벤트 연결 (같은 함수 호출)
+                                    clone_widget.mousePressEvent = widget.mousePressEvent
+                                    
+                                    clone_layout.addWidget(clone_widget)
+                                
+                                # 다른 위젯들도 복제
+                                elif isinstance(widget, QtWidgets.QLabel):
+                                    clone_widget = QtWidgets.QLabel(widget.text())
+                                    clone_widget.setAlignment(widget.alignment())
+                                    clone_layout.addWidget(clone_widget)
+                                
+                                elif isinstance(widget, QtWidgets.QLineEdit):
+                                    clone_widget = QtWidgets.QLineEdit()
+                                    clone_widget.setText(widget.text())
+                                    clone_widget.setMaximumWidth(100)
+                                    clone_layout.addWidget(clone_widget)
+                    
+                    print("독립적인 페이지 미리보기 복제본 생성 완료")
+                    
+        except Exception as e:
+            print(f"페이지 미리보기 복제본 생성 중 오류: {e}")
+            # 복제 실패 시 플레이스홀더 사용
+            self._create_page_preview_placeholder()
+
+    def _create_page_preview_clone(self):
+        """페이지 도크 내용의 복제본을 생성합니다."""
+        try:
+            if hasattr(self, 'page_dock') and hasattr(self.page_dock, 'widget'):
+                original_content = self.page_dock.widget()
+                if original_content:
+                    # 원본 위젯의 클래스와 내용을 복제
+                    self._page_preview_clone = original_content.__class__(self)
+                    
+                    # 원본 위젯의 속성들을 복제
+                    if hasattr(original_content, 'layout'):
+                        original_layout = original_content.layout()
+                        if original_layout:
+                            # 레이아웃 복제
+                            clone_layout = original_layout.__class__()
+                            clone_layout.setContentsMargins(original_layout.contentsMargins())
+                            clone_layout.setSpacing(original_layout.spacing())
+                            
+                            # 자식 위젯들 복제
+                            for i in range(original_layout.count()):
+                                item = original_layout.itemAt(i)
+                                if item and item.widget():
+                                    widget = item.widget()
+                                    # 썸네일 라벨인 경우 복제
+                                    if hasattr(widget, 'setPixmap') and hasattr(widget, 'clicked'):
+                                        clone_widget = widget.__class__()
+                                        if hasattr(widget, 'pixmap') and widget.pixmap():
+                                            clone_widget.setPixmap(widget.pixmap())
+                                        if hasattr(widget, 'clicked'):
+                                            clone_widget.clicked.connect(widget.clicked)
+                                        clone_layout.addWidget(clone_widget)
+                                    else:
+                                        clone_layout.addWidget(widget)
+                            
+                            self._page_preview_clone.setLayout(clone_layout)
+                    
+                    print("페이지 미리보기 복제본 생성 완료")
+                    
+        except Exception as e:
+            print(f"페이지 미리보기 복제본 생성 중 오류: {e}")
+            # 복제 실패 시 플레이스홀더 사용
+            self._create_page_preview_placeholder()
+
+    def _create_page_preview_placeholder(self):
+        """페이지 미리보기 영역에 간단한 플레이스홀더를 생성합니다."""
+        self._page_preview_placeholder = QtWidgets.QWidget()
+        placeholder_layout = QtWidgets.QVBoxLayout(self._page_preview_placeholder)
+        placeholder_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # 페이지 미리보기 안내 메시지
+        info_label = QtWidgets.QLabel("페이지 미리보기")
+        info_label.setAlignment(QtCore.Qt.AlignCenter)
+        info_label.setStyleSheet("""
+            QLabel {
+                background-color: #f8f9fa;
+                border: 2px dashed #dee2e6;
+                border-radius: 8px;
+                padding: 20px;
+                color: #6c757d;
+                font-size: 14px;
+                font-weight: 500;
+            }
+        """)
+        placeholder_layout.addWidget(info_label)
+        
+        # 페이지 도크로 돌아가라는 안내
+        note_label = QtWidgets.QLabel("뷰 모드 1에서 페이지 미리보기를\n사용할 수 있습니다.")
+        note_label.setAlignment(QtCore.Qt.AlignCenter)
+        note_label.setStyleSheet("""
+            QLabel {
+                color: #6c757d;
+                font-size: 12px;
+                padding: 10px;
+            }
+        """)
+        placeholder_layout.addWidget(note_label)
+        
+        placeholder_layout.addStretch()
+        
+        # 페이지 미리보기 레이아웃에 추가
+        self.page_preview_layout.insertWidget(1, self._page_preview_placeholder)
 
     def _apply_layout_mode(self, mode: str):
         """선택된 레이아웃 모드를 적용합니다.
@@ -878,28 +1364,29 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 현재 레이아웃 모드 저장
         self.current_layout_mode = mode
         
-        print(f"레이아웃 모드 변경: {mode}")
-        self.statusBar().showMessage(f"화면 구성: {mode}", 2000)
+        print(f"뷰 모드 변경: {mode}")
         
-        # TODO: 실제 레이아웃 변경 로직은 나중에 구현
         # 각 모드에 따라 도크 위젯의 위치와 크기를 조정
         if mode == "default":
-            # 기본 레이아웃: 왼쪽 페이지, 가운데 뷰어, 오른쪽 리스트
+            # 뷰 모드 1: 기본 레이아웃 (왼쪽: 페이지 목록, 가운데: 탭 뷰어, 오른쪽: 넘버링 리스트)
             self._apply_default_layout()
         elif mode == "layout1":
-            # 레이아웃 1: [2D 뷰어] | [3D 뷰어] | [리스트(좁게)]
+            # 뷰 모드 2: 분할 비교 모드 (좌: 2D, 중앙: 3D, 우: 넘버링 리스트)
             self._apply_layout1()
         elif mode == "layout2":
-            # 레이아웃 2: 사용자 정의 (나중에 구현)
-            self.statusBar().showMessage("레이아웃2 구성 준비 중...", 2000)
-            pass
+            # 뷰 모드 3: 3x2 그리드 레이아웃
+            self._apply_layout2()
         elif mode == "layout3":
-            # 레이아웃 3: 사용자 정의 (나중에 구현)
-            self.statusBar().showMessage("레이아웃3 구성 준비 중...", 2000)
-            pass
+            # 뷰 모드 4: 준비 중
+            self.statusBar().showMessage("뷰 모드 4: 준비 중입니다", 2000)
+            # 현재는 기본 레이아웃 적용
+            self._apply_default_layout()
 
     def _apply_default_layout(self):
         """기본 레이아웃을 적용합니다."""
+        # 먼저 모든 위젯을 원래 위치로 복원
+        self._restore_widgets_to_original_positions()
+        
         # 왼쪽에 페이지 도크, 오른쪽에 리스트 도크
         if hasattr(self, 'page_dock'):
             self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.page_dock)
@@ -909,13 +1396,41 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.dock)
             self.dock.show()
 
-        
         # 탭 모드로 전환
-        if hasattr(self, 'central_stack'):
-            self.central_stack.setCurrentIndex(0)
+        self._use_view_in_tab()
+        
+        self.statusBar().showMessage("뷰 모드 1: 기본 레이아웃", 2000)
+
+    def _restore_widgets_to_original_positions(self):
+        """모든 위젯을 원래 위치로 복원합니다."""
+        try:
+            # 2D 뷰를 원래 탭 레이아웃으로 복원
+            if hasattr(self, 'view') and hasattr(self, '_view_tab_layout'):
+                self._move_widget_to_layout(self.view, self._view_tab_layout)
+            
+            # 3D 뷰를 원래 탭 레이아웃으로 복원
+            if hasattr(self, 'widget_3d') and hasattr(self, '_view_3d_tab_layout'):
+                self._move_widget_to_layout(self.widget_3d, self._view_3d_tab_layout)
+            
+            # 넘버링 리스트를 원래 도크로 복원
+            if hasattr(self, 'dock') and hasattr(self.dock, 'widget'):
+                list_content = self.dock.widget()
+                if list_content and list_content.parent() != self.dock:
+                    # 도크의 원래 레이아웃에 추가
+                    dock_layout = self.dock.layout()
+                    if dock_layout:
+                        self._move_widget_to_layout(list_content, dock_layout)
+            
+            print("위젯들을 원래 위치로 복원 완료")
+            
+        except Exception as e:
+            print(f"위젯 복원 중 오류: {e}")
 
     def _apply_layout1(self):
         """레이아웃1: [2D 뷰어] | [3D 뷰어] | [리스트(좁게)]"""
+        # 먼저 모든 위젯을 원래 위치로 복원
+        self._restore_widgets_to_original_positions()
+        
         # 1. 페이지 도크 숨기기
         if hasattr(self, 'page_dock'):
             self.page_dock.hide()
@@ -927,29 +1442,103 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 리스트 도크 너비를 좁게 설정
             self.resizeDocks([self.dock], [250], QtCore.Qt.Horizontal)
         
-        # 3. 분할 뷰 모드로 전환 (2D와 3D 동시 표시)
-        if hasattr(self, 'central_stack'):
-            self.central_stack.setCurrentIndex(1)  # 분할 뷰 표시
+        # 3. 분할 뷰 모드로 전환 (2D와 3D 세로 배치)
+        self._use_view_in_split()  # 분할 뷰 표시
         
-        # 4. 2D와 3D 비율을 1:1로 설정
+        # 4. 2D+3D 컬럼과 리스트 도크 비율 설정
         if hasattr(self, 'split_view'):
             total_width = self.split_view.width()
-            self.split_view.setSizes([total_width // 2, total_width // 2])
+            # 2D+3D 컬럼을 더 크게, 리스트 도크는 작게
+            self.split_view.setSizes([total_width - 250, 250])
         
-        self.statusBar().showMessage("레이아웃1: 2D+3D 비교 모드", 2000)
+        # 5. 2D와 3D 세로 비율 설정
+        if hasattr(self, 'vertical_split'):
+            total_height = self.vertical_split.height()
+            self.vertical_split.setSizes([total_height // 2, total_height // 2])
+        
+        self.statusBar().showMessage("뷰 모드 2: 분할 비교 모드 (2D + 3D 세로 배치 + 리스트)", 2000)
+
+    def _apply_layout2(self):
+        """레이아웃2: 3x2 그리드 레이아웃"""
+        # 먼저 모든 위젯을 원래 위치로 복원
+        self._restore_widgets_to_original_positions()
+        
+        # 1. 모든 도크 숨기기
+        if hasattr(self, 'page_dock'):
+            self.page_dock.hide()
+        if hasattr(self, 'dock'):
+            self.dock.hide()
+        
+        # 2. 그리드 레이아웃으로 전환
+        self._use_view_in_grid()
+        
+        # 3. 컬럼 비율 설정 (1:3:1)
+        if hasattr(self, 'grid_layout'):
+            self.grid_layout.setColumnStretch(0, 1)  # 컬럼 1
+            self.grid_layout.setColumnStretch(1, 3)  # 컬럼 2
+            self.grid_layout.setColumnStretch(2, 1)  # 컬럼 3
+        
+        # 4. 2D와 3D 세로 비율 설정
+        if hasattr(self, 'vertical_split_layout3'):
+            total_height = self.vertical_split_layout3.height()
+            self.vertical_split_layout3.setSizes([total_height // 2, total_height // 2])
+        
+        self.statusBar().showMessage("뷰 모드 3: 3x2 그리드 레이아웃 (페이지 미리보기 | 2D+3D 뷰 | 넘버링 리스트)", 2000)
 
     # 이스터에그 진/출입 오류 수정.
     def _create_toolbar(self):
-        """커스텀 그룹 레이아웃을 가진 메인 툴바를 생성합니다."""
+        """섹션별 그룹화된 메인 툴바를 생성합니다."""
+        # 메인 툴바 위젯 생성
+        self.toolbar_widget = QtWidgets.QWidget()
+        self.toolbar_layout = QtWidgets.QHBoxLayout(self.toolbar_widget)
+        self.toolbar_layout.setContentsMargins(8, 4, 8, 4)
+        self.toolbar_layout.setSpacing(8)
+        
+        # 툴바 스타일
+        self.toolbar_widget.setStyleSheet("""
+            QWidget {
+                background-color: #ffffff;
+            }
+            QLabel {
+                color: #6b7280;
+                font-size: 11px;
+                font-weight: 500;
+                background-color: transparent;
+                padding: 2px 4px;
+            }
+            QToolButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 4px;
+                padding: 4px;
+                margin: 1px;
+                min-width: 32px;
+                min-height: 32px;
+            }
+            QToolButton:hover {
+                background-color: #f3f4f6;
+            }
+            QToolButton:pressed {
+                background-color: #e5e7eb;
+            }
+            QToolButton:checked {
+                background-color: #dbeafe;
+            }
+            QFrame[frameShape="4"] {
+                color: #e5e7eb;
+                background-color: #e5e7eb;
+                border: none;
+                margin: 4px 8px;
+            }
+        """)
+        
+        # 툴바에 위젯 추가
         self.main_toolbar = QtWidgets.QToolBar("Main Toolbar")
+        self.main_toolbar.setMovable(False)
+        self.main_toolbar.setFloatable(False)
+        self.main_toolbar.addWidget(self.toolbar_widget)
         self.addToolBar(QtCore.Qt.TopToolBarArea, self.main_toolbar)
         
-        custom_toolbar_widget = QtWidgets.QWidget(self)
-        main_layout = QtWidgets.QHBoxLayout(custom_toolbar_widget)
-        main_layout.setContentsMargins(10, 0, 10, 0)
-        main_layout.setSpacing(0)
-
-        # --- 아이콘 로드 ---
         # --- 아이콘 로드 ---
         self._icon_edit_on = icon_if("resources/icons/icons_edit_on.png"); self._icon_edit_off = icon_if("resources/icons/icons_edit_off.png")
         self.preview_circle_icon = icon_if("resources/icons/circle.png"); self.preview_crosshair_icon = icon_if("resources/icons/crossline.png")
@@ -971,7 +1560,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.rotate_left_icon = icon_if("resources/icons/rotate_left.png")
         self.rotate_right_icon = icon_if("resources/icons/rotate_right.png")
 
-        # --- 액션 및 위젯 정의 ---
+        # --- 간단한 액션 정의 ---
         self.action_toggle_mode = QtGui.QAction(self._icon_edit_off, "작업 모드 전환", self); self.action_toggle_mode.setCheckable(True); self.action_toggle_mode.triggered.connect(self._cycle_active_mode)
         self.action_numbering_settings = QtGui.QAction(numbering_settings_icon, "넘버링 설정...", self); self.action_numbering_settings.triggered.connect(self.open_numbering_settings)
         self.action_stamp_settings = QtGui.QAction(settings_stamps_icon, "스탬프 설정...", self); self.action_stamp_settings.triggered.connect(self.open_stamp_settings)
@@ -990,82 +1579,141 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.action_toggle_start_end = QtGui.QAction(self.start_end_icon, "시작/끝점 강조 On/Off", self); self.action_toggle_start_end.setCheckable(True); self.action_toggle_start_end.setChecked(self.style.flow_show_start_end); self.action_toggle_start_end.triggered.connect(self._toggle_show_start_end)
         self.action_cycle_line_style = QtGui.QAction(self); self.action_cycle_line_style.triggered.connect(self._cycle_line_style)
         self.action_cycle_arrow_style = QtGui.QAction(self); self.action_cycle_arrow_style.triggered.connect(self._cycle_arrow_style)
-        
-        # ▼▼▼ 회전 액션 2개 정의 추가 ▼▼▼
         self.action_rotate_left = QtGui.QAction(self.rotate_left_icon, "페이지 좌로 회전", self); self.action_rotate_left.triggered.connect(self.rotate_page_left)
         self.action_rotate_right = QtGui.QAction(self.rotate_right_icon, "페이지 우로 회전", self); self.action_rotate_right.triggered.connect(self.rotate_page_right)
 
-        # ▼▼▼ 화면 레이아웃 선택 버튼 추가 ▼▼▼
-        self.current_layout_mode = "default"  # 현재 레이아웃 모드 저장
-        self.layout_buttons = []  # 레이아웃 버튼들을 저장할 리스트
-
-        self._update_line_style_button_icon()
         self._update_line_style_button_icon()
         self._update_arrow_style_button_icon()
         self.preview_toggle_button = QtWidgets.QToolButton(); self.preview_toggle_button.clicked.connect(self._cycle_preview_mode)
         self.stamp_button = QtWidgets.QToolButton(); self.stamp_button.clicked.connect(self._cycle_next_stamp)
         self._update_preview_button_visuals()
         
-        # --- 그룹별 레이아웃 구성 ---
-        group1_actions = [self.action_undo, self.action_redo]
+        # --- 섹션별 그룹화된 툴바 구성 ---
         
-        group2 = QtWidgets.QGroupBox("작업 설정"); group2.setAlignment(QtCore.Qt.AlignCenter)
-        group2_layout = QtWidgets.QHBoxLayout(group2); group2_layout.setContentsMargins(4, 12, 4, 4); group2_layout.setSpacing(4)
-        self.mode_button = QtWidgets.QToolButton()
-        self.mode_button.clicked.connect(self._cycle_active_mode)
+        self._add_toolbar_sections()
+    
+    def _add_toolbar_sections(self):
+        """섹션별로 그룹화된 툴바를 구성합니다."""
+        sections = [
+            {
+                "title": "실행 취소/복구",
+                "buttons": [self.action_undo, self.action_redo]
+            },
+            {
+                "title": "작업 설정",
+                "buttons": [self.action_toggle_mode, self.action_numbering_settings, self.action_stamp_settings],
+                "special_buttons": {"toggle_mode": True}  # mode_button을 별도로 저장
+            },
+            {
+                "title": "뷰 모드",
+                "buttons": [],  # 특별한 버튼 그룹이므로 빈 리스트
+                "special_buttons": {"view_mode_group": True}  # 뷰 모드 그룹을 별도로 처리
+            },
+            {
+                "title": "보기 설정",
+                "buttons": [self.action_toggle_numbering_view, self.action_toggle_stamps_view, self.action_toggle_flow_view]
+            },
+            {
+                "title": "페이지 회전",
+                "buttons": [self.action_rotate_left, self.action_rotate_right]
+            },
+            {
+                "title": "강조",
+                "buttons": [self.action_highlight_toolbar, self.action_toggle_start_end]
+            },
+            {
+                "title": "서식 조정",
+                "buttons": [self.action_radius_down, self.action_radius_up, self.action_border_down, 
+                           self.action_border_up, self.action_font_down, self.action_font_up]
+            },
+            {
+                "title": "라인 스타일",
+                "buttons": [self.action_cycle_line_style, self.action_cycle_arrow_style]
+            }
+        ]
         
-        self.context_widget_stack = QtWidgets.QStackedWidget()
-        
-        view_context_widget = QtWidgets.QWidget()
-        view_layout = QtWidgets.QHBoxLayout(view_context_widget); view_layout.setContentsMargins(0,0,0,0); view_layout.setSpacing(4)
-        numbering_view_button = QtWidgets.QToolButton(); numbering_view_button.setDefaultAction(self.action_toggle_numbering_view)
-        stamp_view_button = QtWidgets.QToolButton(); stamp_view_button.setDefaultAction(self.action_toggle_stamps_view)
-        flow_view_button = QtWidgets.QToolButton(); flow_view_button.setDefaultAction(self.action_toggle_flow_view)
-        view_layout.addWidget(numbering_view_button); view_layout.addWidget(stamp_view_button); view_layout.addWidget(flow_view_button)
-
-        numbering_context_widget = QtWidgets.QWidget()
-        numbering_layout = QtWidgets.QHBoxLayout(numbering_context_widget); numbering_layout.setContentsMargins(0,0,0,0); numbering_layout.setSpacing(4)
-        num_settings_button = QtWidgets.QToolButton(); num_settings_button.setDefaultAction(self.action_numbering_settings)
-        numbering_layout.addWidget(self.preview_toggle_button); numbering_layout.addWidget(num_settings_button); numbering_layout.addStretch()
-
-        stamp_context_widget = QtWidgets.QWidget()
-        stamp_layout = QtWidgets.QHBoxLayout(stamp_context_widget); stamp_layout.setContentsMargins(0,0,0,0); stamp_layout.setSpacing(4)
-        stamp_settings_button = QtWidgets.QToolButton(); stamp_settings_button.setDefaultAction(self.action_stamp_settings)
-        self.stamp_button.setContextMenuPolicy(QtCore.Qt.CustomContextMenu); self.stamp_button.customContextMenuRequested.connect(self._show_stamp_context_menu)
-        stamp_layout.addWidget(self.stamp_button); stamp_layout.addWidget(stamp_settings_button); stamp_layout.addStretch()
-
-        for btn in [self.mode_button, self.preview_toggle_button, self.stamp_button, num_settings_button, stamp_settings_button, numbering_view_button, stamp_view_button, flow_view_button]:
-            btn.setIconSize(QtCore.QSize(36, 36))
+        for i, section in enumerate(sections):
+            # 섹션 그룹 위젯 생성
+            section_widget = self._create_section_group(section["title"], section["buttons"], section.get("special_buttons", {}))
+            self.toolbar_layout.addWidget(section_widget)
             
-        self.context_widget_stack.addWidget(view_context_widget)
-        self.context_widget_stack.addWidget(numbering_context_widget)
-        self.context_widget_stack.addWidget(stamp_context_widget)
+            # 마지막 섹션이 아니면 구분선 추가
+            if i < len(sections) - 1:
+                self._add_section_separator()
         
-        max_width = view_context_widget.sizeHint().width()
-        self.context_widget_stack.setMinimumWidth(max_width)
+        # 마지막에 스트레치 추가
+        self.toolbar_layout.addStretch()
+    
+    def _create_section_group(self, title, actions, special_buttons=None):
+        """섹션 그룹 위젯을 생성합니다 (제목 + 버튼들)."""
+        if special_buttons is None:
+            special_buttons = {}
+            
+        # 뷰 모드 그룹인 경우 특별 처리
+        if special_buttons.get("view_mode_group"):
+            return self._create_layout_selector_group()
+            
+        group_widget = QtWidgets.QWidget()
+        group_layout = QtWidgets.QVBoxLayout(group_widget)
+        group_layout.setContentsMargins(0, 0, 0, 0)
+        group_layout.setSpacing(2)
         
-        group2_layout.addWidget(self.mode_button); group2_layout.addWidget(self.context_widget_stack)
-
-        group3_actions = [self.action_highlight_toolbar, self.action_toggle_start_end]
-        group4_actions = [self.action_radius_down, self.action_radius_up, None, self.action_border_down, self.action_border_up, None, self.action_font_down, self.action_font_up, None, self.action_cycle_line_style, self.action_cycle_arrow_style]
+        # 제목 라벨
+        title_label = QtWidgets.QLabel(title)
+        title_label.setAlignment(QtCore.Qt.AlignCenter)
+        title_label.setStyleSheet("""
+            QLabel {
+                color: #6b7280;
+                font-size: 10px;
+                font-weight: 500;
+                background-color: transparent;
+                padding: 1px 2px;
+                margin-bottom: 2px;
+            }
+        """)
+        group_layout.addWidget(title_label)
         
-        # ▼▼▼ 새로운 회전 그룹 추가 ▼▼▼
-        group_rotate_actions = [self.action_rotate_left, self.action_rotate_right]
-
-        group4_actions = [self.action_radius_down, self.action_radius_up, None, self.action_border_down, self.action_border_up, None, self.action_font_down, self.action_font_up, None, self.action_cycle_line_style, self.action_cycle_arrow_style]
-
-        # --- 최종 툴바 레이아웃 구성 ---
-        main_layout.addWidget(self._create_toolbar_group(group1_actions, "실행 취소/복구")); main_layout.addSpacing(18)
-        main_layout.addWidget(group2); main_layout.addSpacing(18)
-        main_layout.addWidget(self._create_toolbar_group(group3_actions, "강조")); main_layout.addSpacing(18)
-        main_layout.addWidget(self._create_toolbar_group(group_rotate_actions, "페이지 회전")); main_layout.addSpacing(18)
-        main_layout.addWidget(self._create_toolbar_group(group4_actions, "라벨 및 흐름도 서식"))
-        main_layout.addStretch(1)
+        # 버튼들을 담을 수평 레이아웃
+        buttons_layout = QtWidgets.QHBoxLayout()
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_layout.setSpacing(2)
         
-        # ▼▼▼ 화면 레이아웃 선택 버튼 그룹 추가 ▼▼▼
-        main_layout.addWidget(self._create_layout_selector_group())
-
-        self.main_toolbar.addWidget(custom_toolbar_widget)
+        for action in actions:
+            button = self._create_button(action)
+            
+            # 특별한 버튼들을 인스턴스 변수로 저장
+            if special_buttons.get("toggle_mode") and action == self.action_toggle_mode:
+                self.mode_button = button
+            
+            buttons_layout.addWidget(button)
+        
+        group_layout.addLayout(buttons_layout)
+        
+        return group_widget
+    
+    def _create_button(self, action):
+        """액션으로부터 버튼을 생성합니다."""
+        button = QtWidgets.QToolButton()
+        button.setDefaultAction(action)
+        button.setIconSize(QtCore.QSize(32, 32))
+        return button
+    
+    def _add_section_separator(self):
+        """섹션 간 구분선을 추가합니다."""
+        separator = QtWidgets.QFrame()
+        separator.setFrameShape(QtWidgets.QFrame.VLine)
+        separator.setFrameShadow(QtWidgets.QFrame.Sunken)
+        separator.setStyleSheet("""
+            QFrame {
+                color: #e5e7eb;
+                background-color: #e5e7eb;
+                border: none;
+                margin: 8px 4px;
+            }
+        """)
+        separator.setFixedWidth(1)
+        separator.setFixedHeight(40)
+        self.toolbar_layout.addWidget(separator)
     
     # ===== ▼▼▼ 모드 전환 및 시각적 업데이트 함수 (새로 추가) ▼▼▼ =====
     def _cycle_active_mode(self):
@@ -1213,7 +1861,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if self._preview_ellipse: self._preview_ellipse.hide()
         if self._preview_text: self._preview_text.hide()
         if self._stamp_preview_item: self._stamp_preview_item.hide()
-        self.context_widget_stack.setCurrentIndex(0)
 
         # 2. 모드에 따라 UI를 설정합니다.
         if self.active_mode == "numbering":
@@ -1224,7 +1871,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
             self.mode_button.setIcon(self._icon_edit_on)
             self.mode_button.setToolTip("넘버링 모드 (Ctrl+E로 전환)")
-            self.context_widget_stack.setCurrentIndex(1)
             self.dock_stack.setCurrentWidget(self.table)
             self._update_preview_button_visuals()
             
@@ -1243,7 +1889,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             stamp_icon = icon_if("resources/icons/stamp_on.png") # "resources/icons/" 경로 추가
             self.mode_button.setIcon(stamp_icon)
             self.mode_button.setToolTip("스탬프 모드 (Ctrl+E로 전환)")
-            self.context_widget_stack.setCurrentIndex(2)
             self.dock_stack.setCurrentWidget(self.stamp_table)
             self._update_stamp_button_icon()
             
@@ -1296,62 +1941,160 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             if status == "just_installed":
                 QtWidgets.QMessageBox.information(self, "환영합니다", f"평가판이 시작되었습니다. {days_left}일 동안 사용하실 수 있습니다.")
         
-        self.setWindowTitle(f"{APP_NAME} ({APP_VER}){trial_message}"); self.resize(1600,1000)
+        self.setWindowTitle(f"{APP_NAME} ({APP_VER}){trial_message}")
+        self.resize(1600, 1000)
         
-        # ▼▼▼ 탭 위젯 설정 코드 (삽입) ▼▼▼
-        # 1. PDF 뷰어 위젯들을 먼저 생성합니다.
+        # ▼▼▼ shadcn 스타일 적용 ▼▼▼
+        self.setStyleSheet(GLOBAL_STYLESHEET)
+        
+        # 마우스 커서 가시성 보장을 위한 추가 설정
+        self._setup_cursor_visibility()
+        
+        # ▲▲▲ 스타일 적용 완료 ▲▲▲
+        
+        # ▼▼▼ PDF/3D 뷰어 위젯 구성 ▼▼▼
         self.scene = PdfScene(self)
         self.view = PdfView(self.scene, self)
-        
-        # 2. 3D 뷰어를 위한 위젯 생성
-        self.vlayout_3d = QtWidgets.QVBoxLayout()
-        self.widget_3d = QtWidgets.QWidget()
-        self.widget_3d.setLayout(self.vlayout_3d)
-        
-        # 3. 탭 위젯 생성 (기본 레이아웃용)
-        self.tab_widget = QtWidgets.QTabWidget()
-        self.tab_widget.addTab(self.view, "2D View")
-        self.tab_widget.addTab(self.widget_3d, "3D View")
-        
-        # 4. 분할 뷰 위젯 생성 (레이아웃1용: 2D와 3D 동시 표시)
-        self.split_view = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        
-        # 2D 뷰를 담을 컨테이너 (분할뷰용)
-        self.view_2d_container = QtWidgets.QWidget()
-        view_2d_layout = QtWidgets.QVBoxLayout(self.view_2d_container)
-        view_2d_layout.setContentsMargins(0, 0, 0, 0)
-        view_2d_label = QtWidgets.QLabel("2D View")
-        view_2d_label.setAlignment(QtCore.Qt.AlignCenter)
-        view_2d_label.setStyleSheet("background-color: #E0E0E0; padding: 2px; font-weight: bold;")
-        view_2d_layout.addWidget(view_2d_label)
-        view_2d_layout.addWidget(self.view)
-        
-        # 3D 뷰를 담을 컨테이너 (분할뷰용)
-        self.view_3d_container = QtWidgets.QWidget()
-        view_3d_layout = QtWidgets.QVBoxLayout(self.view_3d_container)
-        view_3d_layout.setContentsMargins(0, 0, 0, 0)
-        view_3d_label = QtWidgets.QLabel("3D View")
-        view_3d_label.setAlignment(QtCore.Qt.AlignCenter)
-        view_3d_label.setStyleSheet("background-color: #E0E0E0; padding: 2px; font-weight: bold;")
-        view_3d_layout.addWidget(view_3d_label)
-        view_3d_layout.addWidget(self.widget_3d)
-        
-        self.split_view.addWidget(self.view_2d_container)
-        self.split_view.addWidget(self.view_3d_container)
-        self.split_view.setSizes([500, 500])  # 기본 1:1 비율
-        
-        # 5. 중앙 위젯 컨테이너 (탭 모드와 분할 모드를 전환)
-        self.central_stack = QtWidgets.QStackedWidget()
-        self.central_stack.addWidget(self.tab_widget)      # 0: 탭 모드
-        self.central_stack.addWidget(self.split_view)      # 1: 분할 모드
-        self.setCentralWidget(self.central_stack)
-        # ▲▲▲ [수정 끝] ▲▲▲
-
-        # 신호/슬롯 연결
         self.scene.clicked.connect(self.on_clicked)
         self.scene.moved.connect(self.on_scene_moved)
         self.view.zoom_changed.connect(self._on_zoom_changed)
-        # ▲▲▲ 여기까지 삽입 ▲▲▲
+
+        # 3D 뷰어 컨테이너 (PyVista 위젯이 올라갈 자리)
+        self.vlayout_3d = QtWidgets.QVBoxLayout()
+        self.widget_3d = QtWidgets.QWidget()
+        self.widget_3d.setLayout(self.vlayout_3d)
+
+        # 2D/3D 탭 형태 레이아웃
+        self.tab_widget = QtWidgets.QTabWidget()
+
+        self._view_tab_container = QtWidgets.QWidget()
+        self._view_tab_layout = QtWidgets.QVBoxLayout(self._view_tab_container)
+        self._view_tab_layout.setContentsMargins(0, 0, 0, 0)
+        self._view_tab_layout.addWidget(self.view)
+
+        self._view_3d_tab_container = QtWidgets.QWidget()
+        self._view_3d_tab_layout = QtWidgets.QVBoxLayout(self._view_3d_tab_container)
+        self._view_3d_tab_layout.setContentsMargins(0, 0, 0, 0)
+        self._view_3d_tab_layout.addWidget(self.widget_3d)
+
+        self.tab_widget.addTab(self._view_tab_container, "2D View")
+        self.tab_widget.addTab(self._view_3d_tab_container, "3D View")
+
+        # 2D/3D 분할 레이아웃
+        self.view_2d_container = QtWidgets.QWidget()
+        self.view_2d_layout = QtWidgets.QVBoxLayout(self.view_2d_container)
+        self.view_2d_layout.setContentsMargins(0, 0, 0, 0)
+        view_2d_label = QtWidgets.QLabel("2D View")
+        view_2d_label.setAlignment(QtCore.Qt.AlignCenter)
+        view_2d_label.setStyleSheet("background-color: #E0E0E0; padding: 2px; font-weight: bold;")
+        self.view_2d_layout.addWidget(view_2d_label)
+
+        self.view_3d_container = QtWidgets.QWidget()
+        self.view_3d_layout = QtWidgets.QVBoxLayout(self.view_3d_container)
+        self.view_3d_layout.setContentsMargins(0, 0, 0, 0)
+        view_3d_label = QtWidgets.QLabel("3D View")
+        view_3d_label.setAlignment(QtCore.Qt.AlignCenter)
+        view_3d_label.setStyleSheet("background-color: #E0E0E0; padding: 2px; font-weight: bold;")
+        self.view_3d_layout.addWidget(view_3d_label)
+
+        # 뷰 모드 2를 위한 독립적인 스플리터
+        self.vertical_split_layout2 = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.vertical_split_layout2.addWidget(self.view_2d_container)
+        self.vertical_split_layout2.addWidget(self.view_3d_container)
+        self.vertical_split_layout2.setSizes([300, 300])
+
+        # 전체 뷰를 가로로 분할 (2D+3D 컬럼 | 리스트)
+        self.split_view = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.split_view.addWidget(self.vertical_split_layout2)  # 2D+3D가 세로로 배치된 컬럼
+        self.split_view.setSizes([700, 300])  # 뷰어 영역을 더 크게
+
+        # 뷰 모드 3을 위한 3x2 그리드 레이아웃
+        self.grid_layout_widget = QtWidgets.QWidget()
+        self.grid_layout = QtWidgets.QGridLayout(self.grid_layout_widget)
+        self.grid_layout.setContentsMargins(0, 0, 0, 0)
+        self.grid_layout.setSpacing(0)
+        
+        # 컬럼 1: 페이지 미리보기 + 3D 뷰포트
+        self.col1_widget = QtWidgets.QWidget()
+        self.col1_layout = QtWidgets.QVBoxLayout(self.col1_widget)
+        self.col1_layout.setContentsMargins(0, 0, 0, 0)
+        self.col1_layout.setSpacing(0)
+        
+        # 페이지 미리보기 영역 (1,1)
+        self.page_preview_widget = QtWidgets.QWidget()
+        self.page_preview_layout = QtWidgets.QVBoxLayout(self.page_preview_widget)
+        self.page_preview_layout.setContentsMargins(0, 0, 0, 0)
+        page_preview_label = QtWidgets.QLabel("페이지 미리보기")
+        page_preview_label.setAlignment(QtCore.Qt.AlignCenter)
+        page_preview_label.setStyleSheet("background-color: #E0E0E0; padding: 2px; font-weight: bold;")
+        self.page_preview_layout.addWidget(page_preview_label)
+        
+        # 3D 뷰포트 영역 (2,1)
+        self.viewport_3d_widget = QtWidgets.QWidget()
+        self.viewport_3d_layout = QtWidgets.QVBoxLayout(self.viewport_3d_widget)
+        self.viewport_3d_layout.setContentsMargins(0, 0, 0, 0)
+        viewport_3d_label = QtWidgets.QLabel("3D 뷰포트")
+        viewport_3d_label.setAlignment(QtCore.Qt.AlignCenter)
+        viewport_3d_label.setStyleSheet("background-color: #E0E0E0; padding: 2px; font-weight: bold;")
+        self.viewport_3d_layout.addWidget(viewport_3d_label)
+        
+        # 3D 뷰포트 버튼들 생성
+        self._create_3d_viewport_buttons()
+        
+        self.col1_layout.addWidget(self.page_preview_widget)
+        self.col1_layout.addWidget(self.viewport_3d_widget)
+        
+        # 뷰 모드 3을 위한 독립적인 2D/3D 컨테이너들
+        self.view_2d_container_layout3 = QtWidgets.QWidget()
+        self.view_2d_layout_layout3 = QtWidgets.QVBoxLayout(self.view_2d_container_layout3)
+        self.view_2d_layout_layout3.setContentsMargins(0, 0, 0, 0)
+        view_2d_label_layout3 = QtWidgets.QLabel("2D View")
+        view_2d_label_layout3.setAlignment(QtCore.Qt.AlignCenter)
+        view_2d_label_layout3.setStyleSheet("background-color: #E0E0E0; padding: 2px; font-weight: bold;")
+        self.view_2d_layout_layout3.addWidget(view_2d_label_layout3)
+
+        self.view_3d_container_layout3 = QtWidgets.QWidget()
+        self.view_3d_layout_layout3 = QtWidgets.QVBoxLayout(self.view_3d_container_layout3)
+        self.view_3d_layout_layout3.setContentsMargins(0, 0, 0, 0)
+        view_3d_label_layout3 = QtWidgets.QLabel("3D View")
+        view_3d_label_layout3.setAlignment(QtCore.Qt.AlignCenter)
+        view_3d_label_layout3.setStyleSheet("background-color: #E0E0E0; padding: 2px; font-weight: bold;")
+        self.view_3d_layout_layout3.addWidget(view_3d_label_layout3)
+
+        # 뷰 모드 3을 위한 세로 스플리터
+        self.vertical_split_layout3 = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.vertical_split_layout3.addWidget(self.view_2d_container_layout3)
+        self.vertical_split_layout3.addWidget(self.view_3d_container_layout3)
+        self.vertical_split_layout3.setSizes([300, 300])
+        
+        # 컬럼 3: 넘버링 리스트
+        self.col3_widget = QtWidgets.QWidget()
+        self.col3_layout = QtWidgets.QVBoxLayout(self.col3_widget)
+        self.col3_layout.setContentsMargins(0, 0, 0, 0)
+        col3_label = QtWidgets.QLabel("넘버링 리스트")
+        col3_label.setAlignment(QtCore.Qt.AlignCenter)
+        col3_label.setStyleSheet("background-color: #E0E0E0; padding: 2px; font-weight: bold;")
+        self.col3_layout.addWidget(col3_label)
+        
+        # 그리드에 위젯 배치
+        self.grid_layout.addWidget(self.col1_widget, 0, 0, 2, 1)  # (1,1)과 (2,1) 차지
+        self.grid_layout.addWidget(self.vertical_split_layout3, 0, 1, 2, 1)  # (1,2)와 (2,2) 차지
+        self.grid_layout.addWidget(self.col3_widget, 0, 2, 2, 1)  # (1,3)과 (2,3) 차지
+        
+        # 컬럼 비율 설정 (1:3:1)
+        self.grid_layout.setColumnStretch(0, 1)  # 컬럼 1
+        self.grid_layout.setColumnStretch(1, 3)  # 컬럼 2
+        self.grid_layout.setColumnStretch(2, 1)  # 컬럼 3
+
+        # 중앙 위젯: 탭/분할 전환을 위한 스택
+        self.central_stack = QtWidgets.QStackedWidget()
+        self.central_stack.addWidget(self.tab_widget)
+        self.central_stack.addWidget(self.split_view)
+        self.central_stack.addWidget(self.grid_layout_widget)  # 뷰 모드 3을 위한 그리드 레이아웃
+        self.central_stack.setCurrentIndex(0)
+        self.setCentralWidget(self.central_stack)
+        print("DEBUG: Set central widget to central_stack")
+        self._use_view_in_tab()
         
         self._ee_armed = False
         self._ee_prev_state = False
@@ -1495,58 +2238,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._egg_timer = QtCore.QTimer(self)
         self._egg_timer.setSingleShot(True)
         self._egg_timer.timeout.connect(self._reset_egg_sequence)
-        
-        # 1. PDF 뷰어 위젯들을 먼저 생성합니다.
-        self.scene = PdfScene(self)
-        self.view = PdfView(self.scene, self)
-        
-        # 2. 3D 뷰어를 위한 위젯 생성
-        self.vlayout_3d = QtWidgets.QVBoxLayout()
-        self.widget_3d = QtWidgets.QWidget()
-        self.widget_3d.setLayout(self.vlayout_3d)
-        
-        # 3. 탭 위젯 생성 (기본 레이아웃용)
-        self.tab_widget = QtWidgets.QTabWidget()
-        self.tab_widget.addTab(self.view, "2D View")
-        self.tab_widget.addTab(self.widget_3d, "3D View")
-        
-        # 4. 분할 뷰 위젯 생성 (레이아웃1용: 2D와 3D 동시 표시)
-        self.split_view = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        
-        # 2D 뷰를 담을 컨테이너 (분할뷰용)
-        self.view_2d_container = QtWidgets.QWidget()
-        view_2d_layout = QtWidgets.QVBoxLayout(self.view_2d_container)
-        view_2d_layout.setContentsMargins(0, 0, 0, 0)
-        view_2d_label = QtWidgets.QLabel("2D View")
-        view_2d_label.setAlignment(QtCore.Qt.AlignCenter)
-        view_2d_label.setStyleSheet("background-color: #E0E0E0; padding: 2px; font-weight: bold;")
-        view_2d_layout.addWidget(view_2d_label)
-        view_2d_layout.addWidget(self.view)
-        
-        # 3D 뷰를 담을 컨테이너 (분할뷰용)
-        self.view_3d_container = QtWidgets.QWidget()
-        view_3d_layout = QtWidgets.QVBoxLayout(self.view_3d_container)
-        view_3d_layout.setContentsMargins(0, 0, 0, 0)
-        view_3d_label = QtWidgets.QLabel("3D View")
-        view_3d_label.setAlignment(QtCore.Qt.AlignCenter)
-        view_3d_label.setStyleSheet("background-color: #E0E0E0; padding: 2px; font-weight: bold;")
-        view_3d_layout.addWidget(view_3d_label)
-        view_3d_layout.addWidget(self.widget_3d)
-        
-        self.split_view.addWidget(self.view_2d_container)
-        self.split_view.addWidget(self.view_3d_container)
-        self.split_view.setSizes([500, 500])  # 기본 1:1 비율
-        
-        # 5. 중앙 위젯 컨테이너 (탭 모드와 분할 모드를 전환)
-        self.central_stack = QtWidgets.QStackedWidget()
-        self.central_stack.addWidget(self.tab_widget)      # 0: 탭 모드
-        self.central_stack.addWidget(self.split_view)      # 1: 분할 모드
-        self.setCentralWidget(self.central_stack)
-        # ▲▲▲ [수정 끝] ▲▲▲
-        # ▲▲▲ [수정 끝] ▲▲▲
-        self.scene.clicked.connect(self.on_clicked); self.scene.moved.connect(self.on_scene_moved)
-        self.view.zoom_changed.connect(self._on_zoom_changed)
-        
         # 다시 수정.. 4.00에서.
         # ===== ▼▼▼ 페이지 네비게이션 UI 생성 (수정) ▼▼▼ =====
         self.btn_prev = QtWidgets.QPushButton("< 이전")
@@ -1688,24 +2379,44 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         # --- 7. 스타일시트 적용 ---
         self.setStyleSheet("""
-            QToolBar { border: none; background-color: #F0F0F0; }
-            QToolBar QToolButton { border: 1px solid transparent; border-radius: 4px; padding: 3px; }
-            QToolBar QToolButton:checked { background-color: #D6EAF8; border: 1px solid #A9CCE3; }
-            QGroupBox {
-                border: 1px solid #D5D8DC;
-                border-radius: 6px;
-                margin-top: 15px; /* 제목을 위한 상단 여백 확보 */
+            QToolBar { 
+                border: none; 
+                background-color: #f8fafc; 
+                spacing: 4px;
             }
-
+            QGroupBox {
+                border: 2px solid #e1e5e9;
+                border-radius: 8px;
+                margin-top: 15px;
+                font-weight: 600;
+                font-size: 13px;
+                color: #374151;
+            }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                subcontrol-position: top center;
-                padding: 0 10px; /* 좌우 패딩 */
+                left: 10px;
+                padding: 0 8px 0 8px;
+                background-color: white;
+                font-weight: 600;
+                font-size: 13px;
+                color: #374151;
             }
-            
-            QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top center; padding: 10px; color: #606060; }
-            QDockWidget { border: 1px solid #C8C8C8; }
-            QDockWidget::title { text-align: center; background-color: #E6E6E6; padding: 4px; }
+            QDockWidget { 
+                border: 2px solid #e1e5e9; 
+                border-radius: 8px;
+            }
+            QDockWidget::title { 
+                text-align: center; 
+                background-color: #f1f5f9; 
+                padding: 6px; 
+                font-weight: 600;
+                font-size: 13px;
+                color: #374151;
+                border-bottom: 1px solid #e1e5e9;
+            }
+            QMainWindow {
+                background-color: #ffffff;
+            }
         """)
 
         # --- 8. 최종 상태 업데이트 ---
@@ -1983,6 +2694,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 3. 새로운 3D 뷰어(plotter)를 만듭니다.
         plotter = QtInteractor(self.widget_3d)
         self.vlayout_3d.addWidget(plotter.interactor)
+        
+        # 3D 뷰어 커서 설정
+        plotter.interactor.setCursor(QtCore.Qt.CrossCursor)
 
         # 4. 3D 모델을 뷰어에 추가하는 내부 함수 정의
         def render_solid_mesh(geom):
@@ -2447,9 +3161,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
     def import_pdf_from_path(self, path):
         # 이 함수는 이제 '새 집을 짓는' 역할에만 집중합니다.
+        print(f"DEBUG: import_pdf_from_path called with {path}")
         try:
             self.doc = fitz.open(path)
+            print(f"DEBUG: PDF loaded successfully, {len(self.doc)} pages")
         except Exception as e:
+            print(f"DEBUG: PDF loading failed: {e}")
             _log_error(self, "PDF 열기 오류", e)
             self.doc = None # 오류 시 doc 객체 확실히 비우기
             self._update_page_navigation_ui()
@@ -2515,12 +3232,19 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             
             
     def load_page(self,index:int):
-        if not self.doc: return
+        if not self.doc: 
+            print(f"DEBUG: load_page called but no doc loaded")
+            return
+            
+        print(f"DEBUG: load_page called with index {index}")
         index=max(0,min(index,len(self.doc)-1)); self.cur_page_index=index
         page=self.doc[index]; pix=page.get_pixmap(matrix=fitz.Matrix(self.render_scale,self.render_scale),alpha=False)
         img=QtGui.QImage(pix.samples,pix.width,pix.height,pix.stride,QtGui.QImage.Format_RGB888)
         pm=QtGui.QPixmap.fromImage(img.copy())
         
+        print(f"DEBUG: Pixmap created: {pm.width()}x{pm.height()}")
+        
+        # 일단 기본 뷰어만 사용
         self.scene.clear()
         # ▼▼▼ [결정적 수정] 파괴된 객체에 대한 참조를 여기서 모두 초기화합니다. ▼▼▼
         self._preview_ellipse = None
@@ -2534,16 +3258,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         
         self._page_pix=self.scene.addPixmap(pm)
         self.view.setSceneRect(pm.rect())
+        print(f"DEBUG: Pixmap added to scene, scene rect set to {pm.rect()}")
 
         if self.view_show_numbering:
             for it in self.items:
                 if it.page_index == index:
-                    self._draw_label(it)
+                    self._draw_label(it, self.scene)
         
         if self.view_show_stamps:
             for st in self.stamps:
                 if st.page_index == index:
-                    self._draw_stamp(st)
+                    self._draw_stamp(st, self.scene)
 
         if self.flow_view_enabled:
             self._draw_flow_elements()
@@ -3146,16 +3871,19 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if style.fill_none or style.fill_color.alpha()==0: return QtCore.Qt.NoBrush
         return QtGui.QBrush(style.fill_color)
 
-    def _draw_label(self,it:MarkItem):
+    def _draw_label(self,it:MarkItem, scene=None):
+        if scene is None:
+            scene = self.scene
+            
         # --- 수정: 그리기 전에 사용할 스타일 결정 ---
         style = it.custom_style if it.custom_style else self.style
 
         pt=self.pdf_to_view(*it.pdf_point); r=style.radius_view_px
-        ellipse = self.scene.addEllipse(pt.x()-r,pt.y()-r,2*r,2*r,
+        ellipse = scene.addEllipse(pt.x()-r,pt.y()-r,2*r,2*r,
                               pen=QtGui.QPen(style.stroke_color,style.stroke_width),
                               brush=self._ellipse_brush(style)) # _ellipse_brush도 style을 받도록 수정 필요
         
-        txt = self.scene.addText(self._format_no(it.no),
+        txt = scene.addText(self._format_no(it.no),
                          QtGui.QFont("Arial", style.font_size_view_px, QtGui.QFont.Bold))
         
         txt.setDefaultTextColor(style.text_color)

@@ -79,10 +79,10 @@ class ThumbnailLabel(QtWidgets.QLabel):
         super().mousePressEvent(event)
     def setActive(self, is_active: bool):
         if is_active:
-            self.setStyleSheet("border: 3px solid #0078D7;")
+            self.setStyleSheet("border: 3px solid #18181B; border-radius: 4px;")
             self.overlay.hide()
         else:
-            self.setStyleSheet("border: 3px solid #AAAAAA;")
+            self.setStyleSheet("border: 3px solid #E4E4E7; border-radius: 4px;")
             self.overlay.show()
     def resizeEvent(self, event):
         self.overlay.resize(event.size())

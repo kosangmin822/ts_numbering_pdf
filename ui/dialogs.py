@@ -6,32 +6,75 @@ import json
 import pandas as pd
 from PySide6 import QtWidgets, QtCore, QtGui
 from utils.helpers import resource_path
+from ui.styles import GLOBAL_STYLESHEET
 
 class NewProjectDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, default_name="", default_dir=""):
         super().__init__(parent)
         self.setWindowTitle("새 프로젝트 생성")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(250)
         self.project_name = ""
         self.project_dir = ""
-        layout = QtWidgets.QFormLayout(self)
+        
+        # 메인 레이아웃
+        main_layout = QtWidgets.QVBoxLayout(self)
+        main_layout.setSpacing(20)
+        main_layout.setContentsMargins(24, 24, 24, 24)
+        
+        # 제목
+        title_label = QtWidgets.QLabel("새 프로젝트 생성")
+        title_label.setStyleSheet("font-size: 18px; font-weight: 600; color: #09090B;")
+        main_layout.addWidget(title_label)
+        
+        # 입력 폼
+        form_layout = QtWidgets.QFormLayout()
+        form_layout.setSpacing(16)
+        form_layout.setLabelAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        
+        # 프로젝트 이름
+        name_label = QtWidgets.QLabel("프로젝트 이름:")
+        name_label.setStyleSheet("font-size: 14px; font-weight: 500;")
         self.name_edit = QtWidgets.QLineEdit()
         self.name_edit.setPlaceholderText("예: PJT-2025-09-21")
         self.name_edit.setText(default_name)
-        layout.addRow("<b>프로젝트 이름:</b>", self.name_edit)
+        form_layout.addRow(name_label, self.name_edit)
+        
+        # 작업 폴더
+        dir_label = QtWidgets.QLabel("작업 폴더:")
+        dir_label.setStyleSheet("font-size: 14px; font-weight: 500;")
         dir_layout = QtWidgets.QHBoxLayout()
+        dir_layout.setSpacing(8)
         self.dir_edit = QtWidgets.QLineEdit()
         self.dir_edit.setReadOnly(True)
         self.dir_edit.setText(default_dir)
         self.dir_button = QtWidgets.QPushButton("폴더 선택...")
+        self.dir_button.setProperty("buttonStyle", "secondary")
         self.dir_button.clicked.connect(self.select_directory)
-        dir_layout.addWidget(self.dir_edit)
+        dir_layout.addWidget(self.dir_edit, 1)
         dir_layout.addWidget(self.dir_button)
-        layout.addRow("<b>작업 폴더:</b>", dir_layout)
-        button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
-        button_box.accepted.connect(self.validate_and_accept)
-        button_box.rejected.connect(self.reject)
-        layout.addRow(button_box)
+        form_layout.addRow(dir_label, dir_layout)
+        
+        main_layout.addLayout(form_layout)
+        main_layout.addStretch()
+        
+        # 버튼
+        button_layout = QtWidgets.QHBoxLayout()
+        button_layout.setSpacing(8)
+        button_layout.addStretch()
+        
+        cancel_button = QtWidgets.QPushButton("취소")
+        cancel_button.setProperty("buttonStyle", "secondary")
+        cancel_button.setMinimumWidth(100)
+        cancel_button.clicked.connect(self.reject)
+        
+        ok_button = QtWidgets.QPushButton("생성")
+        ok_button.setMinimumWidth(100)
+        ok_button.clicked.connect(self.validate_and_accept)
+        
+        button_layout.addWidget(cancel_button)
+        button_layout.addWidget(ok_button)
+        main_layout.addLayout(button_layout)
     def select_directory(self):
         directory = QtWidgets.QFileDialog.getExistingDirectory(self, "작업 폴더를 선택하세요")
         if directory:
@@ -53,23 +96,61 @@ class InsertDialog(QtWidgets.QDialog):
     def __init__(self, target_no, parent=None):
         super().__init__(parent)
         self.setWindowTitle("새 항목 삽입")
+        self.setMinimumWidth(480)
         self.choice = "excel"
+        
         layout = QtWidgets.QVBoxLayout(self)
-        label = QtWidgets.QLabel(f"<b>{target_no:g}번</b> 위치에 새 항목을 삽입합니다.<br>방식을 선택해주세요.")
-        layout.addWidget(label)
+        layout.setSpacing(20)
+        layout.setContentsMargins(24, 24, 24, 24)
+        
+        # 제목
+        title_label = QtWidgets.QLabel("새 항목 삽입")
+        title_label.setStyleSheet("font-size: 18px; font-weight: 600; color: #09090B;")
+        layout.addWidget(title_label)
+        
+        # 설명
+        desc_label = QtWidgets.QLabel(f"<b>{target_no:g}번</b> 위치에 새 항목을 삽입합니다.<br>방식을 선택해주세요.")
+        desc_label.setStyleSheet("font-size: 14px; color: #71717A; margin-bottom: 8px;")
+        layout.addWidget(desc_label)
+        
+        # 옵션 그룹
+        options_group = QtWidgets.QGroupBox()
+        options_group.setStyleSheet("QGroupBox { border: none; padding: 0; margin: 0; }")
+        options_layout = QtWidgets.QVBoxLayout(options_group)
+        options_layout.setSpacing(12)
+        
         self.radio_excel = QtWidgets.QRadioButton("빈 행 삽입 (Excel 방식)")
         self.radio_excel.setToolTip("새로운 정수 번호를 삽입하고, 기존 번호들을 뒤로 밀어냅니다.")
         self.radio_excel.setChecked(True)
         self.radio_excel.toggled.connect(lambda: self.set_choice("excel"))
-        layout.addWidget(self.radio_excel)
+        
         self.radio_precision = QtWidgets.QRadioButton("소수점 번호 삽입 (정밀 방식)")
         self.radio_precision.setToolTip("기존 번호는 유지하고, 8.5, 9.1과 같은 소수점 번호를 삽입합니다.")
         self.radio_precision.toggled.connect(lambda: self.set_choice("precision"))
-        layout.addWidget(self.radio_precision)
-        button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
+        
+        options_layout.addWidget(self.radio_excel)
+        options_layout.addWidget(self.radio_precision)
+        layout.addWidget(options_group)
+        
+        layout.addStretch()
+        
+        # 버튼
+        button_layout = QtWidgets.QHBoxLayout()
+        button_layout.setSpacing(8)
+        button_layout.addStretch()
+        
+        cancel_button = QtWidgets.QPushButton("취소")
+        cancel_button.setProperty("buttonStyle", "secondary")
+        cancel_button.setMinimumWidth(100)
+        cancel_button.clicked.connect(self.reject)
+        
+        ok_button = QtWidgets.QPushButton("삽입")
+        ok_button.setMinimumWidth(100)
+        ok_button.clicked.connect(self.accept)
+        
+        button_layout.addWidget(cancel_button)
+        button_layout.addWidget(ok_button)
+        layout.addLayout(button_layout)
     def set_choice(self, choice):
         self.choice = choice
     @staticmethod
@@ -83,17 +164,34 @@ class AppendPdfDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("PDF 가져오기 방식 선택")
+        self.setMinimumWidth(450)
         self.choice = None
+        
         layout = QtWidgets.QVBoxLayout(self)
+        layout.setSpacing(20)
+        layout.setContentsMargins(24, 24, 24, 24)
+        
+        # 제목
+        title_label = QtWidgets.QLabel("PDF 가져오기")
+        title_label.setStyleSheet("font-size: 18px; font-weight: 600; color: #09090B;")
+        layout.addWidget(title_label)
+        
+        # 설명
         label = QtWidgets.QLabel("이미 열려있는 PDF 문서가 있습니다.\n작업 방식을 선택해주세요.")
+        label.setStyleSheet("font-size: 14px; color: #71717A; margin-bottom: 8px;")
         layout.addWidget(label)
+        
+        # 버튼들
         btn_replace = QtWidgets.QPushButton("새로 불러오기 (기존 작업 닫기)")
+        btn_replace.setProperty("buttonStyle", "secondary")
+        btn_replace.setMinimumHeight(48)
         btn_replace.clicked.connect(self.select_replace)
         layout.addWidget(btn_replace)
+        
         btn_append = QtWidgets.QPushButton("뒤에 이어붙이기")
+        btn_append.setMinimumHeight(48)
         btn_append.clicked.connect(self.select_append)
         layout.addWidget(btn_append)
-        self.setMinimumWidth(300)
     def select_replace(self):
         self.choice = "replace"
         self.accept()
@@ -105,58 +203,116 @@ class StampSettingsDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("스탬프 설정")
-        self.setMinimumWidth(350)
+        self.setMinimumWidth(500)
         self.settings = {
             "opacity": 1.0, "rotation": 0.0,
             "opacity_random": True, "rotation_random": True,
             "opacity_min": 0.9, "opacity_max": 1.0,
             "rotation_min": -5.0, "rotation_max": 5.0
         }
-        layout = QtWidgets.QFormLayout(self)
+        
+        main_layout = QtWidgets.QVBoxLayout(self)
+        main_layout.setSpacing(20)
+        main_layout.setContentsMargins(24, 24, 24, 24)
+        
+        # 제목
+        title_label = QtWidgets.QLabel("스탬프 설정")
+        title_label.setStyleSheet("font-size: 18px; font-weight: 600; color: #09090B;")
+        main_layout.addWidget(title_label)
+        
+        # 투명도 그룹
         opacity_group = QtWidgets.QGroupBox("투명도 (Opacity)")
         opacity_layout = QtWidgets.QVBoxLayout(opacity_group)
+        opacity_layout.setSpacing(12)
+        
         self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.opacity_slider.setRange(0, 100)
         self.opacity_label = QtWidgets.QLabel("100%")
+        self.opacity_label.setStyleSheet("min-width: 50px; font-weight: 500;")
+        
         fixed_opacity_layout = QtWidgets.QHBoxLayout()
         fixed_opacity_layout.addWidget(QtWidgets.QLabel("고정 값:"))
-        fixed_opacity_layout.addWidget(self.opacity_slider)
+        fixed_opacity_layout.addWidget(self.opacity_slider, 1)
         fixed_opacity_layout.addWidget(self.opacity_label)
+        
         self.opacity_random_cb = QtWidgets.QCheckBox("랜덤 범위 사용")
-        self.opacity_min_spin = QtWidgets.QDoubleSpinBox(); self.opacity_min_spin.setRange(0.0, 1.0); self.opacity_min_spin.setSingleStep(0.01)
-        self.opacity_max_spin = QtWidgets.QDoubleSpinBox(); self.opacity_max_spin.setRange(0.0, 1.0); self.opacity_max_spin.setSingleStep(0.01)
+        self.opacity_min_spin = QtWidgets.QDoubleSpinBox()
+        self.opacity_min_spin.setRange(0.0, 1.0)
+        self.opacity_min_spin.setSingleStep(0.01)
+        self.opacity_max_spin = QtWidgets.QDoubleSpinBox()
+        self.opacity_max_spin.setRange(0.0, 1.0)
+        self.opacity_max_spin.setSingleStep(0.01)
+        
         random_opacity_layout = QtWidgets.QHBoxLayout()
-        random_opacity_layout.addWidget(self.opacity_min_spin); random_opacity_layout.addWidget(QtWidgets.QLabel("~")); random_opacity_layout.addWidget(self.opacity_max_spin)
+        random_opacity_layout.addWidget(QtWidgets.QLabel("범위:"))
+        random_opacity_layout.addWidget(self.opacity_min_spin, 1)
+        random_opacity_layout.addWidget(QtWidgets.QLabel("~"))
+        random_opacity_layout.addWidget(self.opacity_max_spin, 1)
+        
         opacity_layout.addLayout(fixed_opacity_layout)
         opacity_layout.addWidget(self.opacity_random_cb)
         opacity_layout.addLayout(random_opacity_layout)
+        main_layout.addWidget(opacity_group)
+        
+        # 회전 그룹
         rotation_group = QtWidgets.QGroupBox("회전 (Rotation)")
         rotation_layout = QtWidgets.QVBoxLayout(rotation_group)
+        rotation_layout.setSpacing(12)
+        
         self.rotation_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.rotation_slider.setRange(-180, 180)
         self.rotation_label = QtWidgets.QLabel("0°")
+        self.rotation_label.setStyleSheet("min-width: 50px; font-weight: 500;")
+        
         fixed_rotation_layout = QtWidgets.QHBoxLayout()
         fixed_rotation_layout.addWidget(QtWidgets.QLabel("고정 값:"))
-        fixed_rotation_layout.addWidget(self.rotation_slider)
+        fixed_rotation_layout.addWidget(self.rotation_slider, 1)
         fixed_rotation_layout.addWidget(self.rotation_label)
+        
         self.rotation_random_cb = QtWidgets.QCheckBox("랜덤 범위 사용")
-        self.rotation_min_spin = QtWidgets.QDoubleSpinBox(); self.rotation_min_spin.setRange(-360, 360); self.rotation_min_spin.setSingleStep(0.1)
-        self.rotation_max_spin = QtWidgets.QDoubleSpinBox(); self.rotation_max_spin.setRange(-360, 360); self.rotation_max_spin.setSingleStep(0.1)
+        self.rotation_min_spin = QtWidgets.QDoubleSpinBox()
+        self.rotation_min_spin.setRange(-360, 360)
+        self.rotation_min_spin.setSingleStep(0.1)
+        self.rotation_max_spin = QtWidgets.QDoubleSpinBox()
+        self.rotation_max_spin.setRange(-360, 360)
+        self.rotation_max_spin.setSingleStep(0.1)
+        
         random_rotation_layout = QtWidgets.QHBoxLayout()
-        random_rotation_layout.addWidget(self.rotation_min_spin); random_rotation_layout.addWidget(QtWidgets.QLabel("~")); random_rotation_layout.addWidget(self.rotation_max_spin)
+        random_rotation_layout.addWidget(QtWidgets.QLabel("범위:"))
+        random_rotation_layout.addWidget(self.rotation_min_spin, 1)
+        random_rotation_layout.addWidget(QtWidgets.QLabel("~"))
+        random_rotation_layout.addWidget(self.rotation_max_spin, 1)
+        
         rotation_layout.addLayout(fixed_rotation_layout)
         rotation_layout.addWidget(self.rotation_random_cb)
         rotation_layout.addLayout(random_rotation_layout)
-        button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
-        layout.addWidget(opacity_group)
-        layout.addWidget(rotation_group)
-        layout.addWidget(button_box)
+        main_layout.addWidget(rotation_group)
+        
+        main_layout.addStretch()
+        
+        # 버튼
+        button_layout = QtWidgets.QHBoxLayout()
+        button_layout.setSpacing(8)
+        button_layout.addStretch()
+        
+        cancel_button = QtWidgets.QPushButton("취소")
+        cancel_button.setProperty("buttonStyle", "secondary")
+        cancel_button.setMinimumWidth(100)
+        cancel_button.clicked.connect(self.reject)
+        
+        ok_button = QtWidgets.QPushButton("저장")
+        ok_button.setMinimumWidth(100)
+        ok_button.clicked.connect(self.accept_settings)
+        
+        button_layout.addWidget(cancel_button)
+        button_layout.addWidget(ok_button)
+        main_layout.addLayout(button_layout)
+        
+        # 시그널 연결
         self.opacity_slider.valueChanged.connect(lambda v: self.opacity_label.setText(f"{v}%"))
         self.rotation_slider.valueChanged.connect(lambda v: self.rotation_label.setText(f"{v}°"))
         self.opacity_random_cb.toggled.connect(self.update_ui_state)
         self.rotation_random_cb.toggled.connect(self.update_ui_state)
-        button_box.accepted.connect(self.accept_settings)
-        button_box.rejected.connect(self.reject)
     def set_settings(self, settings: dict):
         self.settings = settings.copy()
         self.opacity_slider.setValue(int(self.settings.get("opacity", 1.0) * 100))
@@ -361,21 +517,35 @@ class NumberingModeDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("넘버링 방식 선택")
+        self.setMinimumWidth(550)
         self.choice = "global"
+        
         layout = QtWidgets.QVBoxLayout(self)
+        layout.setSpacing(20)
+        layout.setContentsMargins(24, 24, 24, 24)
+        
+        # 제목
+        title_label = QtWidgets.QLabel("넘버링 방식 선택")
+        title_label.setStyleSheet("font-size: 18px; font-weight: 600; color: #09090B;")
+        layout.addWidget(title_label)
+        
+        # 설명
         label = QtWidgets.QLabel("2페이지 이상 작업을 할 경우 모드 설정입니다.\n넘버링 방식을 선택해주세요.")
+        label.setStyleSheet("font-size: 14px; color: #71717A; margin-bottom: 8px;")
         label.setAlignment(QtCore.Qt.AlignCenter)
         layout.addWidget(label)
-        button_style = "QPushButton { font-size: 14px; padding: 10px; }"
-        btn_global = QtWidgets.QPushButton("전체 페이지 이어서 넘버링 (P.1 (1, 2), P.2(3, 4) ...)")
-        btn_global.setStyleSheet(button_style)
+        
+        # 버튼들
+        btn_global = QtWidgets.QPushButton("전체 페이지 이어서 넘버링\n(P.1: 1, 2 / P.2: 3, 4 ...)")
+        btn_global.setMinimumHeight(60)
         btn_global.clicked.connect(self.select_global)
         layout.addWidget(btn_global)
-        btn_page = QtWidgets.QPushButton("페이지마다 새로 넘버링 (P.1(1, 2) / P.2(1, 2), ...)")
-        btn_page.setStyleSheet(button_style)
+        
+        btn_page = QtWidgets.QPushButton("페이지마다 새로 넘버링\n(P.1: 1, 2 / P.2: 1, 2 ...)")
+        btn_page.setProperty("buttonStyle", "secondary")
+        btn_page.setMinimumHeight(60)
         btn_page.clicked.connect(self.select_page)
         layout.addWidget(btn_page)
-        self.setMinimumWidth(400)
     def select_global(self):
         self.choice = "global"
         self.accept()
@@ -391,25 +561,59 @@ class SaveOptionsDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("저장 옵션 선택")
-        self.save_option = "link"  # 기본 선택
+        self.setMinimumWidth(500)
+        self.save_option = "link"
 
         layout = QtWidgets.QVBoxLayout(self)
+        layout.setSpacing(20)
+        layout.setContentsMargins(24, 24, 24, 24)
+        
+        # 제목
+        title_label = QtWidgets.QLabel("저장 옵션 선택")
+        title_label.setStyleSheet("font-size: 18px; font-weight: 600; color: #09090B;")
+        layout.addWidget(title_label)
+        
+        # 설명
         label = QtWidgets.QLabel("3D 모델 파일의 저장 방식을 선택해주세요.")
+        label.setStyleSheet("font-size: 14px; color: #71717A; margin-bottom: 8px;")
         layout.addWidget(label)
 
+        # 옵션 그룹
+        options_group = QtWidgets.QGroupBox()
+        options_group.setStyleSheet("QGroupBox { border: none; padding: 0; margin: 0; }")
+        options_layout = QtWidgets.QVBoxLayout(options_group)
+        options_layout.setSpacing(12)
+        
         self.radio_link = QtWidgets.QRadioButton("경로만 저장 (작은 파일 크기, 원본 파일 유지 필요)")
         self.radio_link.setChecked(True)
         self.radio_link.toggled.connect(lambda: self.set_option("link"))
-        layout.addWidget(self.radio_link)
-
+        
         self.radio_embed = QtWidgets.QRadioButton("파일을 프로젝트에 포함하여 저장 (완전한 백업, 파일 크기 커짐)")
         self.radio_embed.toggled.connect(lambda: self.set_option("embed"))
-        layout.addWidget(self.radio_embed)
-
-        button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel)
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
+        
+        options_layout.addWidget(self.radio_link)
+        options_layout.addWidget(self.radio_embed)
+        layout.addWidget(options_group)
+        
+        layout.addStretch()
+        
+        # 버튼
+        button_layout = QtWidgets.QHBoxLayout()
+        button_layout.setSpacing(8)
+        button_layout.addStretch()
+        
+        cancel_button = QtWidgets.QPushButton("취소")
+        cancel_button.setProperty("buttonStyle", "secondary")
+        cancel_button.setMinimumWidth(100)
+        cancel_button.clicked.connect(self.reject)
+        
+        save_button = QtWidgets.QPushButton("저장")
+        save_button.setMinimumWidth(100)
+        save_button.clicked.connect(self.accept)
+        
+        button_layout.addWidget(cancel_button)
+        button_layout.addWidget(save_button)
+        layout.addLayout(button_layout)
 
     def set_option(self, option):
         self.save_option = option
