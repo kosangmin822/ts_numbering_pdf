@@ -99,11 +99,11 @@ class Worker(QObject):
 
         except Exception as e:
             self.error.emit(str(e))
-                
+
 class PdfAnnotator(QtWidgets.QMainWindow):
     # Worker를 시작시키는 신호 추가
     start_loading_3d = Signal(str)
-    
+
     def publish_project(self):
         SERVER_URL = "http://127.0.0.1:5000/api/publish"
 
@@ -124,7 +124,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 "custom_style": item.custom_style.to_dict() if item.custom_style else None
             }
             items_data.append(item_dict)
-        
+
         project_data = {
             "projectName": self.project_name or "Untitled Project",
             "items": items_data
@@ -134,7 +134,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         try:
             # self.doc.tobytes()를 사용해 현재 PDF 문서의 내용을 바이트 데이터로 변환
             pdf_bytes = self.doc.tobytes()
-            
+
             # 업로드할 때 사용할 파일명 결정
             pdf_filename = f"{self.project_name or 'source'}.pdf"
 
@@ -164,27 +164,27 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         except requests.exceptions.RequestException as e:
             QtWidgets.QMessageBox.critical(self, "연결 오류", f"테스트 서버에 연결할 수 없습니다.\n\n{e}")
         # ▲▲▲ [수정 끝] ▲▲▲
-        
-    
+
+
     def _append_pdf(self, path_to_append: str):
         """선택한 PDF 파일을 원본 그대로 현재 문서 뒤에 이어붙입니다."""
         try:
             new_doc = fitz.open(path_to_append)
-            
+
             # ▼▼▼ [핵심] 이어붙이기 전의 상태를 기록합니다. ▼▼▼
             original_page_count = len(self.doc)
             num_new_pages = len(new_doc)
-            
+
             # 원본 그대로 이어붙이기
             self.doc.insert_pdf(new_doc)
-            
+
             new_doc.close()
-            
+
             # UI 새로고침
             self._set_dirty(True)
             self._update_page_navigation_ui()
             self._populate_thumbnails()
-            
+
             # ▼▼▼ [핵심] 상태 표시줄 메시지 대신, 정보창을 띄웁니다. ▼▼▼
             # self.statusBar().showMessage(...) # 이 줄을 삭제하고,
             msg = (f"{original_page_count}페이지 뒤에 {original_page_count + 1}페이지부터 {len(self.doc)}페이지까지\n"
@@ -194,7 +194,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         except Exception as e:
             _log_error(self, "PDF 이어붙이기 오류", e)
-    
+
     def rotate_page_left(self):
         """현재 페이지를 왼쪽으로 90도 회전합니다."""
         if not self.doc: return
@@ -214,7 +214,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._set_dirty(True)
         self.load_page(self.cur_page_index) # 화면 새로고침
         self._populate_thumbnails() # 썸네일도 새로고침
-    
+
     # ===== ▼▼▼ 스탬프 하이라이트 및 삭제 함수 (새로 추가) ▼▼▼ =====
     def _delete_selected_stamps(self):
         """스탬프 테이블에서 선택된 스탬프들을 삭제합니다."""
@@ -222,12 +222,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if not selected_rows: return
 
         stamps_on_page = [s for s in self.stamps if s.page_index == self.cur_page_index]
-        
+
         for row in selected_rows:
             if 0 <= row < len(stamps_on_page):
                 stamp_to_delete = stamps_on_page[row]
                 self.stamps.remove(stamp_to_delete) # 데이터 목록에서 삭제
-                
+
                 # 화면(Scene)에서 그래픽 아이템 삭제
                 if id(stamp_to_delete) in self._stamp_graphics_items:
                     self.scene.removeItem(self._stamp_graphics_items[id(stamp_to_delete)])
@@ -249,10 +249,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if id(stamp_item) in self._stamp_graphics_items:
             graphic_item = self._stamp_graphics_items[id(stamp_item)]
             rect = graphic_item.boundingRect()
-            
+
             pen = QtGui.QPen(QtGui.QColor("#0078D7"), 4 / graphic_item.scale()) # 선 굵기도 스케일에 맞게 조절
             self._highlighted_stamp_rect = self.scene.addRect(rect, pen)
-            
+
             # ▼▼▼ [핵심 추가] 하이라이트에도 스탬프와 동일한 기준점과 스케일을 적용합니다. ▼▼▼
             self._highlighted_stamp_rect.setTransformOriginPoint(rect.center())
             self._highlighted_stamp_rect.setScale(graphic_item.scale())
@@ -261,7 +261,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self._highlighted_stamp_rect.setPos(graphic_item.pos())
             self._highlighted_stamp_rect.setRotation(graphic_item.rotation())
             self._highlighted_stamp_rect.setZValue(10)
-            
+
 
     def _clear_stamp_highlight(self):
         """스탬프 하이라이트를 제거합니다."""
@@ -312,25 +312,25 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         self._stamp_graphics_items[id(stamp_item)] = item
 
-    
+
     def _refresh_stamp_table(self):
         """현재 페이지에 있는 스탬프 목록으로 스탬프 테이블을 새로고칩니다."""
         self.stamp_table.setRowCount(0)
-        
+
         # 현재 페이지의 스탬프만 필터링
         stamps_on_page = [s for s in self.stamps if s.page_index == self.cur_page_index]
-        
+
         for i, stamp_item in enumerate(stamps_on_page):
             row = self.stamp_table.rowCount()
             self.stamp_table.insertRow(row)
-            
+
             no_item = QtWidgets.QTableWidgetItem(str(i + 1))
             no_item.setTextAlignment(QtCore.Qt.AlignCenter)
-            
+
             self.stamp_table.setItem(row, 0, no_item)
             self.stamp_table.setItem(row, 1, QtWidgets.QTableWidgetItem(stamp_item.stamp_key))
-    
-    
+
+
     def _update_stamp_selector(self):
         """self.registered_stamps 목록을 툴바의 ComboBox에 반영합니다."""
         self.stamp_selector.clear()
@@ -340,7 +340,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         else:
             self.stamp_selector.addItems(self.registered_stamps.keys())
             self.stamp_selector.setEnabled(True)
-    
+
     def open_stamp_settings(self):
         """스탬프 설정 대화상자를 엽니다."""
         dialog = StampSettingsDialog(self)
@@ -363,7 +363,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.stamp_rotation_min = new_settings["rotation_min"]
             self.stamp_rotation_max = new_settings["rotation_max"]
             self._set_dirty() # 설정이 변경되었으므로 저장 필요
-    
+
     def open_stamp_manager(self):
         """스탬프 관리 대화상자를 엽니다."""
         # ▼▼▼ 전역 설정을 딕셔너리로 묶어서 전달합니다. ▼▼▼
@@ -382,15 +382,15 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self._update_stamp_button_icon)
             self.statusBar().showMessage(f"{len(self.registered_stamps)}개의 스탬프가 등록되었습니다.")
             self._set_dirty()
-    
-    
+
+
     # ... toggle_flow_view 함수 근처 ...
     def toggle_flow_view(self, checked):
         """흐름도 보기 상태를 변경하고, 화면 전체를 새로고침합니다."""
         # 1. 흐름도를 켜려고 할 때, 넘버링 보기가 켜져 있는지 먼저 확인합니다.
         if checked and not self.view_show_numbering:
             QtWidgets.QMessageBox.warning(self, "알림", "흐름도를 보려면 먼저 '넘버링 보기'를 켜주세요.")
-            
+
             # 2. (중요) UI의 토글 버튼이 켜진 상태로 바뀌었을 것이므로, 다시 끈 상태로 되돌립니다.
             self.action_toggle_flow_view.setChecked(False)
             return # 함수 실행을 중단합니다.
@@ -398,8 +398,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 3. 조건에 맞을 때만 상태를 변경하고 새로고침합니다.
         self.flow_view_enabled = checked
         self.load_page(self.cur_page_index)
-        
-        
+
+
     def toggle_numbering_view(self, checked):
         """넘버링 보기 상태를 변경하고, 화면 전체를 새로고침합니다."""
         # 1. 넘버링 보기를 끌 경우, 흐름도 보기도 함께 끕니다.
@@ -411,13 +411,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 2. 원래의 기능을 수행합니다.
         self.view_show_numbering = checked
         self.load_page(self.cur_page_index)
-        
+
     def toggle_stamps_view(self, checked):
         """스탬프 보기 상태를 변경하고, 화면 전체를 새로고침합니다."""
         # print(f"\n>>> [탐침 #3] 스탬프 보기 토글됨: {checked} <<<") # <-- 추가
         self.view_show_stamps = checked
         self.load_page(self.cur_page_index)
-    
+
     def _format_no(self, no: float) -> str:
         """정수면 '11', 소수면 '11.5'처럼 깔끔하게 표시."""
         return f"{no:.0f}" if abs(no - round(no)) < 1e-9 else f"{no:g}"
@@ -429,8 +429,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.set_input_mode("with_input")
         else:
             self.set_input_mode("number_only")
-    
-    
+
+
     def _set_dirty(self, dirty: bool = True):
         """파일의 수정 상태(dirty flag)를 설정하고 창 제목을 업데이트합니다."""
         if self.is_dirty == dirty:
@@ -448,10 +448,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         elif self.project_path:
             path_str = os.path.basename(self.project_path)
         # ===== ▲▲▲ 여기까지 수정 ▲▲▲ =====
-        
+
         if path_str:
             title += f" — {path_str}"
-        
+
         if self.is_dirty:
             title += " *" # 수정되었으면 제목 끝에 *를 붙입니다.
 
@@ -475,14 +475,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         btn_no = msg_box.addButton("저장 안 함", QtWidgets.QMessageBox.NoRole)
         btn_cancel = msg_box.addButton("취소", QtWidgets.QMessageBox.RejectRole)
         msg_box.exec()
-        
+
         clicked_button = msg_box.clickedButton()
-        
+
         if clicked_button == btn_save:
             return self.save_project()
         elif clicked_button == btn_cancel:
             return False
-        
+
         return True # "저장 안 함"을 선택한 경우
 
     def _reset_egg_sequence(self):
@@ -490,7 +490,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 필요하면 상태바 메시지 정리:
         # self.statusBar().clearMessage()
 
-    
+
     def _on_egg_hotkey(self):
         if not self.doc:
             self.statusBar().showMessage("사격 모드는 프로젝트가 열려있을 때만 진입할 수 있습니다.", 3000)
@@ -510,7 +510,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self._egg_timer.stop()
             self._reset_egg_sequence()
             self.toggle_shooting_mode(True)
-    
+
 
 
     # 데이터 꼬임 방지. v4.22
@@ -520,7 +520,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if not selected_rows:
             QtWidgets.QMessageBox.warning(self, "알림", "재정렬을 시작할 기준 항목을 선택해주세요.")
             return
-        
+
         try:
             start_no_float = float(self.table.item(selected_rows[0], 0).text())
         except (ValueError, AttributeError):
@@ -545,9 +545,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         for item in items_to_renumber:
             item.no = float(current_new_no)
             current_new_no += 1
-        
+
         self.items = items_to_keep + items_to_renumber
-        
+
         if self.numbering_mode != 'page_specific':
             if self.items: self.next_no = float(int(max(it.no for it in self.items) + 1))
             else: self.next_no = 1.0
@@ -558,9 +558,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_status()
         self._set_dirty()
         QtWidgets.QMessageBox.information(self, "완료", "1단위 재정렬이 완료되었습니다.")
-    
-    
-    
+
+
+
     def show_table_context_menu(self, pos):
         """테이블 우클릭 시 모든 세부 기능이 포함된 메뉴를 표시합니다."""
         menu = QtWidgets.QMenu(self)
@@ -601,7 +601,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
 
-    
+
     def show_about_dialog(self):
         """프로그램 정보 대화상자를 띄웁니다."""
         about_text = f"""
@@ -613,7 +613,112 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             <p>Copyright © 2025 Taesung Engineering. All rights reserved.</p>
         """
         QtWidgets.QMessageBox.about(self, f"{APP_NAME} 정보", about_text)
-    
+
+    # =====================================================================
+    #  Windows 메뉴 - 도킹 윈도우 토글 함수들
+    # =====================================================================
+    def toggle_pdf_preview(self, checked):
+        """
+        PDF Page Preview 윈도우(왼쪽 도크)를 보이거나 숨깁니다.
+
+        Args:
+            checked (bool): 메뉴 항목의 체크 상태
+        """
+        if checked:
+            self.page_dock.show()
+        else:
+            self.page_dock.hide()
+
+    def toggle_numbering_list(self, checked):
+        """
+        Numbering List 윈도우(오른쪽 도크)를 보이거나 숨깁니다.
+
+        Args:
+            checked (bool): 메뉴 항목의 체크 상태
+        """
+        if checked:
+            self.dock.show()
+        else:
+            self.dock.hide()
+
+    def toggle_3d_navigator(self, checked):
+        """
+        3D Navigator 윈도우를 보이거나 숨깁니다.
+
+        Args:
+            checked (bool): 메뉴 항목의 체크 상태
+        """
+        if checked:
+            self.navigator_dock.show()
+        else:
+            self.navigator_dock.hide()
+
+    def set_viewport(self, view_name):
+        """
+        뷰포트를 설정합니다. (나중에 3D 뷰어와 연결)
+
+        Args:
+            view_name (str): 뷰포트 이름 ("상면", "하면", "정면", "후면", "좌측면", "우측면")
+        """
+        print(f"뷰포트 설정: {view_name}")
+        # TODO: 실제 3D 뷰어와 연결
+
+    def update_custom_view(self):
+        """
+        사용자 정의 뷰 설정 값이 변경될 때 호출됩니다. (실제 적용은 apply_custom_view에서)
+        """
+        # 값 변경 시에는 아무것도 하지 않음 (사용자 정의 적용 버튼을 눌러야 적용)
+        pass
+
+    def apply_custom_view(self):
+        """
+        사용자 정의 뷰 설정을 적용합니다.
+        """
+        x = self.custom_x_spin.value()
+        y = self.custom_y_spin.value()
+        z = self.custom_z_spin.value()
+        distance = self.distance_spin.value()
+
+        print(f"사용자 정의 뷰 적용: X={x}, Y={y}, Z={z}, 거리={distance}")
+        # TODO: 실제 3D 뷰어와 연결
+
+    def on_distance_slider_changed(self, value):
+        """
+        거리 슬라이더 값이 변경될 때 호출됩니다.
+
+        Args:
+            value (int): 슬라이더 값 (1~100)
+        """
+        # 슬라이더 값을 0.1~10.0 범위로 변환
+        distance = value / 10.0
+        self.distance_spin.blockSignals(True)
+        self.distance_spin.setValue(distance)
+        self.distance_spin.blockSignals(False)
+        self.update_custom_view()
+
+    def set_view_mode(self, mode):
+        """
+        뷰 모드를 설정합니다.
+
+        Args:
+            mode (str): 뷰 모드 ("shading", "edges", "wireframe")
+        """
+        # 모든 뷰 모드 버튼의 체크 해제
+        self.shading_btn.setChecked(False)
+        self.edges_btn.setChecked(False)
+        self.wireframe_btn.setChecked(False)
+
+        # 선택된 모드만 체크
+        if mode == "shading":
+            self.shading_btn.setChecked(True)
+        elif mode == "edges":
+            self.edges_btn.setChecked(True)
+        elif mode == "wireframe":
+            self.wireframe_btn.setChecked(True)
+
+        print(f"뷰 모드 설정: {mode}")
+        # TODO: 실제 3D 뷰어와 연결
+
     # 단축키 목록 보기 도움말 대화상자 기능 추가. v3.07에서...
     def show_shortcut_help(self):
         """단축키 도움말 대화상자를 띄우고, 오류 발생 시 메시지를 표시합니다."""
@@ -624,8 +729,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             import traceback
             error_details = f"도움말 창을 여는 중 오류가 발생했습니다:\n\n{e}\n\n{traceback.format_exc()}"
             QtWidgets.QMessageBox.critical(self, "도움말 창 오류", error_details)
-        
-        
+
+
     # 프로젝트 저장관련 교체.
     def _cmd_export_pdf(self):
         try:
@@ -633,11 +738,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             if not self.doc:
                 QtWidgets.QMessageBox.warning(self, "알림", "내보낼 PDF 문서가 없습니다.")
                 return
-            
+
             # 프로젝트 정보가 있으면 기본 경로와 파일명으로 사용
             default_dir = self.project_dir or ""
             default_filename = f"{self.project_name}_Inspection.pdf" if self.project_name else "output.pdf"
-            
+
             path, _ = QtWidgets.QFileDialog.getSaveFileName(
                 self, "PDF로 내보내기", os.path.join(default_dir, default_filename), "PDF (*.pdf)"
             )
@@ -653,11 +758,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "TS Numbering", "내보내기 완료:\n" + path)
         except Exception as e:
             _log_error(self, "PDF 내보내기 오류", e)
-    
-    
 
 
-                
+
+
+
     # v3.26에서 동째로 교체...... 안에 주석도 많이 날아감..
     # 새로 하려니 많이 귀찮아서 그냥 했음...ㅠㅠㅠ v3.26에서..
     # 이스터에크... 사격모드 함수!! v3.30에서..
@@ -667,16 +772,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         # 잠금/해제할 UI 요소들을 리스트로 관리
         ui_elements = [
-            self.menuBar(), 
-            self.main_toolbar, 
-            self.page_dock, 
+            self.menuBar(),
+            self.main_toolbar,
+            self.page_dock,
             self.dock
         ]
 
         if self.shooting_mode:
             # [사격 모드 진입]
             if self._preview_text: self._preview_text.setVisible(False)
-            
+
             cursor = QtGui.QCursor(self.crosshair_pixmap.scaled(64, 64, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
             self.view.setCursor(cursor)
             self.statusBar().showMessage("사격 모드 활성화! (해제: Ctrl+F11)")
@@ -688,7 +793,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # [사격 모드 종료]
             self.clear_bullet_holes()
             if self._preview_text: self._preview_text.setVisible(True)
-            
+
             self.set_preview_mode(self.preview_mode)
             QtWidgets.QMessageBox.information(self, "모드 변경", "사격 모드가 종료되었습니다. 다시 업무에 집중합시다.")
             self._update_status()
@@ -696,9 +801,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 모든 UI 요소를 다시 활성화
             for element in ui_elements:
                 element.setEnabled(True)
-    
-    
-    
+
+
+
     def _create_sub_separator(self):
         """여백(9px)을 포함한 서브 구분선 위젯을 생성합니다."""
         # 전체를 담을 컨테이너 위젯
@@ -725,7 +830,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         layout.addWidget(left_spacer)
         layout.addWidget(line)
         layout.addWidget(right_spacer)
-        
+
         return separator_widget
 
     # ===== ▼▼▼ 아래 3개 함수를 새로 추가해주세요 ▼▼▼ =====
@@ -743,10 +848,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             current_index = styles.index(self.style.flow_line_style)
         except ValueError:
             current_index = 0 # 현재 스타일을 찾지 못하면 solid로 초기화
-        
+
         next_index = (current_index + 1) % len(styles)
         self.style.flow_line_style = styles[next_index]
-        
+
         self._update_line_style_button_icon() # 버튼 아이콘과 툴팁 업데이트
         self.load_page(self.cur_page_index) # 변경사항 즉시 반영
         self._set_dirty()
@@ -754,7 +859,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def _update_line_style_button_icon(self):
         """현재 선 스타일에 맞춰 툴바 버튼의 아이콘과 툴팁을 업데이트합니다."""
         if not hasattr(self, "action_cycle_line_style"): return
-        
+
         current_style = self.style.flow_line_style
         if current_style == "dash":
             self.action_cycle_line_style.setIcon(self.dash_icon)
@@ -766,7 +871,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.action_cycle_line_style.setIcon(self.solid_icon)
             self.action_cycle_line_style.setToolTip("선 스타일: 실선 (클릭해서 변경)")
 
-    
+
     # ▼▼▼ 아래 2개 함수를 새로 추가해주세요 ▼▼▼
     def _cycle_arrow_style(self):
         """흐름도의 선 끝 스타일을 none -> arrow -> circle 순서로 변경합니다."""
@@ -775,10 +880,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             current_index = styles.index(self.style.flow_arrow_style)
         except ValueError:
             current_index = 1 # 기본값인 arrow로 초기화
-        
+
         next_index = (current_index + 1) % len(styles)
         self.style.flow_arrow_style = styles[next_index]
-        
+
         self._update_arrow_style_button_icon()
         self.load_page(self.cur_page_index)
         self._set_dirty()
@@ -786,7 +891,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def _update_arrow_style_button_icon(self):
         """현재 선 끝 스타일에 맞춰 툴바 버튼의 아이콘과 툴팁을 업데이트합니다."""
         if not hasattr(self, "action_cycle_arrow_style"): return
-        
+
         current_style = self.style.flow_arrow_style
         if current_style == "circle":
             self.action_cycle_arrow_style.setIcon(self.arrow_circle_icon)
@@ -797,14 +902,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         else: # "arrow"
             self.action_cycle_arrow_style.setIcon(self.arrow_arrow_icon)
             self.action_cycle_arrow_style.setToolTip("선 끝 모양: 화살표 (클릭해서 변경)")
-    
-    
-    
+
+
+
     def _create_toolbar_group(self, actions, text_label):
         """버튼(Action) 리스트와 제목을 받아 하나의 그룹 상자 위젯을 생성합니다."""
         group_box = QtWidgets.QGroupBox(text_label)
         group_box.setAlignment(QtCore.Qt.AlignCenter)
-        
+
         group_layout = QtWidgets.QVBoxLayout(group_box)
         # 위쪽 여백을 12로 늘려 아이콘과 제목 사이의 공간 확보
         group_layout.setContentsMargins(0, 12, 0, 2)
@@ -822,7 +927,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         # 그룹 레이아웃에 툴바 추가
         group_layout.addWidget(button_toolbar)
-        
+
         return group_box
 
 
@@ -831,7 +936,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         """커스텀 그룹 레이아웃을 가진 메인 툴바를 생성합니다."""
         self.main_toolbar = QtWidgets.QToolBar("Main Toolbar")
         self.addToolBar(QtCore.Qt.TopToolBarArea, self.main_toolbar)
-        
+
         custom_toolbar_widget = QtWidgets.QWidget(self)
         main_layout = QtWidgets.QHBoxLayout(custom_toolbar_widget)
         main_layout.setContentsMargins(10, 0, 10, 0)
@@ -878,7 +983,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.action_toggle_start_end = QtGui.QAction(self.start_end_icon, "시작/끝점 강조 On/Off", self); self.action_toggle_start_end.setCheckable(True); self.action_toggle_start_end.setChecked(self.style.flow_show_start_end); self.action_toggle_start_end.triggered.connect(self._toggle_show_start_end)
         self.action_cycle_line_style = QtGui.QAction(self); self.action_cycle_line_style.triggered.connect(self._cycle_line_style)
         self.action_cycle_arrow_style = QtGui.QAction(self); self.action_cycle_arrow_style.triggered.connect(self._cycle_arrow_style)
-        
+
         # ▼▼▼ 회전 액션 2개 정의 추가 ▼▼▼
         self.action_rotate_left = QtGui.QAction(self.rotate_left_icon, "페이지 좌로 회전", self); self.action_rotate_left.triggered.connect(self.rotate_page_left)
         self.action_rotate_right = QtGui.QAction(self.rotate_right_icon, "페이지 우로 회전", self); self.action_rotate_right.triggered.connect(self.rotate_page_right)
@@ -889,17 +994,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.preview_toggle_button = QtWidgets.QToolButton(); self.preview_toggle_button.clicked.connect(self._cycle_preview_mode)
         self.stamp_button = QtWidgets.QToolButton(); self.stamp_button.clicked.connect(self._cycle_next_stamp)
         self._update_preview_button_visuals()
-        
+
         # --- 그룹별 레이아웃 구성 ---
         group1_actions = [self.action_undo, self.action_redo]
-        
+
         group2 = QtWidgets.QGroupBox("작업 설정"); group2.setAlignment(QtCore.Qt.AlignCenter)
         group2_layout = QtWidgets.QHBoxLayout(group2); group2_layout.setContentsMargins(4, 12, 4, 4); group2_layout.setSpacing(4)
         self.mode_button = QtWidgets.QToolButton()
         self.mode_button.clicked.connect(self._cycle_active_mode)
-        
+
         self.context_widget_stack = QtWidgets.QStackedWidget()
-        
+
         view_context_widget = QtWidgets.QWidget()
         view_layout = QtWidgets.QHBoxLayout(view_context_widget); view_layout.setContentsMargins(0,0,0,0); view_layout.setSpacing(4)
         numbering_view_button = QtWidgets.QToolButton(); numbering_view_button.setDefaultAction(self.action_toggle_numbering_view)
@@ -920,19 +1025,19 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         for btn in [self.mode_button, self.preview_toggle_button, self.stamp_button, num_settings_button, stamp_settings_button, numbering_view_button, stamp_view_button, flow_view_button]:
             btn.setIconSize(QtCore.QSize(36, 36))
-            
+
         self.context_widget_stack.addWidget(view_context_widget)
         self.context_widget_stack.addWidget(numbering_context_widget)
         self.context_widget_stack.addWidget(stamp_context_widget)
-        
+
         max_width = view_context_widget.sizeHint().width()
         self.context_widget_stack.setMinimumWidth(max_width)
-        
+
         group2_layout.addWidget(self.mode_button); group2_layout.addWidget(self.context_widget_stack)
 
         group3_actions = [self.action_highlight_toolbar, self.action_toggle_start_end]
         group4_actions = [self.action_radius_down, self.action_radius_up, None, self.action_border_down, self.action_border_up, None, self.action_font_down, self.action_font_up, None, self.action_cycle_line_style, self.action_cycle_arrow_style]
-        
+
         # ▼▼▼ 새로운 회전 그룹 추가 ▼▼▼
         group_rotate_actions = [self.action_rotate_left, self.action_rotate_right]
 
@@ -947,7 +1052,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         main_layout.addStretch(1)
 
         self.main_toolbar.addWidget(custom_toolbar_widget)
-    
+
     # ===== ▼▼▼ 모드 전환 및 시각적 업데이트 함수 (새로 추가) ▼▼▼ =====
     def _cycle_active_mode(self):
         """활성 모드를 현재 '보기' 설정에 따라 동적으로 순환시킵니다."""
@@ -969,7 +1074,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.active_mode = "view"
             self._sync_ui_to_current_mode()
             return
-            
+
         # 3. 전환할 모드가 하나뿐이면 아무것도 하지 않습니다.
         if len(available_modes) <= 1:
             return
@@ -977,12 +1082,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 4. 'available_modes' 목록 내에서 다음 모드로 순환시킵니다.
         next_index = (current_index + 1) % len(available_modes)
         self.active_mode = available_modes[next_index]
-        
+
         # 5. UI를 새 모드에 맞게 업데이트합니다.
         self._sync_ui_to_current_mode()
-        
-        
-        
+
+
+
     # ===== ▼▼▼ 스탬프 버튼 관련 함수 3개 (새로 추가) ▼▼▼ =====
     def _get_current_stamp_key(self) -> Optional[str]:
         """현재 인덱스에 해당하는 스탬프의 키(이름)를 반환합니다."""
@@ -998,7 +1103,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if not hasattr(self, 'stamp_button'): return
 
         stamp_key = self._get_current_stamp_key()
-        
+
         # ▼▼▼ [핵심 수정] 딕셔너리에서 'path'를 직접 꺼내오도록 수정합니다. ▼▼▼
         if stamp_key:
             stamp_info = self.registered_stamps.get(stamp_key)
@@ -1011,22 +1116,22 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     self.stamp_button.setToolTip(f"현재 스탬프: {stamp_key}\n(클릭하여 변경)")
                     return
         # ▲▲▲ 여기까지 수정 ▲▲▲
-        
+
         # 스탬프가 없거나 잘못된 경우 기본 아이콘으로 설정
-        self.stamp_button.setIcon(icon_if("resources/icons/stamp_off.png")) 
+        self.stamp_button.setIcon(icon_if("resources/icons/stamp_off.png"))
         self.stamp_button.setToolTip("등록된 스탬프 없음")
 
     def _cycle_next_stamp(self):
         """다음 스탬프로 순환시킵니다."""
         if not self.registered_stamps:
             return
-        
+
         num_stamps = len(self.registered_stamps)
         self.current_stamp_index = (self.current_stamp_index + 1) % num_stamps
         self._update_stamp_button_icon()
     # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
-    
-    
+
+
         # ... _cycle_next_stamp 함수 아래에 추가 ...
     # ===== ▼▼▼ 미리보기 버튼 관련 함수 2개 (새로 추가) ▼▼▼ =====
     def _cycle_preview_mode(self):
@@ -1035,13 +1140,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.set_preview_mode("crosshair")
         else:
             self.set_preview_mode("preview")
-        
+
         self._update_preview_button_visuals()
 
     def _update_preview_button_visuals(self):
         """현재 미리보기 모드에 맞춰 버튼 아이콘과 툴팁을 변경합니다."""
         if not hasattr(self, 'preview_toggle_button'): return
-        
+
         if self.preview_mode == "crosshair":
             # "resources/icons/" 경로 추가
             icon = icon_if("resources/icons/crossline.png")
@@ -1051,12 +1156,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             icon = icon_if("resources/icons/circle.png")
             tooltip = "미리보기: 원 (클릭하여 변경)"
 
-            
+
         self.preview_toggle_button.setIcon(icon)
         self.preview_toggle_button.setToolTip(tooltip)
     # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
-    
-    
+
+
     # ... _cycle_next_stamp 함수 바로 아래에 추가 ...
     def _select_stamp_by_key(self, stamp_key: str):
         """키(이름)를 이용해 특정 스탬프를 선택합니다."""
@@ -1076,17 +1181,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             path = info.get("path")
             if not path: continue
             # ▲▲▲ 여기까지 수정 ▲▲▲
-            
+
             pixmap = QtGui.QPixmap(path)
             icon = QtGui.QIcon(pixmap.scaled(24, 24, QtCore.Qt.KeepAspectRatio))
-            
+
             action = QtGui.QAction(icon, name, self)
             action.triggered.connect(lambda checked=False, key=name: self._select_stamp_by_key(key))
             menu.addAction(action)
-            
+
         menu.exec(self.stamp_button.mapToGlobal(pos))
-        
-        
+
+
 
     def _sync_ui_to_current_mode(self):
         """(수정됨) 현재 활성 모드에 맞춰 툴바, 커서, 테이블, 그리고 '미리보기 객체'까지 모두 업데이트합니다."""
@@ -1108,7 +1213,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.context_widget_stack.setCurrentIndex(1)
             self.dock_stack.setCurrentWidget(self.table)
             self._update_preview_button_visuals()
-            
+
             if self.doc: self.set_preview_mode(self.preview_mode) # set_preview_mode가 커서를 관리함
             else: self.view.setCursor(QtCore.Qt.ArrowCursor)
 
@@ -1127,12 +1232,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.context_widget_stack.setCurrentIndex(2)
             self.dock_stack.setCurrentWidget(self.stamp_table)
             self._update_stamp_button_icon()
-            
+
             # ▼▼▼ [핵심] 십자선/투명 커서 대신 일반 화살표 커서로 변경합니다. ▼▼▼
-            self.view.setCursor(QtCore.Qt.ArrowCursor) 
+            self.view.setCursor(QtCore.Qt.ArrowCursor)
             # ▲▲▲ 여기까지 수정 ▲▲▲
-            
-            
+
+
         else:  # "view" 모드
             self.mode_button.setIcon(self._icon_edit_off)
             self.mode_button.setToolTip("보기 모드 (Ctrl+E로 전환)")
@@ -1156,10 +1261,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 sc_select = QtGui.QShortcut(QtGui.QKeySequence(f"Ctrl+{i+1}"), self)
                 sc_select.activated.connect(lambda key=stamp_keys[i]: self._select_stamp_by_key(key))
                 self.stamp_shortcuts.append(sc_select)
-    
+
     def __init__(self, pdf_path: Optional[str]=None):
         super().__init__()
-        
+
         # --- 개발자 모드 및 평가판 기능 ---
         DEV_MODE = True # 배포 시 False로 변경
 
@@ -1171,14 +1276,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             if status == "expired":
                 QtWidgets.QMessageBox.critical(self, "평가판 만료", "30일 평가 기간이 만료되었습니다. 프로그램을 종료합니다.")
                 sys.exit()
-            
+
             self.trial_days_left = days_left
             trial_message = f" (Trial - {self.trial_days_left}일 남음)"
             if status == "just_installed":
                 QtWidgets.QMessageBox.information(self, "환영합니다", f"평가판이 시작되었습니다. {days_left}일 동안 사용하실 수 있습니다.")
-        
+
         self.setWindowTitle(f"{APP_NAME} ({APP_VER}){trial_message}"); self.resize(1600,1000)
-        
+
         # ▼▼▼ 탭 위젯 설정 코드 (삽입) ▼▼▼
         # 1. 탭 위젯을 생성하고 중앙에 배치합니다.
         self.tab_widget = QtWidgets.QTabWidget()
@@ -1200,11 +1305,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.scene.moved.connect(self.on_scene_moved)
         self.view.zoom_changed.connect(self._on_zoom_changed)
         # ▲▲▲ 여기까지 삽입 ▲▲▲
-        
+
         self._ee_armed = False
         self._ee_prev_state = False
         self._ee_orig_vol = 0.7
-        
+
         # --- 상태 변수 초기화 ---
         self.project_path = None
         self.project_dir = None   # <--- 이 줄 추가
@@ -1233,22 +1338,22 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
 
         self.render_scale=2; self.auto_highres=True
-        
+
         # ===== ▼▼▼ 보기/숨기기 상태 변수 추가/수정 ▼▼▼ =====
         self.flow_view_enabled = False # 흐름도
         self.view_show_numbering = True # 넘버링
         self.view_show_stamps = True # 스탬프
         # ===== ▲▲▲ 여기까지 추가/수정 ▲▲▲ =====
-        
+
         self.preview_mode = "preview"
         self.style=LabelStyle(); self.next_no=1
-        
+
         # ▼▼▼ 아래 3줄을 수정/추가합니다 ▼▼▼
         self.items:List[MarkItem]=[]        # 넘버링 현재 상태 리스트 (기존과 동일)
         self.undo_stack = []                 # [신규] 모든 행동의 역사를 기록할 통합 리스트
         self.redo_stack = []                 # [수정] 되살리기용 통합 리스트 (기존 self.redo_stack과 역할 동일)
         # ▲▲▲ 여기까지 수정/추가 ▲▲▲
-        
+
         self.input_mode="number_only"
         self._page_pix=None; self._preview_ellipse=None; self._preview_text=None
         self._highlight_ellipse=None; self._highlight_item_no=None
@@ -1257,8 +1362,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.insert_option = None
         self.insert_target_no = -1.0
         self.highlight_enabled = True
-        
-        
+
+
         # ===== ▼▼▼ 스탬프 기능 관련 변수 추가 ▼▼▼ =====
         self.active_mode = "numbering"  # 현재 활성 모드: "view", "numbering", "stamp"
         self.stamps: List[StampItem] = []   # PDF에 찍힌 스탬프 객체들을 저장하는 리스트
@@ -1280,8 +1385,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.stamp_rotation_min = -5.0 # 기본값: -5도 ~ 5도
         self.stamp_rotation_max = 5.0
         # ▲▲▲ 여기까지 추가 ▲▲▲
-       
-        
+
+
         # ===== ▼▼▼ 이스터에그(사격 모드) 변수 추가/수정 ▼▼▼ =====
         self.shooting_mode = False
         self.bullet_hole_items = []
@@ -1297,7 +1402,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.enable_shell = bool(self.shell_pixmaps)
 
         self.shell_items = []   # [{'item':QGraphicsPixmapItem,'vx':..,'vy':..,'spin':..,'life':..}, ...]
-        
+
         # ▼▼▼ [핵심] 누락된 탄피 타이머 초기화 코드를 추가합니다. ▼▼▼
         # ── 탄피 물리/타이머(60FPS 근사) ────────────────────────────────
         self._shell_timer = QtCore.QTimer(self)
@@ -1325,16 +1430,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             if not fallback_pm.isNull():
                 self.bullet_hole_pixmaps = [fallback_pm]
 
-        
-        
-        
+
+
+
         # self.gun_sound -> self.gun_sound_url 로 이름을 변경하고 아래와 같이 수정합니다.
         self.gun_sound_url = QtCore.QUrl.fromLocalFile(resource_path("resources/ester_egg/gun_sound.wav")) # 경로 수정
-        
+
         self.sound_effect = None # 사운드 플레이어를 저장할 변수
         self.sound_volume = 1.0   # 사운드 볼륨 (0.0 ~ 1.0)
         # ===== ▲▲▲ 여기까지 교체 ▲▲▲ =====
-        
+
         # === Secret hotkey (Ctrl+F12 x4) state ===
         self._egg_required = 4            # 필요한 연속 입력 횟수
         self._egg_window_ms = 1200        # 각 입력 간 허용 간격(ms) — 필요시 조절
@@ -1343,7 +1448,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._egg_timer = QtCore.QTimer(self)
         self._egg_timer.setSingleShot(True)
         self._egg_timer.timeout.connect(self._reset_egg_sequence)
-        
+
         # 1. 탭 위젯을 생성하고 중앙에 배치합니다.
         self.tab_widget = QtWidgets.QTabWidget()
         self.setCentralWidget(self.tab_widget)
@@ -1361,7 +1466,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # ▲▲▲ [수정 끝] ▲▲▲
         self.scene.clicked.connect(self.on_clicked); self.scene.moved.connect(self.on_scene_moved)
         self.view.zoom_changed.connect(self._on_zoom_changed)
-        
+
         # 다시 수정.. 4.00에서.
         # ===== ▼▼▼ 페이지 네비게이션 UI 생성 (수정) ▼▼▼ =====
         self.btn_prev = QtWidgets.QPushButton("< 이전")
@@ -1372,15 +1477,15 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.spin_page.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons) # 지시3: "숫자창에 화살표는 만들지 마!"
         self.spin_page.setMinimumWidth(40) # 지시4: "대신 숫자창이 너무 좁아지진 않게 해줘!"
         self.lbl_total_pages = QtWidgets.QLabel("/ 1")
-        
-        
-        
+
+
+
         # 버튼 및 스핀박스 기능 연결
         self.btn_prev.clicked.connect(self.go_prev)
         self.btn_next.clicked.connect(self.go_next)
         self.spin_page.valueChanged.connect(self._go_to_page_from_spinbox)
         # ===== ▲▲▲ 여기까지 수정 (상태 표시줄 추가 부분 삭제) ▲▲▲ =====
-       
+
 
         # --- 표 도크 ---
         self.table=QtWidgets.QTableWidget(0,5,self)
@@ -1406,11 +1511,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.stamp_table.setHorizontalHeaderLabels(["No", "스탬프 종류"])
         self.stamp_table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
         self.stamp_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====        
+        # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
         # ===== ▼▼▼ 스탬프 테이블 기능 연결 및 변수 추가 ▼▼▼ =====
         self._stamp_graphics_items = {}  # StampItem id를 QGraphicsItem에 매핑
         self._highlighted_stamp_rect = None # 하이라이트 그래픽 아이템
-        
+
         self.stamp_table.cellClicked.connect(self._highlight_stamp_from_table)
 
 
@@ -1419,13 +1524,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         page_dock_container = QtWidgets.QWidget()
         page_layout = QtWidgets.QVBoxLayout(page_dock_container)
         page_layout.setContentsMargins(5, 5, 5, 5)
-        
+
         # --- 페이지별 넘버링 체크박스 (새로 추가) ---
         self.cb_separate_numbering = QtWidgets.QCheckBox("페이지별 개별 넘버링")
         self.cb_separate_numbering.setToolTip("체크 시 각 페이지마다 1번부터 새로 시작합니다.")
         page_layout.addWidget(self.cb_separate_numbering)
         self.cb_separate_numbering.toggled.connect(self._refresh_table_view)
-        
+
 
         # 페이지 네비게이션 컨트롤
         nav_layout = QtWidgets.QHBoxLayout()
@@ -1450,6 +1555,204 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.page_dock.setWidget(page_dock_container)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.page_dock) # << 왼쪽 영역에 추가
 
+        # --- 3D Navigator 윈도우 생성 ---
+        self.navigator_dock = QtWidgets.QDockWidget("3D Navigator", self)
+        navigator_container = QtWidgets.QWidget()
+        navigator_layout = QtWidgets.QVBoxLayout(navigator_container)
+        navigator_layout.setContentsMargins(3, 8, 3, 3)  # 상단 여백 증가 (3 -> 8)
+        navigator_layout.setSpacing(12)  # 섹션 간격 추가 증가 (8 -> 12)
+
+        # 뷰포트 선택 섹션
+        viewport_group = QtWidgets.QGroupBox("뷰포트 선택")
+        viewport_layout = QtWidgets.QVBoxLayout(viewport_group)
+        viewport_layout.setSpacing(20)  # 제목과 버튼들 사이 간격 대폭 증가 (8 -> 20)
+
+        # 기본 뷰 버튼들 (1x6 배열)
+        basic_view_layout = QtWidgets.QHBoxLayout()
+        basic_view_layout.setSpacing(2)  # 버튼 간격 줄임
+
+        # 뷰포트 정보 (순서: 상면, 하면, 정면, 후면, 좌측면, 우측면)
+        viewport_info = [
+            ("상면", "top_view.png"),
+            ("하면", "bottom_view.png"),
+            ("정면", "front_view.png"),
+            ("후면", "back_view.png"),
+            ("좌측면", "left_view.png"),
+            ("우측면", "right_view.png")
+        ]
+
+        self.viewport_buttons = []
+
+        for view_name, icon_file in viewport_info:
+            btn = QtWidgets.QPushButton()
+            btn.setFixedSize(32, 32)  # 정사각형 버튼
+            btn.setToolTip(view_name)  # 툴팁으로 텍스트 표시
+            btn.clicked.connect(lambda checked=False, v=view_name: self.set_viewport(v))
+
+            # 아이콘 설정
+            try:
+                from utils.helpers import icon_if
+                icon = icon_if(f"resources/icons/{icon_file}")
+                btn.setIcon(icon)
+            except:
+                # 아이콘 로드 실패 시 빈 버튼
+                pass
+
+            basic_view_layout.addWidget(btn)
+            self.viewport_buttons.append(btn)
+
+        viewport_layout.addLayout(basic_view_layout)
+
+        # 사용자 정의 섹션 (2행으로 변경)
+        custom_group = QtWidgets.QGroupBox("사용자 정의")
+        custom_layout = QtWidgets.QVBoxLayout(custom_group)
+        custom_layout.setSpacing(20)  # 제목과 입력란 사이 간격 대폭 증가 (8 -> 20)
+        custom_layout.setContentsMargins(5, 15, 5, 5)  # 상단 여백 대폭 증가 (8 -> 15)
+
+        # XYZ 한 행
+        xyz_layout = QtWidgets.QHBoxLayout()
+        xyz_layout.addWidget(QtWidgets.QLabel("X:"))
+
+        self.custom_x_spin = QtWidgets.QDoubleSpinBox()
+        self.custom_x_spin.setRange(0.1, 1.0)
+        self.custom_x_spin.setValue(1.0)
+        self.custom_x_spin.setDecimals(1)
+        self.custom_x_spin.setSingleStep(0.1)
+        self.custom_x_spin.setMaximumHeight(22)
+        self.custom_x_spin.setFixedWidth(50)
+        # 세로 화살표 스타일 설정
+        self.custom_x_spin.setStyleSheet("QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }")
+        self.custom_x_spin.valueChanged.connect(self.update_custom_view)
+        xyz_layout.addWidget(self.custom_x_spin)
+
+        xyz_layout.addWidget(QtWidgets.QLabel("Y:"))
+        self.custom_y_spin = QtWidgets.QDoubleSpinBox()
+        self.custom_y_spin.setRange(0.1, 1.0)
+        self.custom_y_spin.setValue(1.0)
+        self.custom_y_spin.setDecimals(1)
+        self.custom_y_spin.setSingleStep(0.1)
+        self.custom_y_spin.setMaximumHeight(22)
+        self.custom_y_spin.setFixedWidth(50)
+        # 세로 화살표 스타일 설정
+        self.custom_y_spin.setStyleSheet("QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }")
+        self.custom_y_spin.valueChanged.connect(self.update_custom_view)
+        xyz_layout.addWidget(self.custom_y_spin)
+
+        xyz_layout.addWidget(QtWidgets.QLabel("Z:"))
+        self.custom_z_spin = QtWidgets.QDoubleSpinBox()
+        self.custom_z_spin.setRange(0.1, 1.0)
+        self.custom_z_spin.setValue(1.0)
+        self.custom_z_spin.setDecimals(1)
+        self.custom_z_spin.setSingleStep(0.1)
+        self.custom_z_spin.setMaximumHeight(22)
+        self.custom_z_spin.setFixedWidth(50)
+        # 세로 화살표 스타일 설정
+        self.custom_z_spin.setStyleSheet("QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }")
+        self.custom_z_spin.valueChanged.connect(self.update_custom_view)
+        xyz_layout.addWidget(self.custom_z_spin)
+
+        xyz_layout.addStretch()  # 오른쪽 여백
+        custom_layout.addLayout(xyz_layout)
+
+        # 거리 한 행
+        distance_layout = QtWidgets.QHBoxLayout()
+        distance_layout.addWidget(QtWidgets.QLabel("거리:"))
+
+        self.distance_spin = QtWidgets.QDoubleSpinBox()
+        self.distance_spin.setRange(0.1, 10.0)
+        self.distance_spin.setValue(1.0)
+        self.distance_spin.setDecimals(1)
+        self.distance_spin.setMaximumHeight(22)
+        self.distance_spin.setFixedWidth(60)
+        # 세로 화살표 스타일 설정 (XYZ와 동일)
+        self.distance_spin.setStyleSheet("QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }")
+        self.distance_spin.valueChanged.connect(self.update_custom_view)
+        distance_layout.addWidget(self.distance_spin)
+
+        # 거리 슬라이더
+        self.distance_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.distance_slider.setRange(1, 100)  # 0.1~10.0을 1~100으로 변환
+        self.distance_slider.setValue(10)  # 1.0에 해당
+        self.distance_slider.setMaximumHeight(20)
+        self.distance_slider.valueChanged.connect(self.on_distance_slider_changed)
+        distance_layout.addWidget(self.distance_slider)
+
+        # 사용자 정의 적용 버튼
+        self.apply_custom_btn = QtWidgets.QPushButton("적용")
+        self.apply_custom_btn.setMaximumHeight(25)
+        self.apply_custom_btn.setFixedWidth(50)
+        self.apply_custom_btn.clicked.connect(self.apply_custom_view)
+        distance_layout.addWidget(self.apply_custom_btn)
+
+        custom_layout.addLayout(distance_layout)
+        viewport_layout.addWidget(custom_group)
+
+        # 뷰 모드 섹션 (아이콘만 3개)
+        view_mode_group = QtWidgets.QGroupBox("뷰 모드")
+        view_mode_layout = QtWidgets.QHBoxLayout(view_mode_group)
+        view_mode_layout.setSpacing(8)  # 버튼 간격 늘림
+        view_mode_layout.setContentsMargins(5, 25, 5, 5)  # 상단 여백 대폭 증가 (12 -> 25)
+
+        # 뷰 모드 정보
+        view_mode_info = [
+            ("음영처리", "normal_mode.png", "shading"),
+            ("모서리 표시 음영", "edge_mode.png", "edges"),
+            ("와이어프레임", "wireframe_mode.png", "wireframe")
+        ]
+
+        # 뷰 모드 버튼들 생성
+        self.shading_btn = QtWidgets.QPushButton()
+        self.shading_btn.setCheckable(True)
+        self.shading_btn.setChecked(True)
+        self.shading_btn.setFixedSize(32, 32)
+        self.shading_btn.setToolTip("음영처리")
+        self.shading_btn.clicked.connect(lambda: self.set_view_mode("shading"))
+
+        self.edges_btn = QtWidgets.QPushButton()
+        self.edges_btn.setCheckable(True)
+        self.edges_btn.setFixedSize(32, 32)
+        self.edges_btn.setToolTip("모서리 표시 음영")
+        self.edges_btn.clicked.connect(lambda: self.set_view_mode("edges"))
+
+        self.wireframe_btn = QtWidgets.QPushButton()
+        self.wireframe_btn.setCheckable(True)
+        self.wireframe_btn.setFixedSize(32, 32)
+        self.wireframe_btn.setToolTip("와이어프레임")
+        self.wireframe_btn.clicked.connect(lambda: self.set_view_mode("wireframe"))
+
+        # 뷰 모드 버튼에 아이콘 설정
+        try:
+            from utils.helpers import icon_if
+
+            # 음영처리 버튼 아이콘
+            shading_icon = icon_if("resources/icons/normal_mode.png")
+            self.shading_btn.setIcon(shading_icon)
+
+            # 모서리 표시 버튼 아이콘
+            edges_icon = icon_if("resources/icons/edge_mode.png")
+            self.edges_btn.setIcon(edges_icon)
+
+            # 와이어프레임 버튼 아이콘
+            wireframe_icon = icon_if("resources/icons/wireframe_mode.png")
+            self.wireframe_btn.setIcon(wireframe_icon)
+
+        except:
+            # 아이콘 로드 실패 시 빈 버튼
+            pass
+
+        view_mode_layout.addWidget(self.shading_btn)
+        view_mode_layout.addWidget(self.edges_btn)
+        view_mode_layout.addWidget(self.wireframe_btn)
+        view_mode_layout.addStretch()  # 오른쪽 여백
+
+        # 전체 레이아웃 구성
+        navigator_layout.addWidget(viewport_group)
+        navigator_layout.addWidget(view_mode_group)
+        navigator_layout.addStretch()  # 여백 추가
+
+        self.navigator_dock.setWidget(navigator_container)
+        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.navigator_dock)
+
         # --- 2. 오른쪽 '리스트' 도크 생성 (테이블 전환 기능 추가) ---
         self.dock = QtWidgets.QDockWidget("리스트", self)
         dock_container = QtWidgets.QWidget()
@@ -1464,16 +1767,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         help_label = QtWidgets.QLabel("※ 항목 클릭: 하이라이트")
         help_label.setAlignment(QtCore.Qt.AlignCenter)
         help_label.setStyleSheet("background-color: #E8E8E8; padding: 4px; border-radius: 4px; font-size: 11px;")
-        
+
         dock_layout.addWidget(help_label)
         dock_layout.addWidget(self.dock_stack) # 스택 위젯을 도크에 추가
         self.dock.setWidget(dock_container)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.dock)
-        
-        
+
+
         # --- 4. 메뉴바, 툴바, 단축키 생성 ---
-        self._create_menus() 
-        self._create_toolbar() 
+        self._create_menus()
+        self._create_toolbar()
         self._create_shortcuts()
 
         # --- 5. 백그라운드 스레드 설정 ---
@@ -1496,7 +1799,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.sound_effect = QSoundEffect(self)
             self.sound_effect.setSource(self.gun_sound_url)
             self.sound_effect.setVolume(1.0)
-            QThread.msleep(20) 
+            QThread.msleep(20)
             print("Sound system pre-loaded successfully.")
         except Exception as e:
             print(f"Sound pre-loading failed: {e}")
@@ -1517,7 +1820,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 subcontrol-position: top center;
                 padding: 0 10px; /* 좌우 패딩 */
             }
-            
+
             QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top center; padding: 10px; color: #606060; }
             QDockWidget { border: 1px solid #C8C8C8; }
             QDockWidget::title { text-align: center; background-color: #E6E6E6; padding: 4px; }
@@ -1550,7 +1853,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         # 스타일 객체를 깊은 복사(deepcopy)하여 완전히 독립적인 복사본을 만듭니다.
         self.style_clipboard = copy.deepcopy(source_item.custom_style)
-        
+
         if self.style_clipboard:
             self.statusBar().showMessage(f"✅ {item_no:g}번의 개별 서식이 복사되었습니다.")
         else:
@@ -1579,14 +1882,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     applied_count += 1
             except (ValueError, AttributeError):
                 continue
-        
+
         if applied_count > 0:
             self.statusBar().showMessage(f"🎨 {applied_count}개 항목에 서식을 적용했습니다.")
             self.load_page(self.cur_page_index) # 변경 사항을 화면에 즉시 반영
             self._set_dirty() # 파일이 수정되었음을 표시
-    
-    
-    
+
+
+
     def closeEvent(self, event):
         """창이 닫힐 때 호출되는 이벤트 핸들러입니다."""
         if self._maybe_save("프로그램 종료", "프로그램을 종료합니다.\n현재 파일을 저장하시겠습니까?"):
@@ -1598,11 +1901,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # ▲▲▲
             event.accept()  # 종료 허용
         else:
-            event.ignore()  # 종료 취소 
-        
-    
+            event.ignore()  # 종료 취소
+
+
     def _create_shortcuts(self):
-        QtGui.QShortcut(QtGui.QKeySequence.Delete, self.stamp_table, 
+        QtGui.QShortcut(QtGui.QKeySequence.Delete, self.stamp_table,
                         activated=self._delete_selected_stamps)
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+N"), self, activated=self.new_project)
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+O"), self, activated=self.open_project_dialog)
@@ -1629,18 +1932,18 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+-"), self, activated=self.view.zoom_out)
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+0"), self, activated=self.view.reset_zoom)
         QtGui.QShortcut(QtGui.QKeySequence("F1"), self, activated=self.show_shortcut_help)
-        
+
         # ===== ▼▼▼ 페이지 이동 단축키 2줄 추가 ▼▼▼ =====
         QtGui.QShortcut(QtGui.QKeySequence.MoveToPreviousPage, self, activated=self.go_prev)
         QtGui.QShortcut(QtGui.QKeySequence.MoveToNextPage, self, activated=self.go_next)
-        
+
         # ===== ▼▼▼ 사격 모드 단축키 추가 ▼▼▼ =====
         egg_sc = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+F12"), self)
         egg_sc.activated.connect(self._on_egg_hotkey)
         egg_sc.setAutoRepeat(False)   # 꾹 누르고 있는 자동반복으로 4회가 채워지지 않게
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+F11"), self, activated=lambda: self.toggle_shooting_mode(False))
-        
-        
+
+
         QtGui.QShortcut(QtGui.QKeySequence("F5"), self, activated=lambda: self.set_input_mode("number_only"))
         QtGui.QShortcut(QtGui.QKeySequence("F6"), self, activated=lambda: self.set_input_mode("with_input"))
         QtGui.QShortcut(QtGui.QKeySequence("Shift+F1"), self, activated=lambda: self.adjust_label_style("radius_view_px", 2))
@@ -1649,11 +1952,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         QtGui.QShortcut(QtGui.QKeySequence("Shift+F4"), self, activated=lambda: self.adjust_label_style("stroke_width", -1))
         QtGui.QShortcut(QtGui.QKeySequence("Shift+F5"), self, activated=lambda: self.adjust_label_style("font_size_view_px", 2))
         QtGui.QShortcut(QtGui.QKeySequence("Shift+F6"), self, activated=lambda: self.adjust_label_style("font_size_view_px", -2))
-        
+
         # ===== ▼▼▼ 아래 두 줄을 추가해주세요 ▼▼▼ =====
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+C"), self.table, activated=self.copy_format)
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+V"), self.table, activated=self.paste_format)
-    
+
     def _create_menus(self):
         mb=self.menuBar()
         m_file=mb.addMenu("파일")
@@ -1662,7 +1965,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         a_save=m_file.addAction("Save Project"); a_save.triggered.connect(self.save_project)
         a_saveas=m_file.addAction("Save Project As…"); a_saveas.triggered.connect(self.save_project_as)
         m_file.addSeparator()
-        
+
         # ▼▼▼ 3D 모델 열기 메뉴 추가 ▼▼▼
         a_open_3d = m_file.addAction("import 3D Model...")
         a_open_3d.triggered.connect(self.open_3d_model)
@@ -1675,7 +1978,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         m_file.addSeparator()
         a_imp=m_file.addAction("Import PDF…"); a_imp.triggered.connect(self.import_pdf)
         m_file.addSeparator()
-  
+
         a_pdf  = m_file.addAction("Export PDF…"); a_pdf.triggered.connect(self._cmd_export_pdf)
         a_csv  = m_file.addAction("Export CSV…"); a_csv.triggered.connect(self.export_csv_dialog)
         a_xlsx = m_file.addAction("Export XLSX…"); a_xlsx.triggered.connect(self.export_xlsx_dialog)
@@ -1693,7 +1996,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.a_flow_menu.setCheckable(True)
         self.a_flow_menu.setChecked(self.flow_view_enabled)
         self.a_flow_menu.triggered.connect(self.toggle_flow_view)
-        
+
         m_view.addSeparator()
         a_fit=m_view.addAction("화면 맞춤"); a_fit.triggered.connect(self.fit_to_window)
         self.a_auto_hi=m_view.addAction("고해상도 자동 재렌더"); self.a_auto_hi.setCheckable(True); self.a_auto_hi.setChecked(True)
@@ -1701,7 +2004,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         a_rerender=m_view.addAction("현재 배율로 재렌더"); a_rerender.triggered.connect(self.rerender_now)
         m_view.addSeparator()
         a_shortcuts = m_view.addAction("단축키 보기..."); a_shortcuts.triggered.connect(self.show_shortcut_help)
-        
+
         m_mode=mb.addMenu("모드선택")
         self.a_only=m_mode.addAction("Numbering Only"); self.a_only.setCheckable(True)
         self.a_inp=m_mode.addAction("Numbering + Input Demension"); self.a_inp.setCheckable(True)
@@ -1709,31 +2012,66 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         mode_group.addAction(self.a_only); mode_group.addAction(self.a_inp); self.a_only.setChecked(True)
         self.a_only.triggered.connect(lambda:self.set_input_mode("number_only"))
         self.a_inp.triggered.connect(lambda:self.set_input_mode("with_input"))
-        
+
         m_opt=mb.addMenu("옵션")
         a_start=m_opt.addAction("Set Start Number…"); a_start.triggered.connect(self.set_start_number)
-        
+
         # ▼▼▼ 여기에 '스탬프 이미지 관리' 메뉴를 추가합니다. ▼▼▼
         m_opt.addSeparator() # 구분선 추가 (선택사항)
         a_manage_stamps_menu = m_opt.addAction("스탬프 이미지 관리…")
         a_manage_stamps_menu.triggered.connect(self.open_stamp_manager)
         # ▲▲▲ 메뉴 추가 완료 ▲▲▲
 
+        # Windows 메뉴 추가
+        m_windows = mb.addMenu("Windows")
+
+        # 7가지 윈도우 메뉴 항목 추가 (임시로 번호 부여)
+        self.a_pdf_preview = m_windows.addAction("1. PDF Page Preview")
+        self.a_pdf_preview.setCheckable(True)
+        self.a_pdf_preview.setChecked(True)  # 기본적으로 보이도록 설정
+        self.a_pdf_preview.triggered.connect(self.toggle_pdf_preview)
+
+        self.a_3d_navigator = m_windows.addAction("2. 3D Viewport Navigator")
+        self.a_3d_navigator.setCheckable(True)
+        self.a_3d_navigator.setChecked(True)  # 기본적으로 보이도록 설정
+        self.a_3d_navigator.triggered.connect(self.toggle_3d_navigator)
+
+        self.a_2d_viewer = m_windows.addAction("3. 2D Viewer")
+        self.a_2d_viewer.setCheckable(True)
+        self.a_2d_viewer.triggered.connect(lambda: print("2D Viewer 토글"))
+
+        self.a_3d_viewer = m_windows.addAction("4. 3D Viewer")
+        self.a_3d_viewer.setCheckable(True)
+        self.a_3d_viewer.triggered.connect(lambda: print("3D Viewer 토글"))
+
+        self.a_numbering_list = m_windows.addAction("5. Numbering List")
+        self.a_numbering_list.setCheckable(True)
+        self.a_numbering_list.setChecked(True)  # 기본적으로 보이도록 설정
+        self.a_numbering_list.triggered.connect(self.toggle_numbering_list)
+
+        self.a_stamping_list = m_windows.addAction("6. Stamping List")
+        self.a_stamping_list.setCheckable(True)
+        self.a_stamping_list.triggered.connect(lambda: print("Stamping List 토글"))
+
+        self.a_product_info = m_windows.addAction("7. Product Information")
+        self.a_product_info.setCheckable(True)
+        self.a_product_info.triggered.connect(lambda: print("Product Information 토글"))
+
         m_help=mb.addMenu("도움말")
         a_about=m_help.addAction("정보..."); a_about.triggered.connect(self.show_about_dialog)
-    
-            
+
+
     # 프리뷰 모드 선택 추가 함수... v3.01에서...
     def set_preview_mode(self, mode: str):
         """넘버링 프리뷰 모드를 '십자선' 또는 '프리뷰'로 설정합니다."""
         self.preview_mode = mode
-        
+
         # 메뉴바와 툴바의 체크 상태를 항상 동기화합니다.
         if hasattr(self, "a_preview"): self.a_preview.setChecked(mode == "preview")
         if hasattr(self, "a_crosshair"): self.a_crosshair.setChecked(mode == "crosshair")
         if hasattr(self, "action_preview_toolbar"): self.action_preview_toolbar.setChecked(mode == "preview")
         if hasattr(self, "action_crosshair_toolbar"): self.action_crosshair_toolbar.setChecked(mode == "crosshair")
-    
+
         # [핵심 수정] 현재 '넘버링 모드'가 활성화 상태일 때만 커서 모양을 변경합니다.
         if self.active_mode == "numbering":
             if self.preview_mode == "crosshair":
@@ -1742,7 +2080,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 if self._preview_text: self._preview_text.hide()
             else: # 'preview' 모드일 경우
                 self.view.setCursor(QtCore.Qt.BlankCursor)
-    
+
     # ▼▼▼ 3D 뷰어 관련 메서드들 ▼▼▼
     def open_3d_model(self):
         # ▼▼▼ [추가] 프로젝트가 열려있는지 먼저 확인 ▼▼▼
@@ -1750,13 +2088,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "알림", "먼저 프로젝트를 열거나 생성해야 합니다.")
             return
         # ▲▲▲
-        
+
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Open 3D Model", "", "CAD Files (*.stp *.step *.igs *.iges *.x_t)"
         )
         if not path:
             return
-        
+
         # 1. 프로그레스 대화상자를 생성합니다.
         self.progress_dialog = QtWidgets.QProgressDialog(
             f"'{os.path.basename(path)}' 파일을 불러오는 중입니다...", # 대화상자에 표시될 텍스트
@@ -1768,14 +2106,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.progress_dialog.setWindowTitle("3D 모델 로딩 중")
         self.progress_dialog.setModal(True) # 다른 창을 클릭할 수 없도록 설정
         self.progress_dialog.show()
-        
+
         # 2. 백그라운드 스레드에 작업 시작 신호를 보냅니다.
         self.start_loading_3d.emit(path)
         # ▲▲▲ [수정 끝] ▲▲▲
         self.model_path = path # <--- 이 줄을 추가해주세요
         self.last_opened_3d_path = path
 
-        
+
     # main.py의 on_3d_load_finished 함수 (구버전 호환용)
     # on_3d_load_finished 함수를 아래 코드로 통째로 교체하세요.
     def on_3d_load_finished(self, geometry):
@@ -1790,11 +2128,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.progress_dialog.close()
 
         self.statusBar().showMessage("3D 모델 렌더링 중...")
-        
+
         # 2. 이전에 있던 3D 뷰어를 깨끗이 치웁니다.
         for i in reversed(range(self.vlayout_3d.count())):
             self.vlayout_3d.itemAt(i).widget().deleteLater()
-        
+
         # 3. 새로운 3D 뷰어(plotter)를 만듭니다.
         plotter = QtInteractor(self.widget_3d)
         self.vlayout_3d.addWidget(plotter.interactor)
@@ -1822,10 +2160,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             plotter.add_mesh(pv.PolyData(geometry.vertices), cmap="viridis", render_points_as_spheres=True)
         elif isinstance(geometry, Path3D):
             plotter.add_mesh(pv.lines_from_points(geometry.vertices), color="yellow", line_width=5)
-        
+
         # 5. 카메라 위치를 모델에 맞게 재설정합니다.
         plotter.reset_camera()
-        
+
         # 6. 화면을 3D 탭으로 전환합니다.
         # self.tab_widget.setCurrentWidget(self.widget_3d)
         # ▼▼▼ [수정 3] 대신 상태 표시줄에 완료 메시지를 표시 ▼▼▼
@@ -1838,7 +2176,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         filename = ""
         if hasattr(self, 'last_opened_3d_path'):
             filename = os.path.basename(self.last_opened_3d_path)
-        
+
         self.statusBar().clearMessage() # '렌더링 중' 메시지 지우기
         QtWidgets.QMessageBox.information(self, "로딩 완료", f"'{filename}' 파일을 성공적으로 불러왔습니다.")
 
@@ -1851,19 +2189,19 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         _log_error(self, "3D 모델 로딩 오류", Exception(error_message))
         self.statusBar().showMessage("3D 모델을 불러오는 데 실패했습니다.", 5000)
-            
+
     def _apply_initial_layout(self):
         try: self.showMaximized()
         except: pass
-        
+
         # "프로그램 켜지면 왼쪽 패널 폭은 120, 오른쪽은 전체의 30%로 배치해!"
         sizes = [
-            120, 
+            120,
             int(self.width() * 0.30)
         ]
-        
+
         self.resizeDocks([self.page_dock, self.dock], sizes, QtCore.Qt.Horizontal)
-    
+
     # 스페셜함수 적용 함수 새로 생성. v2.95에서 함.
     def set_individual_style(self):
         """선택된 항목에 개별 서식을 적용하거나 해제합니다."""
@@ -1899,14 +2237,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 if self.open_label_settings(new_style): # 사용자가 OK를 누르면
                     target_item.custom_style = new_style
                     self.load_page(self.cur_page_index) # 화면 새로고침
-        
+
         self._set_dirty()
-        
-    
-    
-    
+
+
+
+
     def resizeEvent(self, e):
-        super().resizeEvent(e)  
+        super().resizeEvent(e)
 
     def new_project(self):
         if not self._maybe_save("새 프로젝트", "새로운 프로젝트를 시작합니다.\n현재 작업을 저장하시겠습니까?"):
@@ -1938,11 +2276,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if dialog.exec():
             self.project_name = dialog.project_name
             self.project_dir = dialog.project_dir
-            
+
             self._close_current_doc()
             self._reset_all_tables() # <-- 모든 테이블 초기화
             self._reset_state_for_new() # <-- 모든 상태 초기화
-            
+
             self.project_path = None
             self._set_dirty(False) # 새 프로젝트는 '저장됨' 상태
             self._update_window_title() # 윈도우 제목 업데이트
@@ -1955,8 +2293,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 self.project_name = None
                 self.project_dir = None
                 self._update_window_title()
-    
-    
+
+
     def _close_current_doc(self):
         self.clear_highlight(); self.scene.clear(); self._preview_ellipse=None; self._preview_text=None
         try:
@@ -1980,20 +2318,20 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         finally:
             self.table.blockSignals(False)
             self.stamp_table.blockSignals(False)
-    
-    
+
+
     def _reset_state_for_new(self):
         """새 프로젝트를 위해 모든 상태 변수를 기본값으로 초기화합니다."""
         # 넘버링 관련 초기화
         self.items.clear()
         self.next_no = 1
         self.numbering_mode = 'global'
-        
+
         # 스탬프 관련 초기화
         self.stamps.clear()
         self.registered_stamps.clear()
         self.current_stamp_index = 0
-        
+
         # ▼▼▼ [추가] 3D 뷰어 및 관련 상태 초기화 ▼▼▼
         self._clear_3d_viewer()
         # ▲▲▲
@@ -2002,11 +2340,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 되돌리기/되살리기 스택 초기화
         self.undo_stack.clear()
         self.redo_stack.clear()
-        
+
         # 전역 스타일 및 설정 초기화
         self.style = LabelStyle()
         self.set_input_mode("number_only")
-        
+
         # 전역 스탬프 설정 초기화
         self.stamp_opacity = 1.0
         self.stamp_rotation = 0.0
@@ -2025,7 +2363,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_undo_redo_hint()
         self._update_status()
         self._update_stamp_button_icon()
-    
+
     def open_project_dialog(self):
         # ===== ▼▼▼ 수정 시작 ▼▼▼ =====
         if not self._maybe_save("프로젝트 열기", "새로운 파일을 엽니다.\n현재 파일을 저장하시겠습니까?"):
@@ -2033,14 +2371,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         path,_=QtWidgets.QFileDialog.getOpenFileName(self,"Open Project","","TS Numbering (*.tsn)")
         if path: self.open_project(path)
         # ===== ▲▲▲ 수정 끝 ▲▲▲ =====
-        
+
     def open_project(self, path):
         try:
             # 1. 파일을 먼저 열고 모든 데이터를 메모리로 읽어들입니다.
             with zipfile.ZipFile(path, "r") as zf:
                 pdf_bytes = zf.read(TSN_PDF_NAME)
                 meta = json.loads(zf.read(TSN_META_NAME).decode("utf-8"))
-                
+
                 model_path_info = meta.get("3d_model_path", None)
                 model_bytes = None
                 if model_path_info and model_path_info.startswith("embedded:"):
@@ -2062,7 +2400,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.cur_page_index = 0 # <<--- [수정 2] 항상 첫 페이지(인덱스 0)로 시작
         self.render_scale = int(meta.get("render_scale", 2))
         self.style.from_dict(meta.get("style", {}))
-    
+
         # 넘버링/스탬프 데이터 복원
         for m in meta.get("items",[]):
             custom_style = None
@@ -2075,11 +2413,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                         tol_minus=normalize_signed_text(m.get("tol_minus","")),
                         custom_style=custom_style)
             self.items.append(it)
-        
+
         self.registered_stamps = meta.get("registered_stamps", {})
         for s_data in meta.get("stamps", []):
             self.stamps.append(StampItem(**s_data))
-        
+
 
         # 3D 모델 로드 준비
         if model_path_info:
@@ -2103,7 +2441,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.project_path = path
         self.project_name = os.path.splitext(os.path.basename(path))[0]
         self.project_dir = os.path.dirname(path)
-        
+
         # 이 함수가 PDF 뷰어, 테이블, 썸네일 등 모든 것을 화면에 다시 그립니다.
         self.load_page(self.cur_page_index) # <<--- [수정 1] 화면을 먼저 로드
 
@@ -2114,14 +2452,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_page_navigation_ui()
         self._populate_thumbnails()
         self._update_stamp_button_icon()
-            
+
         # 6. [수정 1] 모든 화면이 로드된 후, 마지막으로 다음 번호 지정 대화상자 호출
         if self.numbering_mode == 'global':
             if self.items:
                 max_no = 0
                 for item in self.items:
                     if item.no % 1 == 0: max_no = max(max_no, int(item.no))
-                
+
                 suggested_no = max_no + 1
                 new_next_no, ok = QtWidgets.QInputDialog.getInt(
                     self, "다음 번호 지정",
@@ -2131,8 +2469,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 self.next_no = float(new_next_no) if ok else float(suggested_no)
             else:
                 self.next_no = 1.0
-        
-        
+
+
     def save_project(self) -> bool:
         if self.doc is None:
             QtWidgets.QMessageBox.warning(self, "알림", "저장할 PDF 문서가 없습니다.")
@@ -2152,19 +2490,19 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._set_dirty(False)
         self.statusBar().showMessage(f"✅ 프로젝트 저장 완료: {os.path.basename(self.project_path)}")
         return True
-    
+
     def save_project_as(self) -> bool:
         if self.doc is None:
             QtWidgets.QMessageBox.warning(self, "알림", "저장할 PDF 문서가 없습니다.")
             return False
-            
+
         default_dir = self.project_dir or ""
         default_filename = f"{self.project_name}.tsn" if self.project_name else "project.tsn"
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "프로젝트 다른 이름으로 저장", os.path.join(default_dir, default_filename), "TS Numbering (*.tsn)")
-        
+
         if not path: return False
         if not path.lower().endswith(".tsn"): path += ".tsn"
-        
+
         save_option = "link"
         if self.model_path and os.path.exists(self.model_path):
             option = SaveOptionsDialog.get_save_option(self)
@@ -2180,8 +2518,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._set_dirty(False)
         self.statusBar().showMessage(f"✅ 프로젝트 저장 완료: {os.path.basename(self.project_path)}")
         return True
-        
-    
+
+
     # 스페셜 서식 적용 위해 교체 v2.95에서...
     # main.py의 PdfAnnotator 클래스 내부
 
@@ -2219,18 +2557,18 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             meta["3d_model_path"] = f"embedded:{os.path.basename(self.model_path)}"
         else:
             meta["3d_model_path"] = self.model_path
-        
+
         with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(TSN_META_NAME, json.dumps(meta, ensure_ascii=False, indent=2))
             zf.writestr(TSN_PDF_NAME, pdf_bytes)
             if save_option == "embed" and self.model_path and os.path.exists(self.model_path):
                 zf.write(self.model_path, arcname="model.data")
-    
-    
+
+
     def import_pdf(self):
         # ▼▼▼ [핵심] 문서가 열려있지 않을 때의 로직을 완전히 변경합니다. ▼▼▼
         if not self.doc:
-            QtWidgets.QMessageBox.warning(self, "알림", 
+            QtWidgets.QMessageBox.warning(self, "알림",
                 "이 기능은 기존 프로젝트의 PDF를 교체하거나 이어붙일 때 사용합니다.\n\n"
                 "새 작업을 시작하려면 '파일 > 새 프로젝트' 메뉴를 이용해주세요.")
             return
@@ -2240,12 +2578,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         dialog = AppendPdfDialog(self)
         if dialog.exec():
             choice = dialog.choice
-            
+
             if choice == "append":
                 path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "이어붙일 PDF 파일 선택", self.project_dir or "", "PDF Files (*.pdf)")
                 if path:
                     self._append_pdf(path)
-            
+
             elif choice == "replace":
                 reply = QtWidgets.QMessageBox.question(self, "새로 불러오기",
                                                    "기존 작업을 모두 닫고 새 PDF로 작업을 다시 시작하시겠습니까?\n(모든 넘버링 정보가 삭제됩니다.)",
@@ -2258,7 +2596,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 self._reset_all_tables()
                 self._reset_state_for_new()
                 self.import_pdf_from_path(path)
-    
+
 
     def import_pdf_from_path(self, path):
         # 이 함수는 이제 '새 집을 짓는' 역할에만 집중합니다.
@@ -2280,10 +2618,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self._close_current_doc()
             return
         # ▲▲▲ 여기까지 수정 ▲▲▲
-            
+
         self.cb_separate_numbering.setChecked(self.numbering_mode == 'page_specific')
         self.cb_separate_numbering.setEnabled(False) # 한번 선택하면 프로젝트 내에서 변경 불가
-        
+
         # 새 PDF의 정보를 기반으로 프로젝트 기본 정보 설정
         if not self.project_name:
             self.project_name = os.path.splitext(os.path.basename(path))[0]
@@ -2295,16 +2633,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.load_page(self.cur_page_index)
         self._populate_thumbnails()
         self._update_window_title()
-    
-   
-    
+
+
+
     def _render_factor_for_scale(self,s:float)->int: return 2 if s<1.6 else (4 if s<3.2 else 6)
-    
+
     # 줌인시 갑자기 화면이 튀는걸 방지하기 위해 코드 교체됨. v2.94에서...
     def _maybe_rerender_for_zoom(self,s:float):
         if not self.auto_highres or not self.doc: return
         desired = self._render_factor_for_scale(s)
-        
+
         if desired != self.render_scale:
             # --- 수정 시작: 화면 점프 방지 로직 ---
 
@@ -2323,30 +2661,30 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 3. 새 이미지에 맞게 기억해 둔 중심점의 좌표를 다시 계산합니다.
             new_center_x = normalized_x * self.render_scale
             new_center_y = normalized_y * self.render_scale
-            
+
             # 4. 뷰를 새로운 중심점으로 즉시 이동시킵니다.
             self.view.centerOn(QtCore.QPointF(new_center_x, new_center_y))
             # --- 수정 끝 ---
-            
-            
+
+
     def load_page(self,index:int):
         if not self.doc: return
         index=max(0,min(index,len(self.doc)-1)); self.cur_page_index=index
         page=self.doc[index]; pix=page.get_pixmap(matrix=fitz.Matrix(self.render_scale,self.render_scale),alpha=False)
         img=QtGui.QImage(pix.samples,pix.width,pix.height,pix.stride,QtGui.QImage.Format_RGB888)
         pm=QtGui.QPixmap.fromImage(img.copy())
-        
+
         self.scene.clear()
         # ▼▼▼ [결정적 수정] 파괴된 객체에 대한 참조를 여기서 모두 초기화합니다. ▼▼▼
         self._preview_ellipse = None
         self._preview_text = None
         self._stamp_preview_item = None
         # ▲▲▲ 여기까지 3줄 추가 ▲▲▲
-        
-        
+
+
         self._stamp_graphics_items.clear()
         self._clear_stamp_highlight()
-        
+
         self._page_pix=self.scene.addPixmap(pm)
         self.view.setSceneRect(pm.rect())
 
@@ -2354,7 +2692,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             for it in self.items:
                 if it.page_index == index:
                     self._draw_label(it)
-        
+
         if self.view_show_stamps:
             for st in self.stamps:
                 if st.page_index == index:
@@ -2366,24 +2704,24 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._preview_ellipse=None; self._preview_text=None
         self._on_zoom_changed(self.view._scale())
         self._reapply_highlight_from_selection(same_page_only=True)
-        
+
         self._update_page_navigation_ui()
         self._update_thumbnail_selection()
         self._refresh_table_view()
         self._refresh_stamp_table()
-        
+
         # [핵심 수정] UI 업데이트를 바로 호출하지 않고, 0초 뒤에 실행하도록 예약합니다.
         QtCore.QTimer.singleShot(0, self._sync_ui_to_current_mode)
         # ▼▼▼ 여기에 이 한 줄을 추가! ▼▼▼
         self.view.setFocus()
-    
-    
-    
+
+
+
     def go_prev(self):
         if self.doc and self.cur_page_index>0: self.load_page(self.cur_page_index-1)
     def go_next(self):
         if self.doc and self.cur_page_index<len(self.doc)-1: self.load_page(self.cur_page_index+1)
-        
+
 
     # ===== ▼▼▼ 아래 4개 함수를 여기에 새로 추가해주세요 ▼▼▼ =====
     def _go_to_page_from_spinbox(self, page_num):
@@ -2396,13 +2734,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if self.doc and len(self.doc) > 0:
             total_pages = len(self.doc)
             self.lbl_total_pages.setText(f"/ {total_pages}")
-            
+
             # 스핀박스의 범위를 설정하고 현재 페이지 번호로 값을 변경
             self.spin_page.setRange(1, total_pages)
             self.spin_page.blockSignals(True) # 값 변경 시그널을 잠시 막음
             self.spin_page.setValue(self.cur_page_index + 1)
             self.spin_page.blockSignals(False) # 시그널 다시 활성화
-            
+
             # 처음/마지막 페이지일 때 이전/다음 버튼 비활성화
             self.btn_prev.setEnabled(self.cur_page_index > 0)
             self.btn_next.setEnabled(self.cur_page_index < total_pages - 1)
@@ -2449,7 +2787,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
 
     def _populate_thumbnails(self):
-    
+
         # 기존 썸네일 싹 정리
         self._clear_thumbnails()
         if not getattr(self, "doc", None):
@@ -2491,7 +2829,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
 
     def _update_thumbnail_selection(self):
-    
+
         if not getattr(self, "thumbnail_widgets", None):
             return
 
@@ -2506,8 +2844,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 # 썸네일 위젯이 이미 파괴 중일 수 있으니 조용히 패스
                 pass
 
-        
-        
+
+
         # ===== ▼▼▼ 아래 2개 함수를 새로 추가해주세요 ▼▼▼ =====
     def _go_to_page_from_spinbox(self, page_num):
         """페이지 번호 입력창(SpinBox)의 값이 변경되었을 때 호출됩니다."""
@@ -2519,13 +2857,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if self.doc and len(self.doc) > 0:
             total_pages = len(self.doc)
             self.lbl_total_pages.setText(f"/ {total_pages}")
-            
+
             # 스핀박스의 범위를 설정하고 현재 페이지 번호로 값을 변경
             self.spin_page.setRange(1, total_pages)
             self.spin_page.blockSignals(True) # 값 변경 시그널을 잠시 막음
             self.spin_page.setValue(self.cur_page_index + 1)
             self.spin_page.blockSignals(False) # 시그널 다시 활성화
-            
+
             # 처음/마지막 페이지일 때 이전/다음 버튼 비활성화
             self.btn_prev.setEnabled(self.cur_page_index > 0)
             self.btn_next.setEnabled(self.cur_page_index < total_pages - 1)
@@ -2572,7 +2910,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     #숫자만 입력되도록 수정. V2.87에서 수정...
     # insert 기능 위해 on_clicked 함수 변경.(통갈이) v3.14...
     # 빈행 삽입 후 프리뷰모드에선 정상적으로 보이나 실제로 입력할땐 소수점 나타나는 문제.. v3.21
-    
+
     # 사격모드 넣으면서 수정함. v3.30에서..
     def on_clicked(self, scene_pos: QtCore.QPointF):
         # 1. 사격 모드는 최상단에서 처리 (기존과 동일)
@@ -2596,10 +2934,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             )
             bullet_item.setZValue(10000)
             self.bullet_hole_items.append(bullet_item)
-            
+
             if self.enable_shell:
                 self._spawn_shell(scene_pos)
-            
+
             return
             # ▲▲▲ 여기까지 복원 ▲▲▲
         # 2. 현재 활성 모드에 따라 작업 결정
@@ -2612,7 +2950,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             if not self.doc: return
 
             is_separate_mode = self.numbering_mode == 'page_specific'
-            
+
             if is_separate_mode:
                 items_on_page = [it.no for it in self.items if it.page_index == self.cur_page_index]
                 cur_no = int(max(items_on_page, default=0) + 1)
@@ -2621,23 +2959,23 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
             # ▼▼▼ [핵심 수정] 되살리기 스택을 여기서 비웁니다. ▼▼▼
             self.redo_stack.clear()
-            
+
             if self.input_mode=="number_only":
                 it=MarkItem(no=cur_no,page_index=self.cur_page_index,pdf_point=pdf_xy)
             else:
                 # ▼▼▼ 주석 부분을 이 코드로 교체해주세요 ▼▼▼
                 dim_type,ok=QtWidgets.QInputDialog.getItem(self,"Demension Type","Type:",DIM_TYPES,0,False)
                 if not ok: return
-                
+
                 val_float,ok=QtWidgets.QInputDialog.getDouble(self,"Demension","Value:", 0.00, -999999, 999999, 10)
                 if not ok: return
-                
+
                 p_float, p_ok = QtWidgets.QInputDialog.getDouble(self,"Maximum","Upper (e.g. +0.20):", 0.00, -999999, 999999, 10)
                 m_float, m_ok = QtWidgets.QInputDialog.getDouble(self,"Minimum","Lower (e.g. -0.10):", 0.00, -999999, 999999, 10)
                 p_val = str(p_float) if p_ok else ""
                 m_val = str(m_float) if m_ok else ""
                 # ▲▲▲ 여기까지 교체 ▲▲▲
-                
+
                 it=MarkItem(no=cur_no,page_index=self.cur_page_index,pdf_point=pdf_xy,
                             dim_type=dim_type,value=str(val_float),
                             tol_plus=normalize_signed_text(p_val),tol_minus=normalize_signed_text(m_val))
@@ -2646,7 +2984,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                  self.next_no = float(cur_no + 1)
 
             self.items.append(it) # 상태 리스트에 추가
-            
+
             # ▼▼▼ [핵심 추가] 행동을 역사에 기록합니다. ▼▼▼
             action = {'type': 'add_numbering', 'item': it}
             self.undo_stack.append(action)
@@ -2659,17 +2997,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self._update_status()
             self._set_dirty()
             self._update_flow_view()
-        
+
         elif self.active_mode == "stamp":
             if not self.doc: return
-            
+
             stamp_key = self._get_current_stamp_key()
             if not stamp_key:
                 self.statusBar().showMessage("사용할 스탬프가 선택되지 않았습니다. '스탬프 관리'에서 스탬프를 추가해주세요.", 3000)
                 return
 
             pdf_xy = self.view_to_pdf(scene_pos)
-            
+
             # ▼▼▼ [핵심] 스탬프 종류에 맞는 서식을 찾아옵니다. ▼▼▼
             stamp_info = self.registered_stamps.get(stamp_key, {})
             settings = stamp_info.get("settings") # 종류별 서식을 먼저 시도
@@ -2680,10 +3018,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     "opacity_min": self.stamp_opacity_min, "opacity_max": self.stamp_opacity_max,
                     "rotation_min": self.stamp_rotation_min, "rotation_max": self.stamp_rotation_max,
                 }
-            
+
             opacity = random.uniform(settings["opacity_min"], settings["opacity_max"]) if settings["opacity_random"] else settings["opacity"]
             rotation = random.uniform(settings["rotation_min"], settings["rotation_max"]) if settings["rotation_random"] else settings["rotation"]
-            
+
             new_stamp = StampItem(
                 stamp_key=stamp_key,
                 page_index=self.cur_page_index,
@@ -2703,9 +3041,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self._refresh_stamp_table()
             self._set_dirty()
             self._update_undo_redo_hint()
-    
-    
-    # 탄피생성    
+
+
+    # 탄피생성
     def _spawn_shell(self, origin: QtCore.QPointF):
         """사격 시 한 발당 탄피 1개 생성."""
         if not self.shell_pixmaps:
@@ -2802,7 +3140,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if not self.shell_items:
             self._shell_timer.stop()
 
-    
+
     def clear_bullet_holes(self):
         # ... (기존 혈흔 정리)
         for s in getattr(self, "shell_items", []):
@@ -2811,14 +3149,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             except Exception:
                 pass
         self.shell_items = []
-        
+
     # 총알구멍 삭제 함수 v3.33에서...
     def clear_bullet_holes(self):
         """화면에 있는 모든 총알 구멍 잔상을 제거합니다."""
         for item in self.bullet_hole_items:
             self.scene.removeItem(item)
         self.bullet_hole_items.clear()
-    
+
     def _draw_flow_elements(self):
         """(주석 추가됨) 아이콘과 텍스트 라벨을 포함한 흐름도를 그립니다."""
         items_on_page = [it for it in self.items if it.page_index == self.cur_page_index]
@@ -2838,7 +3176,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             new_p1 = p1 + line_vec / length * margin1; new_p2 = p2 - line_vec / length * margin2
             if QtCore.QLineF(new_p1, new_p2).length() < 1: return
             line = self.scene.addLine(QtCore.QLineF(new_p1, new_p2), line_pen); line.setZValue(1); self.flow_items.append(line)
-            
+
             # ▼▼▼ 기존 화살촉 그리는 로직을 아래 코드로 교체 ▼▼▼
             arrow_size = max(5, p2_style.radius_view_px * 0.8)
 
@@ -2857,13 +3195,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 self.flow_items.append(circle_item)
             # "none"일 경우 아무것도 그리지 않음
             # ▲▲▲ 여기까지 교체 ▲▲▲
-            
+
         def draw_marker_icon(item, pixmap):
             scaled_pixmap = pixmap.scaled(QtCore.QSize(48, 48), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
             marker = self.scene.addPixmap(scaled_pixmap)
             pt = self.pdf_to_view(*item.pdf_point)
             offset_x = scaled_pixmap.width() / 2
-            
+
             # ===== ▼▼▼ [위치 조절 가이드 1: 시작/끝 아이콘] ▼▼▼ =====
             # Y 좌표 오프셋: 아이콘의 높이 전체를 사용합니다.
             # 이 값을 조절하여 아이콘의 상하 위치를 변경할 수 있습니다.
@@ -2888,7 +3226,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         else: # 전체 이어가기 모드
             all_sorted_items = sorted(self.items, key=lambda x: x.no)
             if not all_sorted_items: return
-            
+
             transition_markers = {}
             color_index = 0
             for i in range(len(all_sorted_items) - 1):
@@ -2909,12 +3247,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 text_item = self.scene.addSimpleText(text, font)
                 text_item.setBrush(QtGui.QBrush(color)); text_item.setPen(QtGui.QPen(QtGui.QColor("white"), 0.5)); text_item.setZValue(2)
                 text_rect = text_item.boundingRect()
-                
+
                 # ===== ▼▼▼ [위치 조절 가이드 2: 연결점 텍스트] ▼▼▼ =====
                 # 1. 거리 조절: 원의 테두리(r)에서 얼마나 멀리 떨어뜨릴지 결정합니다.
                 #    이 숫자(20)를 키우면 텍스트가 원에서 더 멀어집니다.
                 offset = r + 23
-                
+
                 # 2. 방향 조절: 텍스트를 배치할 대각선 방향을 결정합니다.
                 #    pt.x() + : 오른쪽 | pt.x() - : 왼쪽
                 #    pt.y() - : 위쪽   | pt.y() + : 아래쪽
@@ -2939,9 +3277,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 next_item = all_sorted_items[i+1] if i < len(all_sorted_items) - 1 else None
                 if next_item and next_item.page_index == current_item.page_index:
                     draw_arrow_line(current_item, next_item)
-    
-    
-    
+
+
+
     def _update_flow_view(self):
         """기존 흐름도를 지우고, 현재 상태에 맞춰 새로 그립니다."""
         # 1. 기록부에 있는 모든 흐름도 아이템을 화면에서 삭제
@@ -2969,42 +3307,42 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         ellipse = self.scene.addEllipse(pt.x()-r,pt.y()-r,2*r,2*r,
                               pen=QtGui.QPen(style.stroke_color,style.stroke_width),
                               brush=self._ellipse_brush(style)) # _ellipse_brush도 style을 받도록 수정 필요
-        
+
         txt = self.scene.addText(self._format_no(it.no),
                          QtGui.QFont("Arial", style.font_size_view_px, QtGui.QFont.Bold))
-        
+
         txt.setDefaultTextColor(style.text_color)
         br=txt.boundingRect(); txt.setPos(pt.x()-br.width()/2, pt.y()-br.height()/2)
 
         ellipse.setZValue(2)
         txt.setZValue(2)
 
-    def _append_table_row(self,it:MarkItem):    
+    def _append_table_row(self,it:MarkItem):
         r=self.table.rowCount(); self.table.insertRow(r)
-        
+
         no_val = it.no
         if abs(no_val - round(no_val)) < 1e-9:
             no_str = f"{no_val:.0f}"
         else:
             no_str = f"{no_val:g}"
-        
+
         no_item = QtWidgets.QTableWidgetItem()
         no_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         no_item.setData(QtCore.Qt.DisplayRole, no_str)
         no_item.setFlags(no_item.flags() & ~QtCore.Qt.ItemIsEditable)
-        
+
         self.table.setItem(r,0,no_item)
         self.table.setItem(r,1,QtWidgets.QTableWidgetItem(it.dim_type))
         self.table.setItem(r,2,QtWidgets.QTableWidgetItem(dim_format(it.dim_type,it.value)))
         self.table.setItem(r,3,QtWidgets.QTableWidgetItem(normalize_signed_text(it.tol_plus)))
         self.table.setItem(r,4,QtWidgets.QTableWidgetItem(normalize_signed_text(it.tol_minus)))
-    
+
     def on_table_cell_clicked(self, row: int, col: int):
         # ===== ▼▼▼ 수정: 하이라이트 기능이 켜져 있을 때만 실행하도록 변경 ▼▼▼ =====
         if not self.highlight_enabled:
             return
         self._highlight_from_row(row)
-    
+
     def on_table_selection_changed(self):
         ranges = self.table.selectedRanges()
         if not ranges:
@@ -3017,7 +3355,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             if not no_item: return
 
             no = float(no_item.text())
-            
+
             target_item = None
             if hasattr(self, 'cb_separate_numbering') and self.numbering_mode == 'page_specific':
                 target_item = next((it for it in self.items if it.page_index == self.cur_page_index and abs(it.no - no) < 1e-9), None)
@@ -3026,12 +3364,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
             self.highlight_label(target_item)
         except Exception:
-            return    
-        
+            return
+
     def _highlight_by_no(self, no: int):
         m = next((x for x in self.items if x.no == no), None)
         self.highlight_label(m)
-        
+
     def _clear_highlight(self):
         if getattr(self, "_highlight_ellipse", None):
             try:
@@ -3044,7 +3382,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     #v4.22 데이터 꼬임 방지 수정.
     def on_table_item_changed(self,qitem:QtWidgets.QTableWidgetItem):
         r,c=qitem.row(),qitem.column()
-        
+
         try:
             item_no = float(self.table.item(r, 0).text())
         except (ValueError, AttributeError):
@@ -3079,19 +3417,19 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         elif c==4:
             norm=normalize_signed_text(txt); target_item.tol_minus=norm
             self.table.blockSignals(True); qitem.setText(norm); self.table.blockSignals(False)
-        
+
         self._set_dirty()
-    
-        
+
+
     def _sync_highlight_from_table(self):
         QtCore.QTimer.singleShot(0, self._apply_highlight_from_table)
-        
+
 
     def _apply_highlight_from_table(self):
         if not self.highlight_enabled:
             self.clear_highlight()
             return
-            
+
         row = self.table.currentRow()
         if row < 0:
             self.clear_highlight()
@@ -3100,18 +3438,18 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._highlight_from_row(row)
 
 
-    
+
     def highlight_label(self, it: MarkItem):
             if not it: return
             if it.page_index != self.cur_page_index:
                 self.load_page(it.page_index)
-            
+
             self.clear_highlight()
-            
+
             # ===== ▼▼▼ 수정 시작: 개별 서식을 정확히 반영하도록 변경 ▼▼▼ =====
             # 1. 하이라이트를 그릴 때 사용할 스타일을 먼저 결정합니다 (개별 스타일 우선).
             style_to_use = it.custom_style if it.custom_style else self.style
-            
+
             # 2. 결정된 스타일을 기준으로 모든 값을 계산합니다.
             pt = self.pdf_to_view(*it.pdf_point)
             r = style_to_use.radius_view_px + 5
@@ -3127,21 +3465,21 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             ell.setZValue(9999)
             self._highlight_ellipse = ell
             self._highlight_item_no = it.no
-    
+
     def clear_highlight(self):
         if self._highlight_ellipse:
             try: self.scene.removeItem(self._highlight_ellipse)
             except Exception: pass
             self._highlight_ellipse=None
         self._highlight_item_no=None
-        
+
     def clear_highlight(self):
         if self._highlight_ellipse:
             try: self.scene.removeItem(self._highlight_ellipse)
             except Exception: pass
             self._highlight_ellipse=None
         self._highlight_item_no=None
-    
+
 
     def clear_selection_and_highlight(self):
         """테이블의 선택 상태와 화면의 하이라이트를 모두 해제합니다."""
@@ -3162,13 +3500,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def _shortcut_toggle_edit(self):
     # 단축키(Ctrl+E)가 툴바의 '에디트' 액션을 토글하도록 변경
         self.action_edit.toggle()
-    
-    
+
+
     def on_scene_moved(self, scene_pos: QtCore.QPointF):
         if self._preview_ellipse: self._preview_ellipse.hide()
         if self._preview_text: self._preview_text.hide()
         if self._stamp_preview_item: self._stamp_preview_item.hide()
-        
+
         if self.shooting_mode:
             return
 
@@ -3177,14 +3515,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             if self.preview_mode == "preview":
                 if self._preview_ellipse is None or self._preview_text is None:
                     self._create_preview_items()
-                
+
                 if not self._preview_ellipse.isVisible(): self._preview_ellipse.show()
                 if not self._preview_text.isVisible(): self._preview_text.show()
 
                 self._refresh_preview_text()
                 self._move_preview_items(scene_pos)
-                
-        
+
+
         # 3. 스탬프 모드일 때의 미리보기 로직
         elif self.active_mode == "stamp" and self.doc:
             current_stamp_name = self._get_current_stamp_key()
@@ -3194,10 +3532,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             if not stamp_info or not isinstance(stamp_info, dict): return
             stamp_path = stamp_info.get("path")
             if not stamp_path: return
-            
+
             pixmap = QtGui.QPixmap(stamp_path)
             if pixmap.isNull(): return
-            
+
             # (스탬프 프리뷰 설정 부분만 발췌)
             if self._stamp_preview_item is None:
                 self._stamp_preview_item = self.scene.addPixmap(pixmap)
@@ -3223,24 +3561,24 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 3) 커서 위치 = 중심
             self._stamp_preview_item.setPos(scene_pos)
             self._stamp_preview_item.show()
-        
+
     # 프리뷰 제대로 안되서 수정. v30.2에서...
     def _create_preview_items(self):
         r=self.style.radius_view_px
         pen=QtGui.QPen(self.style.stroke_color)
         pen.setWidth(self.style.stroke_width)
-        
+
         self._preview_ellipse=self.scene.addEllipse(-r,-r,2*r,2*r,pen=pen,brush=self._ellipse_brush(self.style))
-        
+
         self._preview_ellipse.setOpacity(0.6)
         self._preview_ellipse.setZValue(10_000)
-        
+
         font=QtGui.QFont("Arial",self.style.font_size_view_px,QtGui.QFont.Bold)
         self._preview_text=self.scene.addText("",font)
         self._preview_text.setDefaultTextColor(self.style.text_color)
         self._preview_text.setOpacity(0.6)
         self._preview_text.setZValue(10_001)
-        
+
 
     def _move_preview_items(self,p:QtCore.QPointF):
         r=self.style.radius_view_px
@@ -3263,10 +3601,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         for it in items_to_display:
             self._append_table_row(it)
-        
+
         self.table.blockSignals(False)
-    
-    
+
+
     def _update_undo_redo_hint(self):
         undo_tooltip = "실행 취소"
         if self.undo_stack:
@@ -3279,21 +3617,21 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             last_redo_action = self.redo_stack[-1]
             action_type = "넘버링" if last_redo_action['type'] == 'add_numbering' else "스탬프"
             redo_tooltip = f"다시 실행 ({action_type})"
-            
+
         self.action_undo.setToolTip(undo_tooltip)
         self.action_redo.setToolTip(redo_tooltip)
 
         self.action_undo.setEnabled(bool(self.undo_stack))
         self.action_redo.setEnabled(bool(self.redo_stack))
-    
-    
+
+
     def undo(self):
         if not self.undo_stack: return
 
         # 1. 마지막 행동을 역사 기록부에서 가져옴
         last_action = self.undo_stack.pop()
         item = last_action['item']
-        
+
         # 2. 행동의 종류에 따라 되돌리기 실행
         if last_action['type'] == 'add_numbering':
             if item in self.items:
@@ -3309,13 +3647,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         # 3. 되돌린 행동은 '되살리기 기록부'로 이동
         self.redo_stack.append(last_action)
-        
+
         # 4. 화면 및 상태 업데이트
         self.load_page(item.page_index) # 해당 아이템이 있던 페이지로 가서 새로고침
         self._update_undo_redo_hint()
         self._update_status()
         self._set_dirty()
-    
+
     def redo(self):
         if not self.redo_stack: return
 
@@ -3329,7 +3667,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 전역 모드일 때만 next_no 업데이트
             if self.numbering_mode != 'page_specific':
                 self.next_no = max(self.next_no, item.no + 1)
-        
+
         elif action_to_redo['type'] == 'add_stamp':
             self.stamps.append(item)
 
@@ -3341,8 +3679,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_undo_redo_hint()
         self._update_status()
         self._set_dirty()
-            
-    
+
+
     def insert_excel_style(self):
         if self.table.currentRow() < 0:
             QtWidgets.QMessageBox.information(self, "알림", "기준 위치를 테이블에서 먼저 선택해주세요.")
@@ -3371,8 +3709,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_undo_redo_hint(); self._update_status()
         QtWidgets.QMessageBox.information(self, "작업 완료", f"'{target_no:g}'번 위치부터 번호가 1씩 밀려났습니다.")
         self._set_dirty()
-    
-    
+
+
     # 꼬임방지 수정.
     def insert_precision_style(self):
         if self.table.currentRow() < 0:
@@ -3384,7 +3722,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         new_no, ok = self._get_precision_no(target_no)
         if not ok: return
-        
+
         # ===== ▼▼▼ [수정] 현재 모드에 따라 중복 번호 체크 ▼▼▼ =====
         is_duplicate = False
         if self.numbering_mode == 'page_specific':
@@ -3393,19 +3731,19 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         else:
             # 전체 모드: 전체 항목에서 중복 확인
             is_duplicate = any(it.no == new_no for it in self.items)
-        
+
         if is_duplicate:
             QtWidgets.QMessageBox.warning(self, "오류", "이미 존재하는 번호입니다.")
             return
         # ===== ▲▲▲ 여기까지 수정 ▲▲▲ =====
-        
+
         self.insert_mode = True
         self.insert_option = "precision"
         self.insert_target_no = new_no
         self.statusBar().showMessage(f"'{new_no:g}'번을 삽입할 위치를 도면에서 클릭하세요... (취소: ESC)")
         self.view.setCursor(QtCore.Qt.CrossCursor)
         self._refresh_preview_text()
-    
+
     def delete_items(self):
         """선택한 항목을 삭제합니다. 현재 보이는 목록을 기준으로 안전하게 작동합니다."""
         selected_rows = sorted(list(set(index.row() for index in self.table.selectedIndexes())))
@@ -3425,7 +3763,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 items_to_delete_ids.add(id(items_on_display[row]))
 
         if not items_to_delete_ids: return
-        
+
         # 전체 self.items 목록에서 해당 아이템들을 제거합니다.
         self.items = [it for it in self.items if id(it) not in items_to_delete_ids]
 
@@ -3435,8 +3773,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_status()
         self._set_dirty()
         QtWidgets.QMessageBox.information(self, "삭제 완료", f"{len(items_to_delete_ids)}개 항목을 삭제했습니다.")
-    
-    
+
+
     def _refresh_preview_text(self):
         if self._preview_text:
             if self.insert_mode:
@@ -3458,27 +3796,27 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("넘버링 삽입")
         layout = QtWidgets.QVBoxLayout(dialog)
-        
+
         label = QtWidgets.QLabel("삽입할 번호를 입력하거나 조절하세요:")
         spinbox = QtWidgets.QDoubleSpinBox()
         spinbox.setRange(0, 99999)
         spinbox.setDecimals(1)
         spinbox.setSingleStep(0.1)
         spinbox.setValue(target_no)
-        
+
         button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         button_box.accepted.connect(dialog.accept)
         button_box.rejected.connect(dialog.reject)
-        
+
         layout.addWidget(label)
         layout.addWidget(spinbox)
         layout.addWidget(button_box)
-        
+
         if dialog.exec():
             # ===== ▼▼▼ 수정: 반올림하여 부동소수점 오차 제거 ▼▼▼ =====
             return round(spinbox.value(), 2), True
         return 0.0, False
-    
+
     def execute_item_insertion(self, pdf_xy):
         """(수정됨) 새 항목을 현재 모드에 맞게 안전하게 삽입하고 화면을 새로고침합니다."""
         choice = self.insert_option
@@ -3497,7 +3835,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 삽입 모드 상태를 초기화합니다.
         self.insert_mode = False
         self.view.setCursor(QtCore.Qt.ArrowCursor)
-        
+
         # ===== ▼▼▼ [수정] 가장 안전하고 검증된 방식으로 화면 전체 새로고침 ▼▼▼ =====
         self.load_page(self.cur_page_index)
         self._update_undo_redo_hint()
@@ -3507,16 +3845,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         if choice == "precision":
             QtWidgets.QMessageBox.information(self, "삽입 완료", f"{insert_no:g}번이 새롭게 삽입되었습니다.")
-               
-        
+
+
     def cancel_insert_mode(self):
         """삽입 모드를 취소합니다."""
         if self.insert_mode:
             self.insert_mode = False
             self.view.setCursor(QtCore.Qt.ArrowCursor)
             self._update_status()
-    
-    
+
+
     def adjust_label_style(self, property_name: str, delta: int):
         """전역 라벨 스타일의 숫자 속성을 조절하고 화면을 새로고침합니다."""
         current_value = getattr(self.style, property_name)
@@ -3529,7 +3867,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             new_value = max(1, min(10, new_value))
         elif "font" in property_name:
             new_value = max(6, min(48, new_value))
-            
+
         setattr(self.style, property_name, new_value)
         self.load_page(self.cur_page_index) # 변경사항을 즉시 반영
         self._set_dirty()
@@ -3542,7 +3880,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         else:
             self.set_preview_mode("preview")
             self.a_preview.setChecked(True)
-        
+
     # 추가. 플로우라인  실시간 반영.
     def _update_flow_view(self):
         """기존 흐름도를 지우고, 현재 상태에 맞춰 새로 그립니다."""
@@ -3557,7 +3895,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 2. 흐름도 보기가 켜져 있을 때만 새로 그림
         if self.flow_view_enabled:
             self._draw_flow_elements()
-    
+
     # delete_and_renumber_items 삭제후 통합. v3.22에서...
     def toggle_highlighting(self, checked):
         """하이라이트 활성화 상태를 토글합니다."""
@@ -3573,21 +3911,21 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         if not checked:
             self.clear_highlight() # 기능이 꺼지면 현재 하이라이트를 즉시 제거
-      
+
     def _build_items_dataframe(self):
         return pd.DataFrame([
             {"No":it.no, "Demension Type":it.dim_type, "Demension":dim_format(it.dim_type,it.value),
              "Maximum":it.tol_plus, "Minimum":it.tol_minus}
             for it in self.items
         ])
-        
+
         # ===== ▼▼▼ 스탬프 데이터프레임 생성 함수 (새로 추가) ▼▼▼ =====
     def _build_stamps_dataframe(self):
         """찍힌 스탬프 목록으로 Pandas DataFrame을 생성합니다."""
         stamp_data = []
         # 페이지와 순번에 따라 스탬프 정렬
         sorted_stamps = sorted(self.stamps, key=lambda s: (s.page_index, s.pdf_point[1], s.pdf_point[0]))
-        
+
         # 페이지별 순번 매기기
         page_counters = defaultdict(int)
         for stamp in sorted_stamps:
@@ -3602,7 +3940,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         return pd.DataFrame(stamp_data)
     # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
 
-    
+
     def export_csv_dialog(self):
         # ===== ▼▼▼ 수정 시작 ▼▼▼ =====
         default_dir = self.project_dir or ""
@@ -3610,7 +3948,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "CSV로 저장", os.path.join(default_dir, default_filename), "CSV Files (*.csv)")
         # ===== ▲▲▲ 수정 끝 ▲▲▲ =====
         if path: self._export_csv(path)
-        
+
 
     def export_xlsx_dialog(self):
         default_dir = self.project_dir or ""
@@ -3633,7 +3971,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     for cell in ws_items[col_letter]:
                         if cell.row > 1:
                             cell.number_format = fmt
-                
+
                 # 'Stamps' 시트에 스탬프 데이터 저장
                 if not df_stamps.empty:
                     df_stamps.to_excel(writer, index=False, sheet_name='Stamps')
@@ -3643,7 +3981,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             _log_error(self, "엑셀 내보내기 오류", e)
 
 
-        
+
     def _export_csv(self, path):
         df = self._build_items_dataframe()
         df.to_csv(path, index=False, encoding="utf-8-sig")
@@ -3677,12 +4015,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             pt=self.pdf_to_view(*it.pdf_point); r=self.style.radius_view_px
             p.drawEllipse(QtCore.QPointF(pt.x(),pt.y()),r,r)
             p.setPen(QtGui.QPen(self.style.text_color)); m=QtGui.QFontMetrics(font)
-            
+
             label_str = self._format_no(it.no)
             tw = m.horizontalAdvance(label_str)
             p.drawText(pt.x()-tw/2, pt.y()+m.ascent()/2, label_str)
-                        
-            
+
+
         p.end(); pm.save(path,"JPG",quality=95)
 
 
@@ -3696,7 +4034,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         act.triggered.connect(slot)
         toolbar.addAction(act)
         return act
-    
+
 
     # 스페셜 서식 적용하기 위해 통째로 교체 v2.95에서...
     def open_numbering_settings(self):
@@ -3705,8 +4043,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.load_page(self.cur_page_index)
             self._set_dirty()
 
-    
-    
+
+
     def _open_numbering_settings_dialog(self, style_object: LabelStyle) -> bool:
         """'넘버링 설정' 대화상자를 엽니다. 성공 시 True를 반환합니다."""
         dlg = QtWidgets.QDialog(self)
@@ -3717,10 +4055,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         cb_with_input = QtWidgets.QCheckBox("넘버링 시 치수 함께 입력", dlg)
         cb_with_input.setChecked(self.input_mode == "with_input")
         form.addRow("입력 방식:", cb_with_input)
-        
+
         separator1 = QtWidgets.QFrame(); separator1.setFrameShape(QtWidgets.QFrame.HLine)
         form.addRow(separator1)
-        
+
         # --- 2. 라벨 서식 설정 (기존과 동일) ---
         form.addRow(QtWidgets.QLabel("<b>라벨 서식</b>"))
         sp_r=QtWidgets.QSpinBox(dlg); sp_r.setRange(6,64); sp_r.setValue(style_object.radius_view_px)
@@ -3729,15 +4067,15 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # ... (이하 기존 open_label_settings의 위젯 설정 코드는 그대로 유지) ...
         btn_fill=QtWidgets.QPushButton("채우기 색…",dlg); btn_stk=QtWidgets.QPushButton("테두리 색…",dlg); btn_txt=QtWidgets.QPushButton("숫자 색…",dlg)
         cb_none=QtWidgets.QCheckBox("채우기 없음(투명)",dlg); cb_none.setChecked(style_object.fill_none or style_object.fill_color.alpha()==0)
-        
+
         separator2 = QtWidgets.QFrame(); separator2.setFrameShape(QtWidgets.QFrame.HLine)
-        
+
         # --- 3. 흐름도 서식 설정 (기존과 동일) ---
         form.addRow(QtWidgets.QLabel("<b>흐름도 서식</b>"))
         opacity_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal); opacity_slider.setRange(0, 100); opacity_slider.setValue(int(style_object.flow_line_opacity * 100))
         opacity_label = QtWidgets.QLabel(f"{opacity_slider.value()}%"); opacity_slider.valueChanged.connect(lambda val: opacity_label.setText(f"{val}%"))
         opacity_layout = QtWidgets.QHBoxLayout(); opacity_layout.addWidget(opacity_slider); opacity_layout.addWidget(opacity_label)
-        
+
         btn_flow_color = QtWidgets.QPushButton("흐름도 선 색상…", dlg)
         combo_flow_style = QtWidgets.QComboBox(dlg)
         combo_flow_style.addItems(["solid", "dash", "dot"])
@@ -3764,20 +4102,20 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             c = QtWidgets.QColorDialog.getColor(temp_style.text_color, self)
             if c.isValid(): temp_style.text_color = c
         btn_fill.clicked.connect(pick_fill); btn_stk.clicked.connect(pick_stk); btn_txt.clicked.connect(pick_txt); cb_none.toggled.connect(enable_fill)
-        
+
         form.addRow("원 반지름(px)",sp_r); form.addRow("테두리 두께(px)",sp_s); form.addRow("폰트 크기(px)",sp_f)
         form.addRow(cb_none); form.addRow(btn_fill,btn_stk); form.addRow(btn_txt)
         form.addRow(separator2)
         form.addRow("흐름도 투명도", opacity_layout)
         form.addRow(btn_flow_color, combo_flow_style)
         form.addRow(cb_show_start_end)
-        
+
         bb=QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok|QtWidgets.QDialogButtonBox.Cancel,parent=dlg); form.addWidget(bb)
         def accept():
             # [수정] OK를 누를 때 체크박스 상태에 따라 input_mode를 설정
             new_mode = "with_input" if cb_with_input.isChecked() else "number_only"
             self.set_input_mode(new_mode)
-            
+
             # 기존 스타일 저장 로직
             style_object.radius_view_px=sp_r.value(); style_object.stroke_width=sp_s.value(); style_object.font_size_view_px=sp_f.value()
             style_object.fill_none=cb_none.isChecked(); style_object.flow_line_opacity = opacity_slider.value() / 100.0
@@ -3789,26 +4127,26 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             dlg.accept()
 
         bb.accepted.connect(accept); bb.rejected.connect(dlg.reject)
-        
+
         return dlg.exec() == QtWidgets.QDialog.Accepted
 
 
 
 
-    def set_input_mode(self,mode:str): 
+    def set_input_mode(self,mode:str):
         self.input_mode=mode
         # 메뉴의 체크 상태를 현재 모드와 동기화합니다.
         if hasattr(self, "a_only"):
             self.a_only.setChecked(mode == "number_only")
         if hasattr(self, "a_inp"):
             self.a_inp.setChecked(mode == "with_input")
-            
+
         # ===== ▼▼▼ 추가된 부분 시작 ▼▼▼ =====
         # 툴바의 '치수 입력 모드' 버튼 상태를 동기화합니다.
         if hasattr(self, "action_mode_switch"):
             self.action_mode_switch.setChecked(mode == "with_input")
         # ===== ▲▲▲ 추가된 부분 끝 ▲▲▲ =====
-            
+
         self._on_zoom_changed(self.view._scale())
 
     def _update_status(self):
@@ -3819,12 +4157,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             mode_display_text = "스탬프 모드"
         else: # "view"
             mode_display_text = "보기 모드"
-            
+
         # 상태 표시줄 메시지를 새로운 형식으로 업데이트합니다.
         zoom_text = f"Zoom: {int(self.view._scale()*100)}%"
         render_text = f"Render: {self.render_scale}x"
         self.statusBar().showMessage(f"상태: {mode_display_text}   ·   {zoom_text}   ·   {render_text}")
-        
+
 
     def _sync_items_from_table(self):
         self.table.clearFocus(); QtWidgets.QApplication.processEvents()
@@ -3837,7 +4175,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             p_item=self.table.item(r,3); m_item=self.table.item(r,4)
             it.tol_plus = normalize_signed_text(p_item.text()) if p_item else it.tol_plus
             it.tol_minus= normalize_signed_text(m_item.text()) if m_item else it.tol_minus
-            
+
     # ===== ★★★ 이 함수만 최종 버전으로 교체되었습니다 ★★★ =====
     # ===== 넘버링 흐름도 함께 저장 위해 통째로 교체(중간에 일부 코드 추가)v2.93에서함. =====
     # 스페셜 서식 적용 위해 통째로 교체. v2.95에서 함.
@@ -3848,7 +4186,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         import fitz
         from collections import defaultdict
         import math
-        
+
         if not self.doc:
             raise RuntimeError("PDF가 로드되지 않았습니다.")
 
@@ -3858,11 +4196,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         items_by_page = defaultdict(list)
         for item in self.items:
             items_by_page[item.page_index].append(item)
-        
+
         stamps_by_page = defaultdict(list)
         for stamp in self.stamps:
             stamps_by_page[stamp.page_index].append(stamp)
-        
+
         # 원본 문서의 모든 페이지를 순회합니다.
         for i in range(len(self.doc)):
             src_page = self.doc.load_page(i)
@@ -3878,10 +4216,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             zoom = self.render_scale * 2
             mat = fitz.Matrix(zoom, zoom)
             pix = src_page.get_pixmap(matrix=mat, alpha=False)
-            
+
             img = QtGui.QImage(pix.samples, pix.width, pix.height, pix.stride, QtGui.QImage.Format_RGB888)
             pm = QtGui.QPixmap.fromImage(img)
-            
+
             painter = QtGui.QPainter(pm)
             painter.setRenderHint(QtGui.QPainter.Antialiasing)
 
@@ -3897,17 +4235,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             for it in sorted(items_on_this_page, key=lambda item: item.no):
                 style = it.custom_style if it.custom_style else self.style
                 img_point = self.pdf_to_view(it.pdf_point[0], it.pdf_point[1]) * 2
-                
+
                 pen = QtGui.QPen(style.stroke_color); pen.setWidth(style.stroke_width * 2); painter.setPen(pen)
                 brush = QtCore.Qt.NoBrush
                 if not style.fill_none and style.fill_color.alpha() != 0:
                     brush = QtGui.QBrush(style.fill_color)
                 painter.setBrush(brush)
-                
+
                 font = QtGui.QFont("Arial", style.font_size_view_px * 2, QtGui.QFont.Bold)
                 r = style.radius_view_px * 2
                 painter.drawEllipse(img_point, r, r)
-                
+
                 painter.setFont(font); painter.setPen(QtGui.QPen(style.text_color))
                 fm = QtGui.QFontMetrics(font)
                 text_width = fm.horizontalAdvance(self._format_no(it.no))
@@ -3920,13 +4258,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             for st in stamps_on_this_page:
                 stamp_info = self.registered_stamps.get(st.stamp_key)
                 if not stamp_info or not isinstance(stamp_info, dict): continue
-                
+
                 stamp_path = stamp_info.get("path")
                 if not stamp_path: continue
-                
+
                 stamp_pixmap = QtGui.QPixmap(stamp_path)
                 if stamp_pixmap.isNull(): continue
-                
+
                 # ▼▼▼ [핵심 추가] PDF 저장 시에도 실제 크기 기준으로 스케일 계산 ▼▼▼
                 width_mm = stamp_info.get("width_mm", 18.0)
                 width_points = (width_mm / 25.4) * 72
@@ -3940,16 +4278,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 # ▲▲▲ 스케일 계산 완료 ▲▲▲
 
                 painter.save()
-                
+
                 img_point_stamp = self.pdf_to_view(st.pdf_point[0], st.pdf_point[1]) * 2
-                
+
                 painter.setOpacity(st.opacity)
                 painter.translate(img_point_stamp)
                 painter.rotate(st.rotation)
-                
+
                 offset = QtCore.QPointF(-scaled_pixmap.width() / 2, -scaled_pixmap.height() / 2)
                 painter.drawPixmap(offset, scaled_pixmap) # 스케일된 pixmap을 사용
-                
+
                 painter.restore()
 
             painter.end()
