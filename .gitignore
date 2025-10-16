@@ -1,6 +1,7 @@
 # Virtual Environment
 .venv/
 venv/
+venv_312/
 
 # Python cache
 __pycache__/
@@ -17,3 +18,4 @@ dist/
 # IDE files
 .idea/
 .vscode/
+.tsn
