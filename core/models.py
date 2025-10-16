@@ -20,6 +20,7 @@ class MarkItem:
     tol_plus: str=""
     tol_minus: str=""
     custom_style: Optional[LabelStyle] = None
+    viewport_parameters: str = ""  # 3D 뷰포트 파라메터 JSON 문자열
 
 @dataclass
 class StampItem:
