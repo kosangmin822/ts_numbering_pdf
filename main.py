@@ -653,15 +653,72 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         else:
             self.navigator_dock.hide()
 
+    def update_view_info(self):
+        """
+        현재 카메라의 위치, 방향, 거리 정보를 Navigator 하단에 표시합니다.
+        """
+        if not hasattr(self, 'plotter') or self.plotter is None:
+            self.view_info_label.setText("3D 모델을 불러오세요")
+            return
+
+        try:
+            import numpy as np
+
+            # 카메라 정보 가져오기
+            position = np.array(self.plotter.camera.position)
+            focal_point = np.array(self.plotter.camera.focal_point)
+
+            # 시선 방향 벡터 계산 (정규화)
+            view_direction = focal_point - position
+            distance = np.linalg.norm(view_direction)
+            if distance > 0:
+                view_direction = view_direction / distance
+
+            # 정보 텍스트 생성 (사용자 정의 섹션과 동일한 형식)
+            info_text = f"""X: {view_direction[0]:.2f}  Y: {view_direction[1]:.2f}  Z: {view_direction[2]:.2f}
+거리: {distance:.2f}"""
+
+            self.view_info_label.setText(info_text)
+
+        except Exception as e:
+            print(f"뷰 정보 업데이트 오류: {e}")
+
     def set_viewport(self, view_name):
         """
-        뷰포트를 설정합니다. (나중에 3D 뷰어와 연결)
+        뷰포트를 설정합니다. 3D 뷰어의 카메라 위치를 변경합니다.
 
         Args:
             view_name (str): 뷰포트 이름 ("상면", "하면", "정면", "후면", "좌측면", "우측면")
         """
+        if not hasattr(self, 'plotter') or self.plotter is None:
+            QtWidgets.QMessageBox.warning(self, "알림", "3D 모델을 먼저 불러와야 합니다.")
+            return
+
         print(f"뷰포트 설정: {view_name}")
-        # TODO: 실제 3D 뷰어와 연결
+
+        # 각 뷰포트에 맞는 카메라 위치 설정
+        # PyVista의 view_xy(), view_xz() 등의 함수 사용
+        try:
+            if view_name == "상면":  # Top view (XY plane from +Z)
+                self.plotter.view_xy()
+            elif view_name == "하면":  # Bottom view (XY plane from -Z)
+                self.plotter.view_xy(negative=True)
+            elif view_name == "정면":  # Front view (XZ plane from +Y)
+                self.plotter.view_xz()
+            elif view_name == "후면":  # Back view (XZ plane from -Y)
+                self.plotter.view_xz(negative=True)
+            elif view_name == "좌측면":  # Left view (YZ plane from -X)
+                self.plotter.view_yz(negative=True)
+            elif view_name == "우측면":  # Right view (YZ plane from +X)
+                self.plotter.view_yz()
+
+            # 화면 갱신
+            self.plotter.render()
+
+            # 뷰 정보 업데이트
+            self.update_view_info()
+        except Exception as e:
+            print(f"뷰포트 설정 오류: {e}")
 
     def update_custom_view(self):
         """
@@ -673,14 +730,55 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def apply_custom_view(self):
         """
         사용자 정의 뷰 설정을 적용합니다.
+        X, Y, Z 값은 카메라가 바라보는 방향 벡터를 의미하며,
+        distance는 모델 중심에서 카메라까지의 거리를 의미합니다.
         """
+        if not hasattr(self, 'plotter') or self.plotter is None:
+            QtWidgets.QMessageBox.warning(self, "알림", "3D 모델을 먼저 불러와야 합니다.")
+            return
+
         x = self.custom_x_spin.value()
         y = self.custom_y_spin.value()
         z = self.custom_z_spin.value()
         distance = self.distance_spin.value()
 
         print(f"사용자 정의 뷰 적용: X={x}, Y={y}, Z={z}, 거리={distance}")
-        # TODO: 실제 3D 뷰어와 연결
+
+        try:
+            # 현재 카메라의 focal point (모델의 중심점) 가져오기
+            import numpy as np
+            focal_point = np.array(self.plotter.camera.focal_point)
+            current_position = np.array(self.plotter.camera.position)
+
+            # 방향 벡터 정규화
+            direction = np.array([x, y, z])
+            norm = np.linalg.norm(direction)
+            if norm > 0:
+                direction = direction / norm
+
+            # 현재 카메라 거리 계산
+            current_distance = np.linalg.norm(current_position - focal_point)
+
+            # 새로운 카메라 위치 계산
+            # direction은 카메라가 바라보는 방향이므로 반대 방향에 위치
+            camera_position = focal_point - direction * distance * current_distance
+
+            # 카메라 위치 설정
+            self.plotter.camera.position = tuple(camera_position)
+            self.plotter.camera.focal_point = tuple(focal_point)
+
+            # view_up 벡터 설정 (Z축을 위로)
+            self.plotter.camera.up = (0, 0, 1)
+
+            # 화면 갱신
+            self.plotter.render()
+
+            # 뷰 정보 업데이트
+            self.update_view_info()
+        except Exception as e:
+            import traceback
+            print(f"사용자 정의 뷰 적용 오류: {e}")
+            print(traceback.format_exc())
 
     def on_distance_slider_changed(self, value):
         """
@@ -699,10 +797,15 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def set_view_mode(self, mode):
         """
         뷰 모드를 설정합니다.
+        3D 뷰어의 렌더링 스타일을 변경합니다.
 
         Args:
             mode (str): 뷰 모드 ("shading", "edges", "wireframe")
         """
+        if not hasattr(self, 'plotter') or self.plotter is None:
+            QtWidgets.QMessageBox.warning(self, "알림", "3D 모델을 먼저 불러와야 합니다.")
+            return
+
         # 모든 뷰 모드 버튼의 체크 해제
         self.shading_btn.setChecked(False)
         self.edges_btn.setChecked(False)
@@ -717,7 +820,47 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.wireframe_btn.setChecked(True)
 
         print(f"뷰 모드 설정: {mode}")
-        # TODO: 실제 3D 뷰어와 연결
+
+        try:
+            # PyVista의 이름 기반 actor 제어를 사용
+            # main_surface: 메인 표면 mesh
+            # feature_edges: 특징적인 엣지 mesh (30도 각도 기준)
+
+            main_actor = self.plotter.renderer.actors.get('main_surface')
+            edges_actor = self.plotter.renderer.actors.get('feature_edges')
+
+            if mode == "shading":
+                # 음영처리 모드: 페이스만 표시, feature edges 숨기기
+                if main_actor:
+                    main_actor.SetVisibility(True)
+                if edges_actor:
+                    edges_actor.SetVisibility(False)
+                print(f"  → 음영처리: 페이스만 표시")
+
+            elif mode == "edges":
+                # 모서리 표시 음영 모드: 페이스 + feature edges 표시
+                if main_actor:
+                    main_actor.SetVisibility(True)
+                if edges_actor:
+                    edges_actor.SetVisibility(True)
+                print(f"  → 모서리 표시 음영: 페이스 + feature edges 표시")
+
+            elif mode == "wireframe":
+                # 와이어프레임 모드: feature edges만 표시 (페이스 숨김)
+                if main_actor:
+                    main_actor.SetVisibility(False)
+                if edges_actor:
+                    edges_actor.SetVisibility(True)
+                print(f"  → 와이어프레임: feature edges만 표시")
+
+            # 화면 갱신
+            self.plotter.render()
+
+        except Exception as e:
+            import traceback
+            print(f"뷰 모드 설정 오류: {e}")
+            print(traceback.format_exc())
+
 
     # 단축키 목록 보기 도움말 대화상자 기능 추가. v3.07에서...
     def show_shortcut_help(self):
@@ -1559,17 +1702,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.navigator_dock = QtWidgets.QDockWidget("3D Navigator", self)
         navigator_container = QtWidgets.QWidget()
         navigator_layout = QtWidgets.QVBoxLayout(navigator_container)
-        navigator_layout.setContentsMargins(3, 8, 3, 3)  # 상단 여백 증가 (3 -> 8)
-        navigator_layout.setSpacing(12)  # 섹션 간격 추가 증가 (8 -> 12)
+        navigator_layout.setContentsMargins(3, 5, 3, 3)  # 여백 최소화
+        navigator_layout.setSpacing(6)  # 섹션 간격 최소화
 
         # 뷰포트 선택 섹션
         viewport_group = QtWidgets.QGroupBox("뷰포트 선택")
         viewport_layout = QtWidgets.QVBoxLayout(viewport_group)
-        viewport_layout.setSpacing(20)  # 제목과 버튼들 사이 간격 대폭 증가 (8 -> 20)
+        viewport_layout.setSpacing(8)  # 제목과 버튼들 사이 간격 최소화
 
         # 기본 뷰 버튼들 (1x6 배열)
         basic_view_layout = QtWidgets.QHBoxLayout()
-        basic_view_layout.setSpacing(2)  # 버튼 간격 줄임
+        basic_view_layout.setSpacing(0)  # 버튼 간격 최소화
 
         # 뷰포트 정보 (순서: 상면, 하면, 정면, 후면, 좌측면, 우측면)
         viewport_info = [
@@ -1606,11 +1749,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 사용자 정의 섹션 (2행으로 변경)
         custom_group = QtWidgets.QGroupBox("사용자 정의")
         custom_layout = QtWidgets.QVBoxLayout(custom_group)
-        custom_layout.setSpacing(20)  # 제목과 입력란 사이 간격 대폭 증가 (8 -> 20)
-        custom_layout.setContentsMargins(5, 15, 5, 5)  # 상단 여백 대폭 증가 (8 -> 15)
+        custom_layout.setSpacing(8)  # 제목과 입력란 사이 간격 최소화
+        custom_layout.setContentsMargins(5, 8, 5, 5)  # 상단 여백 최소화
 
         # XYZ 한 행
         xyz_layout = QtWidgets.QHBoxLayout()
+        xyz_layout.setSpacing(12)  # 위젯 간격 적절히 조정
         xyz_layout.addWidget(QtWidgets.QLabel("X:"))
 
         self.custom_x_spin = QtWidgets.QDoubleSpinBox()
@@ -1618,7 +1762,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.custom_x_spin.setValue(1.0)
         self.custom_x_spin.setDecimals(1)
         self.custom_x_spin.setSingleStep(0.1)
-        self.custom_x_spin.setMaximumHeight(22)
+        self.custom_x_spin.setMaximumHeight(25)
         self.custom_x_spin.setFixedWidth(50)
         # 세로 화살표 스타일 설정
         self.custom_x_spin.setStyleSheet("QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }")
@@ -1631,7 +1775,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.custom_y_spin.setValue(1.0)
         self.custom_y_spin.setDecimals(1)
         self.custom_y_spin.setSingleStep(0.1)
-        self.custom_y_spin.setMaximumHeight(22)
+        self.custom_y_spin.setMaximumHeight(25)
         self.custom_y_spin.setFixedWidth(50)
         # 세로 화살표 스타일 설정
         self.custom_y_spin.setStyleSheet("QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }")
@@ -1644,7 +1788,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.custom_z_spin.setValue(1.0)
         self.custom_z_spin.setDecimals(1)
         self.custom_z_spin.setSingleStep(0.1)
-        self.custom_z_spin.setMaximumHeight(22)
+        self.custom_z_spin.setMaximumHeight(25)
         self.custom_z_spin.setFixedWidth(50)
         # 세로 화살표 스타일 설정
         self.custom_z_spin.setStyleSheet("QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }")
@@ -1656,13 +1800,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         # 거리 한 행
         distance_layout = QtWidgets.QHBoxLayout()
+        distance_layout.setSpacing(12)  # 위젯 간격 적절히 조정
         distance_layout.addWidget(QtWidgets.QLabel("거리:"))
 
         self.distance_spin = QtWidgets.QDoubleSpinBox()
         self.distance_spin.setRange(0.1, 10.0)
         self.distance_spin.setValue(1.0)
         self.distance_spin.setDecimals(1)
-        self.distance_spin.setMaximumHeight(22)
+        self.distance_spin.setMaximumHeight(25)
         self.distance_spin.setFixedWidth(60)
         # 세로 화살표 스타일 설정 (XYZ와 동일)
         self.distance_spin.setStyleSheet("QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }")
@@ -1673,7 +1818,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.distance_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.distance_slider.setRange(1, 100)  # 0.1~10.0을 1~100으로 변환
         self.distance_slider.setValue(10)  # 1.0에 해당
-        self.distance_slider.setMaximumHeight(20)
+        self.distance_slider.setMaximumHeight(25)
         self.distance_slider.valueChanged.connect(self.on_distance_slider_changed)
         distance_layout.addWidget(self.distance_slider)
 
@@ -1690,8 +1835,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 뷰 모드 섹션 (아이콘만 3개)
         view_mode_group = QtWidgets.QGroupBox("뷰 모드")
         view_mode_layout = QtWidgets.QHBoxLayout(view_mode_group)
-        view_mode_layout.setSpacing(8)  # 버튼 간격 늘림
-        view_mode_layout.setContentsMargins(5, 25, 5, 5)  # 상단 여백 대폭 증가 (12 -> 25)
+        view_mode_layout.setSpacing(8)  # 버튼 간격
+        view_mode_layout.setContentsMargins(5, 8, 5, 5)  # 상단 여백 최소화
 
         # 뷰 모드 정보
         view_mode_info = [
@@ -1745,13 +1890,43 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         view_mode_layout.addWidget(self.wireframe_btn)
         view_mode_layout.addStretch()  # 오른쪽 여백
 
-        # 전체 레이아웃 구성
+
+        # 현재 뷰 정보 섹션 (실시간 카메라 파라미터 표시)
+        view_info_group = QtWidgets.QGroupBox("현재 뷰 정보")
+        view_info_layout = QtWidgets.QVBoxLayout(view_info_group)
+        view_info_layout.setSpacing(3)
+        view_info_layout.setContentsMargins(8, 8, 8, 8)
+
+        # 정보 표시 라벨
+        self.view_info_label = QtWidgets.QLabel("3D 모델을 불러오세요")
+        self.view_info_label.setAlignment(QtCore.Qt.AlignLeft)
+        self.view_info_label.setStyleSheet("""
+            QLabel {
+                background-color: #F5F5F5;
+                padding: 8px;
+                border: 1px solid #CCCCCC;
+                border-radius: 3px;
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: 10px;
+                color: #333333;
+            }
+        """)
+        self.view_info_label.setWordWrap(True)
+        view_info_layout.addWidget(self.view_info_label)
+
+        # 전체 레이아웃 구성 (회전 섹션 제거)
         navigator_layout.addWidget(viewport_group)
         navigator_layout.addWidget(view_mode_group)
+        navigator_layout.addWidget(view_info_group)
         navigator_layout.addStretch()  # 여백 추가
 
         self.navigator_dock.setWidget(navigator_container)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.navigator_dock)
+
+        # 3D Navigator를 리사이즈 가능하게 설정
+        self.navigator_dock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetFloatable)
+        # 크기 제한 제거
+        self.navigator_dock.setMinimumSize(200, 200)
 
         # --- 2. 오른쪽 '리스트' 도크 생성 (테이블 전환 기능 추가) ---
         self.dock = QtWidgets.QDockWidget("리스트", self)
@@ -1789,7 +1964,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.worker.finished.connect(self.on_3d_load_finished)
         self.worker.error.connect(self.on_3d_load_error)
 
-        # --- 6. 사운드 예열 ---
+        # --- 6. 뷰 정보 실시간 업데이트 타이머 설정 ---
+        self.view_info_timer = QtCore.QTimer(self)
+        self.view_info_timer.timeout.connect(self.update_view_info)
+        self.view_info_timer.start(500)  # 500ms마다 업데이트 (0.5초)
+
+        # --- 7. 사운드 예열 ---
         try:
             from PySide6.QtMultimedia import QSoundEffect
             prime_effect = QSoundEffect(self)
@@ -2135,15 +2315,23 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         # 3. 새로운 3D 뷰어(plotter)를 만듭니다.
         plotter = QtInteractor(self.widget_3d)
+        self.plotter = plotter  # Navigator에서 접근할 수 있도록 저장
         self.vlayout_3d.addWidget(plotter.interactor)
 
         # 4. 3D 모델을 뷰어에 추가하는 내부 함수 정의
         def render_solid_mesh(geom):
             pv_mesh = pv.wrap(geom)
-            plotter.add_mesh(pv_mesh, style='surface', color='lightgrey')
+            # 메인 surface mesh 추가 (엣지 표시 없음)
+            plotter.add_mesh(pv_mesh, name='main_surface', style='surface', color='lightgrey', show_edges=False)
+
+            # feature edges 추가 (30도 각도 기준)
             feature_edges = pv_mesh.extract_feature_edges(feature_angle=30.0)
             if feature_edges.n_points > 0:
-                plotter.add_mesh(feature_edges, color='black', line_width=1)
+                actor = plotter.add_mesh(feature_edges, name='feature_edges', color='black', line_width=1.5,
+                                        render_lines_as_tubes=False, lighting=False)
+                # 초기에는 숨김 (shading 모드가 기본이므로)
+                if actor:
+                    actor.SetVisibility(False)
 
         # 4-1. 불러온 데이터 타입에 따라 렌더링 실행
         if isinstance(geometry, trimesh.Scene):
@@ -2163,6 +2351,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         # 5. 카메라 위치를 모델에 맞게 재설정합니다.
         plotter.reset_camera()
+
+        # 5-1. 기본 뷰 모드를 "음영 처리"로 설정 (엣지 없음)
+        self.set_view_mode("shading")
+
+        # 5-2. 초기 뷰 정보 표시
+        self.update_view_info()
 
         # 6. 화면을 3D 탭으로 전환합니다.
         # self.tab_widget.setCurrentWidget(self.widget_3d)
@@ -2201,6 +2395,15 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         ]
 
         self.resizeDocks([self.page_dock, self.dock], sizes, QtCore.Qt.Horizontal)
+
+        # 3D Navigator를 왼쪽 도크의 아래쪽에 배치하도록 크기 조정
+        # 페이지 도크는 위쪽 70%, Navigator는 아래쪽 30% 정도
+        left_sizes = [
+            int(self.height() * 0.70),  # 페이지 도크 높이
+            int(self.height() * 0.30)   # Navigator 도크 높이
+        ]
+
+        self.resizeDocks([self.page_dock, self.navigator_dock], left_sizes, QtCore.Qt.Vertical)
 
     # 스페셜함수 적용 함수 새로 생성. v2.95에서 함.
     def set_individual_style(self):
