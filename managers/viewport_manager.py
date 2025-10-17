@@ -278,12 +278,6 @@ class ViewportManager:
         try:
             distance = value / 100.0
             
-            # 스핀박스와 연동 (1~100을 0.1~10.0으로 변환)
-            if hasattr(self.main_window, 'distance_spin'):
-                self.main_window.distance_spin.blockSignals(True)
-                self.main_window.distance_spin.setValue(distance)
-                self.main_window.distance_spin.blockSignals(False)
-            
             position = np.array(self.plotter.camera.position)
             focal_point = np.array(self.plotter.camera.focal_point)
             view_direction = focal_point - position
