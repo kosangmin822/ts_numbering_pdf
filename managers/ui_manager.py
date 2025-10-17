@@ -346,3 +346,36 @@ class UIManager:
         for shortcut in self.shortcuts:
             shortcut.setEnabled(False)
         self.shortcuts.clear()
+
+    def create_toolbar_group(self, actions, text_label):
+        """버튼(Action) 리스트와 제목을 받아 하나의 그룹 상자 위젯을 생성합니다."""
+        group_box = QtWidgets.QGroupBox(text_label)
+        group_box.setAlignment(QtCore.Qt.AlignCenter)
+        group_layout = QtWidgets.QVBoxLayout(group_box)
+        # 위쪽 여백을 12로 늘려 아이콘과 제목 사이의 공간 확보
+        group_layout.setContentsMargins(0, 12, 0, 2)
+        group_layout.setSpacing(0)
+        # 버튼들을 담을 툴바 생성
+        button_toolbar = QtWidgets.QToolBar()
+        button_toolbar.setIconSize(QtCore.QSize(36, 36))
+        for action in actions:
+            if action is None:  # None 이면 서브 구분선 추가
+                sub_separator = self.main_window._create_sub_separator()
+                button_toolbar.addWidget(sub_separator)
+            else:
+                button_toolbar.addAction(action)
+        # 그룹 레이아웃에 툴바 추가
+        group_layout.addWidget(button_toolbar)
+        return group_box
+
+    def add_toolbar_action(
+        self, toolbar, icon_path_qrc: str, text: str, slot, checkable=False, checked=False
+    ):
+        """툴바에 액션을 추가합니다."""
+        act = QtGui.QAction(QtGui.QIcon(icon_path_qrc), text, self.main_window)
+        act.setCheckable(checkable)
+        if checkable:
+            act.setChecked(checked)
+        act.triggered.connect(slot)
+        toolbar.addAction(act)
+        return act
