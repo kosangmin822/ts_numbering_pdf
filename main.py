@@ -970,6 +970,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.viewport_manager.set_plotter(self.plotter)
         return self.viewport_manager.update_custom_view()
 
+    def on_custom_view_changed(self):
+        """사용자 정의 뷰 값이 변경될 때 호출됩니다. (ViewportManager로 위임)"""
+        if hasattr(self, 'plotter'):
+            self.viewport_manager.set_plotter(self.plotter)
+        return self.viewport_manager.on_custom_view_changed()
+
     def apply_custom_view(self):
         """사용자 정의 뷰 설정을 적용합니다. (ViewportManager로 위임)"""
         if hasattr(self, 'plotter'):
@@ -1909,7 +1915,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.custom_x_spin.setStyleSheet(
             "QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }"
         )
-        self.custom_x_spin.valueChanged.connect(self.update_custom_view)
+        self.custom_x_spin.editingFinished.connect(self.on_custom_view_changed)
+        self.custom_x_spin.valueChanged.connect(self.on_custom_view_changed)
         xyz_layout.addWidget(self.custom_x_spin)
         xyz_layout.addWidget(QtWidgets.QLabel("Y:"))
         self.custom_y_spin = QtWidgets.QDoubleSpinBox()
@@ -1923,7 +1930,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.custom_y_spin.setStyleSheet(
             "QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }"
         )
-        self.custom_y_spin.valueChanged.connect(self.update_custom_view)
+        self.custom_y_spin.editingFinished.connect(self.on_custom_view_changed)
+        self.custom_y_spin.valueChanged.connect(self.on_custom_view_changed)
         xyz_layout.addWidget(self.custom_y_spin)
         xyz_layout.addWidget(QtWidgets.QLabel("Z:"))
         self.custom_z_spin = QtWidgets.QDoubleSpinBox()
@@ -1937,7 +1945,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.custom_z_spin.setStyleSheet(
             "QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }"
         )
-        self.custom_z_spin.valueChanged.connect(self.update_custom_view)
+        self.custom_z_spin.editingFinished.connect(self.on_custom_view_changed)
+        self.custom_z_spin.valueChanged.connect(self.on_custom_view_changed)
         xyz_layout.addWidget(self.custom_z_spin)
         xyz_layout.addStretch()  # 오른쪽 여백
         custom_layout.addLayout(xyz_layout)
