@@ -1091,7 +1091,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def _toggle_show_start_end(self, checked):
         """흐름도의 시작/끝점 강조 표시를 켜고 끕니다."""
         self.style.flow_show_start_end = checked
-        self.load_page(self.cur_page_index)  # 변경사항 즉시 반영
+        self._update_flow_view()  # 흐름도만 다시 그리기
         self._set_dirty()
 
     def _cycle_line_style(self):
@@ -1654,8 +1654,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         ]
         # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
         # ===== ▼▼▼ [추가] 시작/끝점 아이콘 미리 불러오기 ▼▼▼ =====
-        self.start_marker_pixmap = QtGui.QPixmap(resource_path("startpoint.png"))
-        self.end_marker_pixmap = QtGui.QPixmap(resource_path("endpoint.png"))
+        self.start_marker_pixmap = QtGui.QPixmap(resource_path("resources/icons/startpoint.png"))
+        self.end_marker_pixmap = QtGui.QPixmap(resource_path("resources/icons/endpoint.png"))
         # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
         self.is_dirty = False  # ===== ▼▼▼ 이 줄을 추가해주세요 ▼▼▼ =====
         self.style_clipboard = None  # ===== ▼▼▼ 이 줄을 추가해주세요 ▼▼▼ =====
@@ -1899,7 +1899,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         xyz_layout.setSpacing(12)  # 위젯 간격 적절히 조정
         xyz_layout.addWidget(QtWidgets.QLabel("X:"))
         self.custom_x_spin = QtWidgets.QDoubleSpinBox()
-        self.custom_x_spin.setRange(0.1, 1.0)
+        self.custom_x_spin.setRange(-1.0, 1.0)
         self.custom_x_spin.setValue(1.0)
         self.custom_x_spin.setDecimals(1)
         self.custom_x_spin.setSingleStep(0.1)
@@ -1913,7 +1913,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         xyz_layout.addWidget(self.custom_x_spin)
         xyz_layout.addWidget(QtWidgets.QLabel("Y:"))
         self.custom_y_spin = QtWidgets.QDoubleSpinBox()
-        self.custom_y_spin.setRange(0.1, 1.0)
+        self.custom_y_spin.setRange(-1.0, 1.0)
         self.custom_y_spin.setValue(1.0)
         self.custom_y_spin.setDecimals(1)
         self.custom_y_spin.setSingleStep(0.1)
@@ -1927,7 +1927,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         xyz_layout.addWidget(self.custom_y_spin)
         xyz_layout.addWidget(QtWidgets.QLabel("Z:"))
         self.custom_z_spin = QtWidgets.QDoubleSpinBox()
-        self.custom_z_spin.setRange(0.1, 1.0)
+        self.custom_z_spin.setRange(-1.0, 1.0)
         self.custom_z_spin.setValue(1.0)
         self.custom_z_spin.setDecimals(1)
         self.custom_z_spin.setSingleStep(0.1)
