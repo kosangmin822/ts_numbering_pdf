@@ -985,11 +985,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def on_distance_slider_changed(self, value):
         """거리 슬라이더 값이 변경될 때 호출됩니다."""
         # 스핀박스와 연동 (1~100을 0.1~10.0으로 변환)
-        distance = value / 100.0
+        # 선형 변환: 1→0.1, 100→10.0
+        distance = 0.1 + (value - 1) * (10.0 - 0.1) / (100 - 1)
         self.distance_spin.blockSignals(True)
         self.distance_spin.setValue(distance)
         self.distance_spin.blockSignals(False)
-        
+
         # ViewportManager로 뷰 업데이트 위임
         if hasattr(self, 'plotter'):
             self.viewport_manager.set_plotter(self.plotter)
@@ -998,7 +999,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def on_distance_spin_changed(self, value):
         """거리 스핀박스 값이 변경될 때 호출됩니다."""
         # 슬라이더와 연동 (0.1~10.0을 1~100으로 변환)
-        slider_value = int(value * 10)
+        # 선형 변환: 0.1→1, 10.0→100
+        slider_value = int(1 + (value - 0.1) * (100 - 1) / (10.0 - 0.1))
         self.distance_slider.blockSignals(True)
         self.distance_slider.setValue(slider_value)
         self.distance_slider.blockSignals(False)
