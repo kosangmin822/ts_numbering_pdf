@@ -1910,7 +1910,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.custom_x_spin.setDecimals(1)
         self.custom_x_spin.setSingleStep(0.1)
         self.custom_x_spin.setMaximumHeight(20)
-        self.custom_x_spin.setFixedWidth(45)  # 소수값 표시를 위해 폭 확장
+        self.custom_x_spin.setFixedWidth(55)  # 음수 기호를 위해 폭 확장
         # 세로 화살표 스타일 설정
         self.custom_x_spin.setStyleSheet(
             "QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }"
@@ -1925,7 +1925,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.custom_y_spin.setDecimals(1)
         self.custom_y_spin.setSingleStep(0.1)
         self.custom_y_spin.setMaximumHeight(20)
-        self.custom_y_spin.setFixedWidth(45)  # 소수값 표시를 위해 폭 확장
+        self.custom_y_spin.setFixedWidth(55)  # 음수 기호를 위해 폭 확장
         # 세로 화살표 스타일 설정
         self.custom_y_spin.setStyleSheet(
             "QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }"
@@ -1940,7 +1940,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.custom_z_spin.setDecimals(1)
         self.custom_z_spin.setSingleStep(0.1)
         self.custom_z_spin.setMaximumHeight(20)
-        self.custom_z_spin.setFixedWidth(45)  # 소수값 표시를 위해 폭 확장
+        self.custom_z_spin.setFixedWidth(55)  # 음수 기호를 위해 폭 확장
         # 세로 화살표 스타일 설정
         self.custom_z_spin.setStyleSheet(
             "QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }"
@@ -1958,6 +1958,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.distance_spin.setRange(0.1, 10.0)
         self.distance_spin.setValue(1.0)
         self.distance_spin.setDecimals(1)
+        self.distance_spin.setSingleStep(0.1)  # 0.1 단위로 조절
         self.distance_spin.setMaximumHeight(20)
         self.distance_spin.setFixedWidth(55)  # 소수값 표시를 위해 폭 확장
         # 세로 화살표 스타일 설정 (XYZ와 동일)
