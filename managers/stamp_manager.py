@@ -143,7 +143,7 @@ class StampManager:
     def update_stamp_button_icon(self):
         """현재 선택된 스탬프 이미지로 툴바 버튼의 아이콘을 업데이트합니다."""
         from utils.helpers import icon_if
-        
+
         if not hasattr(self.main_window, "stamp_button"):
             return
         stamp_key = self.get_current_stamp_key()
