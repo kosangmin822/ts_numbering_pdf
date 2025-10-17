@@ -39,6 +39,9 @@ from ui.dialogs import (
     StampSettingsDialog,
 )
 from ui.views import PdfScene, PdfView, ThumbnailLabel
+from managers.viewport_manager import ViewportManager
+from managers.table_manager import TableManager
+from managers.ui_manager import UIManager
 from utils.helpers import (
     _log_error,
     dim_format,
@@ -579,178 +582,29 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def save_viewport_parameters(self):
-        """
-        현재 3D 뷰포트 파라메터를 선택된 테이블 항목에 저장합니다.
-        """
-        if not hasattr(self, "plotter") or self.plotter is None:
-            QtWidgets.QMessageBox.warning(self, "알림", "3D 모델을 먼저 불러와야 합니다.")
-            return
-        # 현재 뷰 정보 가져오기
-        try:
-            import numpy as np
-
-            position = np.array(self.plotter.camera.position)
-            focal_point = np.array(self.plotter.camera.focal_point)
-            view_direction = focal_point - position
-            distance = np.linalg.norm(view_direction)
-            if distance > 0:
-                view_direction = view_direction / distance
-            # 뷰포트 정보를 JSON 형식으로 포맷팅 (나중에 파싱하기 쉬운 형식)
-            import json
-
-            viewport_data = {
-                "x": round(view_direction[0], 2),
-                "y": round(view_direction[1], 2),
-                "z": round(view_direction[2], 2),
-                "distance": round(distance, 2),
-            }
-            viewport_info = json.dumps(viewport_data, ensure_ascii=False)
-            # 선택된 행들에 뷰포트 정보 저장
-            selected_rows = set()
-            for index in self.table.selectedIndexes():
-                selected_rows.add(index.row())
-            for row in selected_rows:
-                # 5번째 컬럼(3D 뷰포트)에 정보 저장
-                # 먼저 원본 데이터를 MarkItem에 저장
-                target_item = None
-                if hasattr(self, "cb_separate_numbering") and self.numbering_mode == "page_specific":
-                    items_to_display = [it for it in self.items if it.page_index == self.cur_page_index]
-                else:
-                    items_to_display = self.items
-                items_to_display.sort(key=lambda x: x.no)
-                if row < len(items_to_display):
-                    target_item = items_to_display[row]
-                    target_item.viewport_parameters = viewport_info
-
-                # 테이블에 포맷팅된 값으로 표시
-                formatted_display = self._format_3d_parameter(viewport_info)
-                item = QtWidgets.QTableWidgetItem(formatted_display)
-                item.setTextAlignment(QtCore.Qt.AlignCenter)
-                item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)  # 읽기 전용 설정
-                self.table.setItem(row, 5, item)
-            self._set_dirty()
-            QtWidgets.QMessageBox.information(
-                self, "완료", f"{len(selected_rows)}개 항목에 3D 뷰포트 파라메터가 저장되었습니다."
-            )
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(
-                self, "오류", f"뷰포트 파라메터 저장 중 오류가 발생했습니다:\n{e}"
-            )
+        """현재 3D 뷰포트 파라메터를 선택된 테이블 항목에 저장합니다. (ViewportManager로 위임)"""
+        # ViewportManager에 plotter 동기화
+        if hasattr(self, 'plotter'):
+            self.viewport_manager.set_plotter(self.plotter)
+        return self.viewport_manager.save_viewport_parameters()
 
     def apply_viewport_from_data(self, viewport_data):
-        """
-        JSON 형식의 뷰포트 데이터를 받아서 3D 뷰어에 적용합니다.
-        Args:
-            viewport_data (dict): {"x": float, "y": float, "z": float, "distance": float}
-        """
-        if not hasattr(self, "plotter") or self.plotter is None:
-            print("3D 모델이 로드되지 않았습니다.")
-            return False
-        try:
-            import numpy as np
-
-            x = viewport_data.get("x", 0)
-            y = viewport_data.get("y", 0)
-            z = viewport_data.get("z", 0)
-            distance = viewport_data.get("distance", 1.0)
-            print(f"저장된 뷰포트 적용: X={x}, Y={y}, Z={z}, 거리={distance}")
-            focal_point = np.array(self.plotter.camera.focal_point)
-            direction = np.array([x, y, z])
-            norm = np.linalg.norm(direction)
-            if norm > 0:
-                direction = direction / norm
-            # 모델의 크기에 맞는 적절한 거리로 조정
-            try:
-                # 모델의 바운딩 박스 크기 계산
-                if hasattr(self, "plotter") and self.plotter.renderer.actors:
-                    bounds = []
-                    for actor in self.plotter.renderer.actors.values():
-                        if actor.GetVisibility():
-                            actor_bounds = actor.GetBounds()
-                            bounds.append(actor_bounds)
-                    if bounds:
-                        # 모든 액터의 바운딩 박스를 합쳐서 전체 크기 계산
-                        min_x = min(b[0] for b in bounds)
-                        max_x = max(b[1] for b in bounds)
-                        min_y = min(b[2] for b in bounds)
-                        max_y = max(b[3] for b in bounds)
-                        min_z = min(b[4] for b in bounds)
-                        max_z = max(b[5] for b in bounds)
-                        model_size = max(max_x - min_x, max_y - min_y, max_z - min_z)
-                        # 모델 크기의 1.5배 정도가 적절한 거리
-                        base_distance = model_size * 1.5
-                    else:
-                        base_distance = 10.0  # 기본값
-                else:
-                    base_distance = 10.0  # 기본값
-                # 저장된 distance는 상대적 비율로 사용 (0.5 = 모델 크기의 50%, 2.0 = 200% 등)
-                actual_distance = base_distance * distance
-                camera_position = focal_point - direction * actual_distance
-            except Exception as e:
-                print(f"모델 크기 계산 오류, 기본 거리 사용: {e}")
-                camera_position = focal_point - direction * distance * 10.0
-            self.plotter.camera.position = tuple(camera_position)
-            self.plotter.camera.focal_point = tuple(focal_point)
-            self.plotter.camera.up = (0, 0, 1)
-            self.plotter.render()
-            self.update_view_info()  # 뷰 정보 업데이트
-            return True
-        except Exception as e:
-            print(f"뷰포트 적용 오류: {e}")
-            return False
+        """JSON 형식의 뷰포트 데이터를 받아서 3D 뷰어에 적용합니다. (ViewportManager로 위임)"""
+        if hasattr(self, 'plotter'):
+            self.viewport_manager.set_plotter(self.plotter)
+        return self.viewport_manager.apply_viewport_from_data(viewport_data)
 
     def change_background_color(self):
-        """
-        3D 뷰어의 배경 컬러를 변경합니다.
-        """
-        if not hasattr(self, "plotter") or self.plotter is None:
-            QtWidgets.QMessageBox.warning(self, "알림", "3D 모델을 먼저 불러와야 합니다.")
-            return
-        # 컬러 다이얼로그 열기
-        color = QtWidgets.QColorDialog.getColor()
-        if color.isValid():
-            try:
-                # RGB 값을 0-1 범위로 변환
-                r = color.red() / 255.0
-                g = color.green() / 255.0
-                b = color.blue() / 255.0
-                # 배경 컬러 설정
-                self.plotter.background_color = (r, g, b)
-                self.plotter.render()
-                print(f"배경 컬러가 변경되었습니다: RGB({r:.2f}, {g:.2f}, {b:.2f})")
-            except Exception as e:
-                print(f"배경 컬러 변경 오류: {e}")
+        """3D 뷰어의 배경 컬러를 변경합니다. (ViewportManager로 위임)"""
+        if hasattr(self, 'plotter'):
+            self.viewport_manager.set_plotter(self.plotter)
+        return self.viewport_manager.change_background_color()
 
     def reset_colors(self):
-        """
-        모든 컬러를 기본값으로 리셋합니다.
-        """
-        if not hasattr(self, "plotter") or self.plotter is None:
-            QtWidgets.QMessageBox.warning(self, "알림", "3D 모델을 먼저 불러와야 합니다.")
-            return
-        try:
-            # 배경 컬러를 기본값(흰색)으로 리셋
-            self.plotter.background_color = (1.0, 1.0, 1.0)
-            # 모든 액터의 컬러를 기본값으로 리셋
-            for actor in self.plotter.renderer.actors.values():
-                if actor.GetVisibility():
-                    actor.GetProperty().SetColor(0.8, 0.8, 0.8)  # 기본 회색
-            # 페이스 선택 모드 비활성화
-            self.face_selection_btn.setChecked(False)
-            self.face_color_btn.setEnabled(False)
-            # 선택된 면 정보 초기화
-            self.selected_face_label.setText("면을 선택하세요")
-            # 선택된 면 정보 초기화
-            if hasattr(self, "_selected_cell_id"):
-                self._selected_cell_id = None
-            if hasattr(self, "_selected_mesh"):
-                self._selected_mesh = None
-            if hasattr(self, "_selected_point"):
-                self._selected_point = None
-            self.plotter.render()
-            print("모든 컬러가 기본값으로 리셋되었습니다.")
-        except Exception as e:
-            print(f"컬러 리셋 오류: {e}")
+        """모든 컬러를 기본값으로 리셋합니다. (ViewportManager로 위임)"""
+        if hasattr(self, 'plotter'):
+            self.viewport_manager.set_plotter(self.plotter)
+        return self.viewport_manager.reset_colors()
 
     def _setup_3d_viewer_color_controls(self):
         """
@@ -1072,48 +926,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         panel.raise_()
 
     def change_transparency(self, value):
-        """
-        투명도를 변경합니다.
-        """
-        try:
-            if not hasattr(self, "plotter") or self.plotter is None:
-                return
-            # 투명도 값 표시 업데이트
-            self.transparency_label.setText(f"{value}%")
-            # 투명도 적용 (0-100%를 0-1 범위로 변환)
-            opacity = (100 - value) / 100.0  # 0% = 완전 투명, 100% = 완전 불투명
-            # 모든 액터에 투명도 적용
-            for actor in self.plotter.renderer.actors.values():
-                if actor.GetVisibility():
-                    prop = actor.GetProperty()
-                    if prop:
-                        prop.SetOpacity(opacity)
-            self.plotter.render()
-        except Exception as e:
-            print(f"투명도 변경 오류: {e}")
+        """투명도를 변경합니다. (ViewportManager로 위임)"""
+        if hasattr(self, 'plotter'):
+            self.viewport_manager.set_plotter(self.plotter)
+        return self.viewport_manager.change_transparency(value)
 
     def reset_3d_colors(self):
-        """
-        3D 뷰어의 모든 컬러 설정을 리셋합니다.
-        """
-        try:
-            if not hasattr(self, "plotter") or self.plotter is None:
-                return
-            # 배경 컬러를 흰색으로 리셋
-            self.plotter.background_color = (1.0, 1.0, 1.0)
-            # 모든 액터의 컬러와 투명도를 기본값으로 리셋
-            for actor in self.plotter.renderer.actors.values():
-                if actor.GetVisibility():
-                    prop = actor.GetProperty()
-                    if prop:
-                        prop.SetColor(0.8, 0.8, 0.8)  # 기본 회색
-                        prop.SetOpacity(1.0)  # 완전 불투명
-            # 투명도 슬라이더 리셋
-            self.transparency_slider.setValue(0)
-            self.plotter.render()
-            print("3D 뷰어 컬러 설정이 리셋되었습니다.")
-        except Exception as e:
-            print(f"3D 뷰어 컬러 리셋 오류: {e}")
+        """3D 뷰어의 모든 컬러 설정을 리셋합니다. (ViewportManager로 위임)"""
+        if hasattr(self, 'plotter'):
+            self.viewport_manager.set_plotter(self.plotter)
+        return self.viewport_manager.reset_3d_colors()
 
     def show_about_dialog(self):
         """프로그램 정보 대화상자를 띄웁니다."""
@@ -1221,11 +1043,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             print(f"뷰포트 설정 오류: {e}")
 
     def update_custom_view(self):
-        """
-        사용자 정의 뷰 설정 값이 변경될 때 호출됩니다. (실제 적용은 apply_custom_view에서)
-        """
-        # 값 변경 시에는 아무것도 하지 않음 (사용자 정의 적용 버튼을 눌러야 적용)
-        pass
+        """사용자 정의 뷰 설정 값이 변경될 때 호출됩니다. (ViewportManager로 위임)"""
+        if hasattr(self, 'plotter'):
+            self.viewport_manager.set_plotter(self.plotter)
+        return self.viewport_manager.update_custom_view()
 
     def apply_custom_view(self):
         """
@@ -2456,6 +2277,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             QDockWidget::title { text-align: center; background-color: #E6E6E6; padding: 4px; }
         """
         )
+        # --- 7.5. 매니저 초기화 ---
+        # ViewportManager 초기화
+        self.viewport_manager = ViewportManager(self)
+        
+        # TableManager 초기화
+        self.table_manager = TableManager(self)
+        self.table_manager.set_table(self.table)
+        
+        # UIManager 초기화
+        self.ui_manager = UIManager(self)
+        
         # --- 8. 최종 상태 업데이트 ---
         if pdf_path:
             self.import_pdf_from_path(pdf_path)
@@ -3478,12 +3310,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.spin_page.setEnabled(False)
 
     def _clear_3d_viewer(self):
-        """3D 뷰어 탭의 모든 위젯을 삭제하고 모델 경로를 초기화합니다."""
-        for i in reversed(range(self.vlayout_3d.count())):
-            widget = self.vlayout_3d.itemAt(i).widget()
-            if widget is not None:
-                widget.deleteLater()
-        self.model_path = None
+        """3D 뷰어 탭의 모든 위젯을 삭제하고 모델 경로를 초기화합니다. (ViewportManager로 위임)"""
+        if hasattr(self, 'plotter'):
+            self.viewport_manager.set_plotter(self.plotter)
+        return self.viewport_manager.clear_3d_viewer()
 
     def _clear_thumbnails(self):
         """썸네일 뷰의 모든 위젯/아이템을 안전하게 삭제합니다."""
