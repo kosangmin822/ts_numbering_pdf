@@ -162,10 +162,24 @@ class ViewportManager:
         미리 정의된 뷰포트로 전환합니다.
 
         Args:
-            view_name: 뷰포트 이름
+            view_name: 뷰포트 이름 (한국어 또는 영어)
         """
         if not self.plotter:
             return
+
+        # 한국어 이름을 영어로 매핑
+        korean_to_english = {
+            "상면": "top",
+            "하면": "bottom",
+            "정면": "front",
+            "후면": "back",
+            "좌측면": "left",
+            "우측면": "right",
+        }
+
+        # 한국어 이름이면 영어로 변환
+        if view_name in korean_to_english:
+            view_name = korean_to_english[view_name]
 
         viewport_configs = {
             "front": {"x": 0, "y": 0, "z": 1, "distance": 1.0},
@@ -179,6 +193,7 @@ class ViewportManager:
 
         if view_name in viewport_configs:
             self.apply_viewport_from_data(viewport_configs[view_name])
+            print(f"뷰포트 전환: {view_name}")
 
     def update_custom_view(self):
         """사용자 정의 뷰를 업데이트합니다."""
@@ -195,11 +210,11 @@ class ViewportManager:
             if distance > 0:
                 view_direction = view_direction / distance
 
-            if hasattr(self.main_window, 'spin_custom_x'):
-                self.main_window.spin_custom_x.setValue(view_direction[0])
-                self.main_window.spin_custom_y.setValue(view_direction[1])
-                self.main_window.spin_custom_z.setValue(view_direction[2])
-                self.main_window.slider_custom_distance.setValue(int(distance * 100))
+            if hasattr(self.main_window, 'custom_x_spin'):
+                self.main_window.custom_x_spin.setValue(view_direction[0])
+                self.main_window.custom_y_spin.setValue(view_direction[1])
+                self.main_window.custom_z_spin.setValue(view_direction[2])
+                self.main_window.distance_slider.setValue(int(distance * 100))
 
         except Exception as e:
             print(f"사용자 정의 뷰 업데이트 오류: {e}")
@@ -210,11 +225,11 @@ class ViewportManager:
             return
 
         try:
-            if hasattr(self.main_window, 'spin_custom_x'):
-                x = self.main_window.spin_custom_x.value()
-                y = self.main_window.spin_custom_y.value()
-                z = self.main_window.spin_custom_z.value()
-                distance = self.main_window.slider_custom_distance.value() / 100.0
+            if hasattr(self.main_window, 'custom_x_spin'):
+                x = self.main_window.custom_x_spin.value()
+                y = self.main_window.custom_y_spin.value()
+                z = self.main_window.custom_z_spin.value()
+                distance = self.main_window.distance_slider.value() / 100.0
 
                 viewport_data = {"x": x, "y": y, "z": z, "distance": distance}
                 self.apply_viewport_from_data(viewport_data)
@@ -249,29 +264,68 @@ class ViewportManager:
     def set_view_mode(self, mode: str):
         """
         뷰 모드를 설정합니다.
-
+        3D 뷰어의 렌더링 스타일을 변경합니다.
         Args:
-            mode: 뷰 모드 ("shading", "wireframe", "points")
+            mode (str): 뷰 모드 ("shading", "edges", "wireframe")
         """
         if not self.plotter:
+            QtWidgets.QMessageBox.warning(self.main_window, "알림", "3D 모델을 먼저 불러와야 합니다.")
             return
 
+        # 모든 뷰 모드 버튼의 체크 해제
+        if hasattr(self.main_window, 'shading_btn'):
+            self.main_window.shading_btn.setChecked(False)
+        if hasattr(self.main_window, 'edges_btn'):
+            self.main_window.edges_btn.setChecked(False)
+        if hasattr(self.main_window, 'wireframe_btn'):
+            self.main_window.wireframe_btn.setChecked(False)
+
+        # 선택된 모드만 체크
+        if mode == "shading":
+            if hasattr(self.main_window, 'shading_btn'):
+                self.main_window.shading_btn.setChecked(True)
+        elif mode == "edges":
+            if hasattr(self.main_window, 'edges_btn'):
+                self.main_window.edges_btn.setChecked(True)
+        elif mode == "wireframe":
+            if hasattr(self.main_window, 'wireframe_btn'):
+                self.main_window.wireframe_btn.setChecked(True)
+
+        print(f"뷰 모드 설정: {mode}")
+
         try:
-            self.current_view_mode = mode
+            # PyVista의 이름 기반 actor 쌍을 사용
+            # main_surface: 메인 표면 mesh
+            # feature_edges: 모서리선 곡선 mesh (30도 각도 기준)
+            main_actor = self.plotter.renderer.actors.get("main_surface")
+            edges_actor = self.plotter.renderer.actors.get("feature_edges")
 
             if mode == "shading":
-                self.plotter.enable_mesh_picking()
-                self.plotter.show_edges(False)
-                self.plotter.show_axes(False)
-            elif mode == "wireframe":
-                self.plotter.show_edges(True)
-                self.plotter.show_axes(False)
-            elif mode == "points":
-                self.plotter.show_edges(False)
-                self.plotter.show_axes(True)
+                # 음영처리 모드: 메쉬만 표시, feature edges 숨기기
+                if main_actor:
+                    main_actor.SetVisibility(True)
+                if edges_actor:
+                    edges_actor.SetVisibility(False)
+                print(f"  → 음영처리: 메쉬만 표시")
 
+            elif mode == "edges":
+                # 모서리 표시 음영 모드: 메쉬 + feature edges 표시
+                if main_actor:
+                    main_actor.SetVisibility(True)
+                if edges_actor:
+                    edges_actor.SetVisibility(True)
+                print(f"  → 모서리 표시 음영: 메쉬 + feature edges 표시")
+
+            elif mode == "wireframe":
+                # 와이어프레임 모드: feature edges만 표시 (메쉬 숨김)
+                if main_actor:
+                    main_actor.SetVisibility(False)
+                if edges_actor:
+                    edges_actor.SetVisibility(True)
+                print(f"  → 와이어프레임: feature edges만 표시")
+
+            # 화면 갱신
             self.plotter.render()
-            print(f"뷰 모드 설정: {mode}")
 
         except Exception as e:
             print(f"뷰 모드 설정 오류: {e}")
@@ -316,8 +370,19 @@ class ViewportManager:
 
         try:
             self.current_transparency = value / 100.0
-            # 투명도 적용 로직 (구체적인 구현은 3D 라이브러리에 따라 다름)
+
+            # main_surface actor의 투명도를 변경
+            main_actor = self.plotter.renderer.actors.get("main_surface")
+            if main_actor:
+                main_actor.GetProperty().SetOpacity(1.0 - self.current_transparency)
+
+            # 투명도 라벨 업데이트
+            if hasattr(self.main_window, 'transparency_label'):
+                self.main_window.transparency_label.setText(f"{value}%")
+
+            # 화면 갱신
             self.plotter.render()
+            print(f"투명도 설정: {value}%")
 
         except Exception as e:
             print(f"투명도 변경 오류: {e}")
