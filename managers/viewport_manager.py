@@ -211,13 +211,41 @@ class ViewportManager:
                 view_direction = view_direction / distance
 
             if hasattr(self.main_window, 'custom_x_spin'):
+                # 이벤트 연결을 일시적으로 해제하여 무한 루프 방지
+                self.main_window.custom_x_spin.blockSignals(True)
+                self.main_window.custom_y_spin.blockSignals(True)
+                self.main_window.custom_z_spin.blockSignals(True)
+
                 self.main_window.custom_x_spin.setValue(view_direction[0])
                 self.main_window.custom_y_spin.setValue(view_direction[1])
                 self.main_window.custom_z_spin.setValue(view_direction[2])
                 self.main_window.distance_slider.setValue(int(distance * 100))
 
+                # 이벤트 연결 복원
+                self.main_window.custom_x_spin.blockSignals(False)
+                self.main_window.custom_y_spin.blockSignals(False)
+                self.main_window.custom_z_spin.blockSignals(False)
+
         except Exception as e:
             print(f"사용자 정의 뷰 업데이트 오류: {e}")
+
+    def on_custom_view_changed(self):
+        """사용자 정의 뷰 값이 변경될 때 호출됩니다."""
+        if not self.plotter:
+            return
+
+        try:
+            if hasattr(self.main_window, 'custom_x_spin'):
+                x = self.main_window.custom_x_spin.value()
+                y = self.main_window.custom_y_spin.value()
+                z = self.main_window.custom_z_spin.value()
+                distance = self.main_window.distance_slider.value() / 100.0
+
+                viewport_data = {"x": x, "y": y, "z": z, "distance": distance}
+                self.apply_viewport_from_data(viewport_data)
+
+        except Exception as e:
+            print(f"사용자 정의 뷰 변경 오류: {e}")
 
     def apply_custom_view(self):
         """사용자 정의 뷰를 적용합니다."""
