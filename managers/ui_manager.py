@@ -218,7 +218,7 @@ class UIManager:
     def create_shortcuts(self):
         """단축키를 생성합니다."""
         from PySide6 import QtGui
-        
+
         QtGui.QShortcut(
             QtGui.QKeySequence.Delete, self.main_window.stamp_table, activated=self.main_window._delete_selected_stamps
         )
