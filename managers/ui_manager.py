@@ -217,9 +217,112 @@ class UIManager:
 
     def create_shortcuts(self):
         """단축키를 생성합니다."""
-        # 원래 단축키 생성 로직을 그대로 유지
-        # 이 함수는 main.py의 원래 _create_shortcuts 함수를 호출하도록 수정
-        pass
+        from PySide6 import QtGui
+        
+        QtGui.QShortcut(
+            QtGui.QKeySequence.Delete, self.main_window.stamp_table, activated=self.main_window._delete_selected_stamps
+        )
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+N"), self.main_window, activated=self.main_window.new_project)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+O"), self.main_window, activated=self.main_window.open_project_dialog)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+S"), self.main_window, activated=self.main_window.save_project)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+S"), self.main_window, activated=self.main_window.save_project_as)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+I"), self.main_window, activated=self.main_window.import_pdf)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Z"), self.main_window, activated=self.main_window.undo)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Y"), self.main_window, activated=self.main_window.redo)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+E"), self.main_window, activated=self.main_window._cycle_active_mode)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Insert"), self.main_window.table, activated=self.main_window.insert_excel_style)
+
+        QtGui.QShortcut(
+            QtGui.QKeySequence("Shift+Insert"), self.main_window.table, activated=self.main_window.insert_precision_style
+        )
+
+        QtGui.QShortcut(QtGui.QKeySequence("Delete"), self.main_window.table, activated=self.main_window.delete_items)
+
+        QtGui.QShortcut(
+            QtGui.QKeySequence("Shift+Delete"), self.main_window.table, activated=self.main_window.renumber_items_by_unit
+        )
+
+        QtGui.QShortcut(QtGui.QKeySequence("F2"), self.main_window.table, activated=self.main_window.set_individual_style)
+
+        esc_shortcut = QtGui.QShortcut(QtGui.QKeySequence.Cancel, self.main_window)
+        esc_shortcut.activated.connect(self.main_window.cancel_insert_mode)
+        esc_shortcut.activated.connect(self.main_window.clear_selection_and_highlight)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+F"), self.main_window, activated=self.main_window.fit_to_window)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+R"), self.main_window, activated=self.main_window.rerender_now)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+F"), self.main_window, activated=self.main_window.toggle_flow_view)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+P"), self.main_window, activated=self.main_window.toggle_preview_mode)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl++"), self.main_window, activated=self.main_window.view.zoom_in)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+-"), self.main_window, activated=self.main_window.view.zoom_out)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+0"), self.main_window, activated=self.main_window.view.reset_zoom)
+
+        QtGui.QShortcut(QtGui.QKeySequence("F1"), self.main_window, activated=self.main_window.show_shortcut_help)
+
+        QtGui.QShortcut(QtGui.QKeySequence.MoveToPreviousPage, self.main_window, activated=self.main_window.go_prev)
+
+        QtGui.QShortcut(QtGui.QKeySequence.MoveToNextPage, self.main_window, activated=self.main_window.go_next)
+
+        egg_sc = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+F12"), self.main_window)
+        egg_sc.activated.connect(self.main_window._on_egg_hotkey)
+        egg_sc.setAutoRepeat(False)
+        QtGui.QShortcut(
+            QtGui.QKeySequence("Ctrl+F11"), self.main_window, activated=lambda: self.main_window.toggle_shooting_mode(False)
+        )
+        QtGui.QShortcut(
+            QtGui.QKeySequence("F5"), self.main_window, activated=lambda: self.main_window.set_input_mode("number_only")
+        )
+        QtGui.QShortcut(
+            QtGui.QKeySequence("F6"), self.main_window, activated=lambda: self.main_window.set_input_mode("with_input")
+        )
+        QtGui.QShortcut(
+            QtGui.QKeySequence("Shift+F1"),
+            self.main_window,
+            activated=lambda: self.main_window.adjust_label_style("radius_view_px", 2),
+        )
+        QtGui.QShortcut(
+            QtGui.QKeySequence("Shift+F2"),
+            self.main_window,
+            activated=lambda: self.main_window.adjust_label_style("radius_view_px", -2),
+        )
+        QtGui.QShortcut(
+            QtGui.QKeySequence("Shift+F3"),
+            self.main_window,
+            activated=lambda: self.main_window.adjust_label_style("stroke_width", 1),
+        )
+        QtGui.QShortcut(
+            QtGui.QKeySequence("Shift+F4"),
+            self.main_window,
+            activated=lambda: self.main_window.adjust_label_style("stroke_width", -1),
+        )
+        QtGui.QShortcut(
+            QtGui.QKeySequence("Shift+F5"),
+            self.main_window,
+            activated=lambda: self.main_window.adjust_label_style("font_size_view_px", 2),
+        )
+        QtGui.QShortcut(
+            QtGui.QKeySequence("Shift+F6"),
+            self.main_window,
+            activated=lambda: self.main_window.adjust_label_style("font_size_view_px", -2),
+        )
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+C"), self.main_window.table, activated=self.main_window.copy_format)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+V"), self.main_window.table, activated=self.main_window.paste_format)
 
     def setup_3d_viewer_color_controls(self):
         """3D 뷰어 색상 컨트롤을 설정합니다."""
