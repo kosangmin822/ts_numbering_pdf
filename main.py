@@ -42,6 +42,7 @@ from ui.views import PdfScene, PdfView, ThumbnailLabel
 from managers.viewport_manager import ViewportManager
 from managers.table_manager import TableManager
 from managers.ui_manager import UIManager
+from managers.stamp_manager import StampManager
 from utils.helpers import (
     _log_error,
     dim_format,
@@ -1430,46 +1431,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
     # ===== ▼▼▼ 스탬프 버튼 관련 함수 3개 (새로 추가) ▼▼▼ =====
     def _get_current_stamp_key(self) -> Optional[str]:
-        """현재 인덱스에 해당하는 스탬프의 키(이름)를 반환합니다."""
-        if not self.registered_stamps:
-            return None
-        stamp_keys = list(self.registered_stamps.keys())
-        if 0 <= self.current_stamp_index < len(stamp_keys):
-            return stamp_keys[self.current_stamp_index]
-        return None
+        """현재 인덱스에 해당하는 스탬프의 키(이름)를 반환합니다. (StampManager로 위임)"""
+        return self.stamp_manager.get_current_stamp_key()
 
     def _update_stamp_button_icon(self):
-        """현재 선택된 스탬프 이미지로 툴바 버튼의 아이콘을 업데이트합니다."""
-        if not hasattr(self, "stamp_button"):
-            return
-        stamp_key = self._get_current_stamp_key()
-        # ▼▼▼ [핵심 수정] 딕셔너리에서 'path'를 직접 꺼내오도록 수정합니다. ▼▼▼
-        if stamp_key:
-            stamp_info = self.registered_stamps.get(stamp_key)
-            if stamp_info and isinstance(stamp_info, dict):
-                stamp_path = stamp_info.get("path")
-                pixmap = QtGui.QPixmap(stamp_path)
-                if not pixmap.isNull():
-                    icon = QtGui.QIcon(
-                        pixmap.scaled(
-                            32, 32, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
-                        )
-                    )
-                    self.stamp_button.setIcon(icon)
-                    self.stamp_button.setToolTip(f"현재 스탬프: {stamp_key}\n(클릭하여 변경)")
-                    return
-        # ▲▲▲ 여기까지 수정 ▲▲▲
-        # 스탬프가 없거나 잘못된 경우 기본 아이콘으로 설정
-        self.stamp_button.setIcon(icon_if("resources/icons/stamp_off.png"))
-        self.stamp_button.setToolTip("등록된 스탬프 없음")
+        """현재 선택된 스탬프 이미지로 툴바 버튼의 아이콘을 업데이트합니다. (StampManager로 위임)"""
+        return self.stamp_manager.update_stamp_button_icon()
 
     def _cycle_next_stamp(self):
-        """다음 스탬프로 순환시킵니다."""
-        if not self.registered_stamps:
-            return
-        num_stamps = len(self.registered_stamps)
-        self.current_stamp_index = (self.current_stamp_index + 1) % num_stamps
-        self._update_stamp_button_icon()
+        """다음 스탬프로 순환시킵니다. (StampManager로 위임)"""
+        return self.stamp_manager.cycle_next_stamp()
 
     # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
     # ... _cycle_next_stamp 함수 아래에 추가 ...
@@ -2125,6 +2096,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         # UIManager 초기화
         self.ui_manager = UIManager(self)
+        
+        # StampManager 초기화
+        self.stamp_manager = StampManager(self)
 
         # --- 8. 최종 상태 업데이트 ---
         if pdf_path:
