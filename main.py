@@ -986,61 +986,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.navigator_dock.hide()
 
     def update_view_info(self):
-        """
-        현재 카메라의 위치, 방향, 거리 정보를 Navigator 하단에 표시합니다.
-        """
-        if not hasattr(self, "plotter") or self.plotter is None:
-            self.view_info_label.setText("3D 모델을 불러오세요")
-            return
-        try:
-            import numpy as np
-
-            # 카메라 정보 가져오기
-            position = np.array(self.plotter.camera.position)
-            focal_point = np.array(self.plotter.camera.focal_point)
-            # 시선 방향 벡터 계산 (정규화)
-            view_direction = focal_point - position
-            distance = np.linalg.norm(view_direction)
-            if distance > 0:
-                view_direction = view_direction / distance
-            # 정보 텍스트 생성 (사용자 정의 섹션과 동일한 형식)
-            info_text = f"""X: {view_direction[0]:.2f}  Y: {view_direction[1]:.2f}  Z: {view_direction[2]:.2f}
-거리: {distance:.2f}"""
-            self.view_info_label.setText(info_text)
-        except Exception as e:
-            print(f"뷰 정보 업데이트 오류: {e}")
+        """현재 카메라의 위치, 방향, 거리 정보를 Navigator 하단에 표시합니다. (ViewportManager로 위임)"""
+        if hasattr(self, 'plotter'):
+            self.viewport_manager.set_plotter(self.plotter)
+        return self.viewport_manager.update_view_info()
 
     def set_viewport(self, view_name):
-        """
-        뷰포트를 설정합니다. 3D 뷰어의 카메라 위치를 변경합니다.
-        Args:
-            view_name (str): 뷰포트 이름 ("상면", "하면", "정면", "후면", "좌측면", "우측면")
-        """
-        if not hasattr(self, "plotter") or self.plotter is None:
-            QtWidgets.QMessageBox.warning(self, "알림", "3D 모델을 먼저 불러와야 합니다.")
-            return
-        print(f"뷰포트 설정: {view_name}")
-        # 각 뷰포트에 맞는 카메라 위치 설정
-        # PyVista의 view_xy(), view_xz() 등의 함수 사용
-        try:
-            if view_name == "상면":  # Top view (XY plane from +Z)
-                self.plotter.view_xy()
-            elif view_name == "하면":  # Bottom view (XY plane from -Z)
-                self.plotter.view_xy(negative=True)
-            elif view_name == "정면":  # Front view (XZ plane from +Y)
-                self.plotter.view_xz()
-            elif view_name == "후면":  # Back view (XZ plane from -Y)
-                self.plotter.view_xz(negative=True)
-            elif view_name == "좌측면":  # Left view (YZ plane from -X)
-                self.plotter.view_yz(negative=True)
-            elif view_name == "우측면":  # Right view (YZ plane from +X)
-                self.plotter.view_yz()
-            # 화면 갱신
-            self.plotter.render()
-            # 뷰 정보 업데이트
-            self.update_view_info()
-        except Exception as e:
-            print(f"뷰포트 설정 오류: {e}")
+        """뷰포트를 설정합니다. 3D 뷰어의 카메라 위치를 변경합니다. (ViewportManager로 위임)"""
+        if hasattr(self, 'plotter'):
+            self.viewport_manager.set_plotter(self.plotter)
+        return self.viewport_manager.set_viewport(view_name)
 
     def update_custom_view(self):
         """사용자 정의 뷰 설정 값이 변경될 때 호출됩니다. (ViewportManager로 위임)"""
@@ -1049,119 +1004,22 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         return self.viewport_manager.update_custom_view()
 
     def apply_custom_view(self):
-        """
-        사용자 정의 뷰 설정을 적용합니다.
-        X, Y, Z 값은 카메라가 바라보는 방향 벡터를 의미하며,
-        distance는 모델 중심에서 카메라까지의 거리를 의미합니다.
-        """
-        if not hasattr(self, "plotter") or self.plotter is None:
-            QtWidgets.QMessageBox.warning(self, "알림", "3D 모델을 먼저 불러와야 합니다.")
-            return
-        x = self.custom_x_spin.value()
-        y = self.custom_y_spin.value()
-        z = self.custom_z_spin.value()
-        distance = self.distance_spin.value()
-        print(f"사용자 정의 뷰 적용: X={x}, Y={y}, Z={z}, 거리={distance}")
-        try:
-            # 현재 카메라의 focal point (모델의 중심점) 가져오기
-            import numpy as np
-
-            focal_point = np.array(self.plotter.camera.focal_point)
-            current_position = np.array(self.plotter.camera.position)
-            # 방향 벡터 정규화
-            direction = np.array([x, y, z])
-            norm = np.linalg.norm(direction)
-            if norm > 0:
-                direction = direction / norm
-            # 현재 카메라 거리 계산
-            current_distance = np.linalg.norm(current_position - focal_point)
-            # 새로운 카메라 위치 계산
-            # direction은 카메라가 바라보는 방향이므로 반대 방향에 위치
-            camera_position = focal_point - direction * distance * current_distance
-            # 카메라 위치 설정
-            self.plotter.camera.position = tuple(camera_position)
-            self.plotter.camera.focal_point = tuple(focal_point)
-            # view_up 벡터 설정 (Z축을 위로)
-            self.plotter.camera.up = (0, 0, 1)
-            # 화면 갱신
-            self.plotter.render()
-            # 뷰 정보 업데이트
-            self.update_view_info()
-        except Exception as e:
-            import traceback
-
-            print(f"사용자 정의 뷰 적용 오류: {e}")
-            print(traceback.format_exc())
+        """사용자 정의 뷰 설정을 적용합니다. (ViewportManager로 위임)"""
+        if hasattr(self, 'plotter'):
+            self.viewport_manager.set_plotter(self.plotter)
+        return self.viewport_manager.apply_custom_view()
 
     def on_distance_slider_changed(self, value):
-        """
-        거리 슬라이더 값이 변경될 때 호출됩니다.
-        Args:
-            value (int): 슬라이더 값 (1~100)
-        """
-        # 슬라이더 값을 0.1~10.0 범위로 변환
-        distance = value / 10.0
-        self.distance_spin.blockSignals(True)
-        self.distance_spin.setValue(distance)
-        self.distance_spin.blockSignals(False)
-        self.update_custom_view()
+        """거리 슬라이더 값이 변경될 때 호출됩니다. (ViewportManager로 위임)"""
+        if hasattr(self, 'plotter'):
+            self.viewport_manager.set_plotter(self.plotter)
+        return self.viewport_manager.on_distance_slider_changed(value)
 
     def set_view_mode(self, mode):
-        """
-        뷰 모드를 설정합니다.
-        3D 뷰어의 렌더링 스타일을 변경합니다.
-        Args:
-            mode (str): 뷰 모드 ("shading", "edges", "wireframe")
-        """
-        if not hasattr(self, "plotter") or self.plotter is None:
-            QtWidgets.QMessageBox.warning(self, "알림", "3D 모델을 먼저 불러와야 합니다.")
-            return
-        # 모든 뷰 모드 버튼의 체크 해제
-        self.shading_btn.setChecked(False)
-        self.edges_btn.setChecked(False)
-        self.wireframe_btn.setChecked(False)
-        # 선택된 모드만 체크
-        if mode == "shading":
-            self.shading_btn.setChecked(True)
-        elif mode == "edges":
-            self.edges_btn.setChecked(True)
-        elif mode == "wireframe":
-            self.wireframe_btn.setChecked(True)
-        print(f"뷰 모드 설정: {mode}")
-        try:
-            # PyVista의 이름 기반 actor 제어를 사용
-            # main_surface: 메인 표면 mesh
-            # feature_edges: 특징적인 엣지 mesh (30도 각도 기준)
-            main_actor = self.plotter.renderer.actors.get("main_surface")
-            edges_actor = self.plotter.renderer.actors.get("feature_edges")
-            if mode == "shading":
-                # 음영처리 모드: 페이스만 표시, feature edges 숨기기
-                if main_actor:
-                    main_actor.SetVisibility(True)
-                if edges_actor:
-                    edges_actor.SetVisibility(False)
-                print(f"  → 음영처리: 페이스만 표시")
-            elif mode == "edges":
-                # 모서리 표시 음영 모드: 페이스 + feature edges 표시
-                if main_actor:
-                    main_actor.SetVisibility(True)
-                if edges_actor:
-                    edges_actor.SetVisibility(True)
-                print(f"  → 모서리 표시 음영: 페이스 + feature edges 표시")
-            elif mode == "wireframe":
-                # 와이어프레임 모드: feature edges만 표시 (페이스 숨김)
-                if main_actor:
-                    main_actor.SetVisibility(False)
-                if edges_actor:
-                    edges_actor.SetVisibility(True)
-                print(f"  → 와이어프레임: feature edges만 표시")
-            # 화면 갱신
-            self.plotter.render()
-        except Exception as e:
-            import traceback
-
-            print(f"뷰 모드 설정 오류: {e}")
-            print(traceback.format_exc())
+        """뷰 모드를 설정합니다. 3D 뷰어의 렌더링 스타일을 변경합니다. (ViewportManager로 위임)"""
+        if hasattr(self, 'plotter'):
+            self.viewport_manager.set_plotter(self.plotter)
+        return self.viewport_manager.set_view_mode(mode)
 
     # 단축키 목록 보기 도움말 대화상자 기능 추가. v3.07에서...
     def show_shortcut_help(self):
@@ -2280,14 +2138,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # --- 7.5. 매니저 초기화 ---
         # ViewportManager 초기화
         self.viewport_manager = ViewportManager(self)
-        
+
         # TableManager 초기화
         self.table_manager = TableManager(self)
         self.table_manager.set_table(self.table)
-        
+
         # UIManager 초기화
         self.ui_manager = UIManager(self)
-        
+
         # --- 8. 최종 상태 업데이트 ---
         if pdf_path:
             self.import_pdf_from_path(pdf_path)
@@ -3934,61 +3792,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.table.setItem(r, 5, viewport_item)
 
     def _format_3d_parameter(self, viewport_parameters: str) -> str:
-        """
-        3D 뷰포트 파라메터를 (x, y, z, distance) 형태로 포맷팅합니다.
-        Args:
-            viewport_parameters (str): JSON 형태의 뷰포트 파라메터 문자열
-        Returns:
-            str: 포맷팅된 3D 파라메터 문자열
-        """
-        if not viewport_parameters or not viewport_parameters.strip():
-            return ""
-
-        try:
-            import json
-            data = json.loads(viewport_parameters)
-            x = round(data.get("x", 0), 1)
-            y = round(data.get("y", 0), 1)
-            z = round(data.get("z", 0), 1)
-            distance = round(data.get("distance", 0), 1)
-            return f"({x}, {y}, {z}, {distance}d)"
-        except (json.JSONDecodeError, KeyError, TypeError):
-            return viewport_parameters  # 파싱 실패 시 원본 반환
+        """3D 뷰포트 파라메터를 (x, y, z, distance) 형태로 포맷팅합니다. (TableManager로 위임)"""
+        return self.table_manager._format_3d_parameter(viewport_parameters)
 
     def on_table_cell_clicked(self, row: int, col: int):
-        # ===== ▼▼▼ 3D 뷰포트 기능: 어떤 컬럼을 클릭해도 해당 행의 뷰포트 적용 ▼▼▼ =====
-        # MarkItem에서 원본 JSON 데이터를 가져옴
-        target_item = None
-        if hasattr(self, "cb_separate_numbering") and self.numbering_mode == "page_specific":
-            items_to_display = [it for it in self.items if it.page_index == self.cur_page_index]
-        else:
-            items_to_display = self.items
-        items_to_display.sort(key=lambda x: x.no)
-        if row < len(items_to_display):
-            target_item = items_to_display[row]
-
-        if target_item and target_item.viewport_parameters and target_item.viewport_parameters.strip():
-            try:
-                import json
-                viewport_data = json.loads(target_item.viewport_parameters)
-                if self.apply_viewport_from_data(viewport_data):
-                    print(f"행 {row}의 저장된 뷰포트가 적용되었습니다.")
-                else:
-                    print("뷰포트 적용에 실패했습니다.")
-            except json.JSONDecodeError as e:
-                print(f"뷰포트 데이터 파싱 오류: {e}")
-            except Exception as e:
-                print(f"뷰포트 적용 중 오류: {e}")
-        # ===== ▼▼▼ 기존 하이라이트 기능 ▼▼▼ =====
-        if not self.highlight_enabled:
-            return
-        self._highlight_from_row(row)
+        """테이블 셀 클릭 이벤트 처리. (TableManager로 위임)"""
+        return self.table_manager.on_table_cell_clicked(row, col)
 
     def on_table_selection_changed(self):
-        ranges = self.table.selectedRanges()
-        if not ranges:
-            return
-        self._highlight_from_row(ranges[0].topRow())
+        """테이블 선택 변경 이벤트 처리. (TableManager로 위임)"""
+        return self.table_manager.on_table_selection_changed()
 
     def _highlight_from_row(self, row: int):
         try:
@@ -4025,69 +3838,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self._highlight_ellipse = None
         self._highlight_item_no = None
 
-    # v4.22 데이터 꼬임 방지 수정.
     def on_table_item_changed(self, qitem: QtWidgets.QTableWidgetItem):
-        r, c = qitem.row(), qitem.column()
-        try:
-            item_no = float(self.table.item(r, 0).text())
-        except (ValueError, AttributeError):
-            return
-        # ===== ▼▼▼ [수정] 현재 모드에 맞춰 정확한 아이템 찾기 ▼▼▼ =====
-        target_item = None
-        if self.numbering_mode == "page_specific":
-            target_item = next(
-                (
-                    it
-                    for it in self.items
-                    if it.page_index == self.cur_page_index and abs(it.no - item_no) < 1e-9
-                ),
-                None,
-            )
-        else:
-            target_item = next((it for it in self.items if abs(it.no - item_no) < 1e-9), None)
-        if target_item is None:
-            return
-        # ===== ▲▲▲ 여기까지 수정 ▲▲▲ =====
-        txt = qitem.text()
-        # 열 번호가 1부터 시작하므로 c==1, c==2 ... 로 수정
-        if c == 1:
-            target_item.dim_type = txt if txt in DIM_TYPES else "선형"
-            raw = target_item.value
-            self.table.blockSignals(True)
-            dm = self.table.item(r, 2)
-            if dm:
-                dm.setText(dim_format(target_item.dim_type, raw))
-            self.table.blockSignals(False)
-        elif c == 2:
-            raw = strip_prefix_for_value(target_item.dim_type, txt)
-            target_item.value = raw
-            self.table.blockSignals(True)
-            qitem.setText(dim_format(target_item.dim_type, raw))
-            self.table.blockSignals(False)
-        elif c == 3:
-            norm = normalize_signed_text(txt)
-            target_item.tol_plus = norm
-            self.table.blockSignals(True)
-            qitem.setText(norm)
-            self.table.blockSignals(False)
-        elif c == 4:
-            norm = normalize_signed_text(txt)
-            target_item.tol_minus = norm
-            self.table.blockSignals(True)
-            qitem.setText(norm)
-            self.table.blockSignals(False)
-        elif c == 5:  # 3D Parameter 컬럼 처리
-            # 3D Parameter는 읽기 전용이므로 원본 데이터로 되돌림
-            self.table.blockSignals(True)
-            formatted_value = self._format_3d_parameter(target_item.viewport_parameters)
-            qitem.setText(formatted_value)
-            qitem.setTextAlignment(QtCore.Qt.AlignCenter)
-            qitem.setFlags(qitem.flags() & ~QtCore.Qt.ItemIsEditable)  # 읽기 전용 유지
-            self.table.blockSignals(False)
-        self._set_dirty()
+        """테이블 아이템 변경 이벤트 처리. (TableManager로 위임)"""
+        return self.table_manager.on_table_item_changed(qitem)
 
     def _sync_highlight_from_table(self):
-        QtCore.QTimer.singleShot(0, self._apply_highlight_from_table)
+        """테이블에서 하이라이트 동기화. (TableManager로 위임)"""
+        return self.table_manager._sync_highlight_from_table()
 
     def _apply_highlight_from_table(self):
         if not self.highlight_enabled:
