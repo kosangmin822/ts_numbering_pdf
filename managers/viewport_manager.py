@@ -276,8 +276,9 @@ class ViewportManager:
             return
 
         try:
-            distance = value / 100.0
-            
+            # 슬라이더 값 1~100을 거리 0.1~10.0으로 변환
+            distance = 0.1 + (value - 1) * (10.0 - 0.1) / (100 - 1)
+
             position = np.array(self.plotter.camera.position)
             focal_point = np.array(self.plotter.camera.focal_point)
             view_direction = focal_point - position
