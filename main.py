@@ -611,7 +611,22 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 selected_rows.add(index.row())
             for row in selected_rows:
                 # 5번째 컬럼(3D 뷰포트)에 정보 저장
-                item = QtWidgets.QTableWidgetItem(viewport_info)
+                # 먼저 원본 데이터를 MarkItem에 저장
+                target_item = None
+                if hasattr(self, "cb_separate_numbering") and self.numbering_mode == "page_specific":
+                    items_to_display = [it for it in self.items if it.page_index == self.cur_page_index]
+                else:
+                    items_to_display = self.items
+                items_to_display.sort(key=lambda x: x.no)
+                if row < len(items_to_display):
+                    target_item = items_to_display[row]
+                    target_item.viewport_parameters = viewport_info
+
+                # 테이블에 포맷팅된 값으로 표시
+                formatted_display = self._format_3d_parameter(viewport_info)
+                item = QtWidgets.QTableWidgetItem(formatted_display)
+                item.setTextAlignment(QtCore.Qt.AlignCenter)
+                item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)  # 읽기 전용 설정
                 self.table.setItem(row, 5, item)
             self._set_dirty()
             QtWidgets.QMessageBox.information(
@@ -742,117 +757,308 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         3D 뷰어에 컬러 컨트롤 패널을 추가합니다.
         """
         try:
-            # 컨트롤 패널을 위한 위젯 생성 (크기를 절반으로 줄임)
-            self.color_control_panel = QtWidgets.QWidget(self.widget_3d)
-            self.color_control_panel.setFixedSize(100, 75)  # 200x150 -> 100x75
-            # 위젯 자체의 투명도를 설정 (적당한 투명도로 조정)
-            self.color_control_panel.setWindowOpacity(
-                0.5
-            )  # 80% 불투명도 = 20% 투명도 (보이면서도 뒤가 비침)
+            # 통합 컨트롤 패널을 위한 위젯 생성 (전체 영역으로 확장)
+            self.integrated_control_panel = QtWidgets.QWidget(self.widget_3d)
+            # 크기를 동적으로 설정 (부모 위젯 크기에 맞춤)
+            panel_width = self.widget_3d.width() - 20  # 좌우 10px씩 여백
+            self.integrated_control_panel.setFixedSize(panel_width, 50)
             # 반투명 배경 설정
-            self.color_control_panel.setStyleSheet(
-                """
+            self.integrated_control_panel.setStyleSheet("""
                 QWidget {
-                    background-color: rgba(50, 50, 50, 128);
+                    background-color: rgba(40, 40, 40, 200);
+                    border: 1px solid rgba(80, 80, 80, 200);
+                    border-radius: 6px;
+                }
+            """)
+
+            # 메인 레이아웃 (가로 배치)
+            main_layout = QtWidgets.QHBoxLayout(self.integrated_control_panel)
+            main_layout.setContentsMargins(8, 8, 8, 8)
+            main_layout.setSpacing(15)
+            # === 뷰 모드 섹션 ===
+            view_mode_frame = QtWidgets.QFrame()
+            view_mode_frame.setStyleSheet("""
+                QFrame {
+                    background-color: rgba(60, 60, 60, 150);
                     border: 1px solid rgba(100, 100, 100, 150);
                     border-radius: 4px;
                 }
-            """
-            )
-            # 레이아웃 설정 (작은 크기에 맞게 조정)
-            control_layout = QtWidgets.QVBoxLayout(self.color_control_panel)
-            control_layout.setContentsMargins(5, 5, 5, 5)  # 마진 줄임
-            control_layout.setSpacing(3)  # 간격 줄임
-            # 제목 (더 작게)
-            title_label = QtWidgets.QLabel("컬러")
-            title_label.setStyleSheet(
-                """
+            """)
+            view_mode_layout = QtWidgets.QHBoxLayout(view_mode_frame)
+            view_mode_layout.setContentsMargins(8, 6, 8, 6)
+            view_mode_layout.setSpacing(8)
+
+            # 뷰 모드 라벨
+            view_mode_label = QtWidgets.QLabel("뷰모드")
+            view_mode_label.setStyleSheet("""
                 QLabel {
                     color: white;
                     font-weight: bold;
-                    font-size: 8px;
+                    font-size: 10px;
                 }
-            """
-            )
-            title_label.setAlignment(QtCore.Qt.AlignCenter)
-            control_layout.addWidget(title_label)
-            # 배경 컬러 버튼 (더 작게)
-            bg_color_layout = QtWidgets.QHBoxLayout()
-            bg_label = QtWidgets.QLabel("배경:")
-            bg_label.setStyleSheet("color: white; font-size: 7px;")
-            bg_label.setFixedWidth(25)
-            self.bg_color_btn = QtWidgets.QPushButton("색상")
-            self.bg_color_btn.setFixedSize(35, 15)
-            self.bg_color_btn.setStyleSheet(
-                """
+            """)
+            view_mode_layout.addWidget(view_mode_label)
+
+            # 뷰 모드 버튼들 생성
+            self.shading_btn = QtWidgets.QPushButton()
+            self.shading_btn.setCheckable(True)
+            self.shading_btn.setChecked(True)
+            self.shading_btn.setFixedSize(24, 24)
+            self.shading_btn.setToolTip("음영처리")
+            self.shading_btn.clicked.connect(lambda: self.set_view_mode("shading"))
+            self.shading_btn.setStyleSheet("""
                 QPushButton {
-                    background-color: white;
-                    border: 1px solid #ccc;
-                    border-radius: 2px;
-                    font-size: 7px;
+                    background-color: rgba(100, 150, 200, 180);
+                    border: 1px solid rgba(150, 200, 255, 200);
+                    border-radius: 3px;
+                }
+                QPushButton:checked {
+                    background-color: rgba(50, 100, 150, 220);
                 }
                 QPushButton:hover {
-                    background-color: #f0f0f0;
+                    background-color: rgba(120, 170, 220, 200);
                 }
-            """
-            )
-            self.bg_color_btn.clicked.connect(self.change_background_color)
-            bg_color_layout.addWidget(bg_label)
-            bg_color_layout.addWidget(self.bg_color_btn)
-            bg_color_layout.addStretch()
-            control_layout.addLayout(bg_color_layout)
-            # 투명도 슬라이더 (더 작게)
+            """)
+
+            self.edges_btn = QtWidgets.QPushButton()
+            self.edges_btn.setCheckable(True)
+            self.edges_btn.setFixedSize(24, 24)
+            self.edges_btn.setToolTip("모서리 표시 음영")
+            self.edges_btn.clicked.connect(lambda: self.set_view_mode("edges"))
+            self.edges_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(150, 100, 200, 180);
+                    border: 1px solid rgba(200, 150, 255, 200);
+                    border-radius: 3px;
+                }
+                QPushButton:checked {
+                    background-color: rgba(100, 50, 150, 220);
+                }
+                QPushButton:hover {
+                    background-color: rgba(170, 120, 220, 200);
+                }
+            """)
+
+            self.wireframe_btn = QtWidgets.QPushButton()
+            self.wireframe_btn.setCheckable(True)
+            self.wireframe_btn.setFixedSize(24, 24)
+            self.wireframe_btn.setToolTip("와이어프레임")
+            self.wireframe_btn.clicked.connect(lambda: self.set_view_mode("wireframe"))
+            self.wireframe_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(200, 150, 100, 180);
+                    border: 1px solid rgba(255, 200, 150, 200);
+                    border-radius: 3px;
+                }
+                QPushButton:checked {
+                    background-color: rgba(150, 100, 50, 220);
+                }
+                QPushButton:hover {
+                    background-color: rgba(220, 170, 120, 200);
+                }
+            """)
+
+            # 뷰 모드 버튼에 아이콘 설정
+            try:
+                from utils.helpers import icon_if
+                shading_icon = icon_if("resources/icons/normal_mode.png")
+                if shading_icon:
+                    self.shading_btn.setIcon(shading_icon)
+                    self.shading_btn.setIconSize(QtCore.QSize(16, 16))
+
+                edges_icon = icon_if("resources/icons/edge_mode.png")
+                if edges_icon:
+                    self.edges_btn.setIcon(edges_icon)
+                    self.edges_btn.setIconSize(QtCore.QSize(16, 16))
+
+                wireframe_icon = icon_if("resources/icons/wireframe_mode.png")
+                if wireframe_icon:
+                    self.wireframe_btn.setIcon(wireframe_icon)
+                    self.wireframe_btn.setIconSize(QtCore.QSize(16, 16))
+            except:
+                pass
+
+            view_mode_layout.addWidget(self.shading_btn)
+            view_mode_layout.addWidget(self.edges_btn)
+            view_mode_layout.addWidget(self.wireframe_btn)
+
+            # === 컬러 컨트롤 섹션 ===
+            color_control_frame = QtWidgets.QFrame()
+            color_control_frame.setStyleSheet("""
+                QFrame {
+                    background-color: rgba(60, 60, 60, 150);
+                    border: 1px solid rgba(100, 100, 100, 150);
+                    border-radius: 4px;
+                }
+            """)
+            color_control_layout = QtWidgets.QHBoxLayout(color_control_frame)
+            color_control_layout.setContentsMargins(8, 6, 8, 6)
+            color_control_layout.setSpacing(8)
+
+            # 컬러 컨트롤 라벨
+            color_label = QtWidgets.QLabel("컬러")
+            color_label.setStyleSheet("""
+                QLabel {
+                    color: white;
+                    font-weight: bold;
+                    font-size: 10px;
+                }
+            """)
+            color_control_layout.addWidget(color_label)
+
+            # 내장 컬러 팔레트 생성
+            self.color_palette = self._create_color_palette()
+            color_control_layout.addWidget(self.color_palette)
+
+            # 투명도 슬라이더
             transparency_layout = QtWidgets.QHBoxLayout()
             trans_label = QtWidgets.QLabel("투명:")
-            trans_label.setStyleSheet("color: white; font-size: 7px;")
-            trans_label.setFixedWidth(25)
+            trans_label.setStyleSheet("color: white; font-size: 9px;")
+            trans_label.setFixedWidth(30)
+
             self.transparency_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
             self.transparency_slider.setRange(0, 100)
-            self.transparency_slider.setValue(0)  # 기본값: 불투명
-            self.transparency_slider.setFixedHeight(12)
+            self.transparency_slider.setValue(0)
+            self.transparency_slider.setFixedWidth(60)
+            self.transparency_slider.setFixedHeight(16)
             self.transparency_slider.valueChanged.connect(self.change_transparency)
+
+            self.transparency_label = QtWidgets.QLabel("0%")
+            self.transparency_label.setStyleSheet("color: white; font-size: 9px;")
+            self.transparency_label.setFixedWidth(25)
+
             transparency_layout.addWidget(trans_label)
             transparency_layout.addWidget(self.transparency_slider)
-            control_layout.addLayout(transparency_layout)
-            # 투명도 값 표시와 리셋 버튼을 한 줄에
-            bottom_layout = QtWidgets.QHBoxLayout()
-            self.transparency_label = QtWidgets.QLabel("0%")
-            self.transparency_label.setStyleSheet("color: white; font-size: 7px;")
-            self.transparency_label.setFixedWidth(20)
+            transparency_layout.addWidget(self.transparency_label)
+
+            color_control_layout.addLayout(transparency_layout)
+
+            # 리셋 버튼
             self.reset_3d_colors_btn = QtWidgets.QPushButton("리셋")
-            self.reset_3d_colors_btn.setFixedSize(25, 15)
-            self.reset_3d_colors_btn.setStyleSheet(
-                """
+            self.reset_3d_colors_btn.setFixedSize(35, 20)
+            self.reset_3d_colors_btn.setStyleSheet("""
                 QPushButton {
-                    background-color: rgba(200, 100, 100, 150);
+                    background-color: rgba(200, 100, 100, 180);
                     color: white;
-                    border: 1px solid rgba(255, 255, 255, 100);
-                    border-radius: 2px;
-                    font-size: 7px;
+                    border: 1px solid rgba(255, 255, 255, 150);
+                    border-radius: 3px;
+                    font-size: 8px;
                 }
                 QPushButton:hover {
-                    background-color: rgba(220, 120, 120, 180);
+                    background-color: rgba(220, 120, 120, 200);
                 }
-            """
-            )
+            """)
             self.reset_3d_colors_btn.clicked.connect(self.reset_3d_colors)
-            bottom_layout.addWidget(self.transparency_label)
-            bottom_layout.addWidget(self.reset_3d_colors_btn)
-            bottom_layout.addStretch()
-            control_layout.addLayout(bottom_layout)
+            color_control_layout.addWidget(self.reset_3d_colors_btn)
+
+            # 메인 레이아웃에 섹션들 추가
+            main_layout.addWidget(view_mode_frame)
+            main_layout.addWidget(color_control_frame)
+            main_layout.addStretch()
             # ��Ʈ�� �г��� 3D ����� ��Ȯ�� ���� ��� ���� ��ġ
-            if not self.widget_3d.property("_color_panel_filter_installed"):
+            if not self.widget_3d.property("_integrated_panel_filter_installed"):
                 self.widget_3d.installEventFilter(self)
-                self.widget_3d.setProperty("_color_panel_filter_installed", True)
-            self._position_color_control_panel()
-            self.color_control_panel.show()
-            QtCore.QTimer.singleShot(0, self._position_color_control_panel)
-            print("3D 뷰어 컬러 컨트롤 패널이 추가되었습니다.")
+                self.widget_3d.setProperty("_integrated_panel_filter_installed", True)
+            self._position_integrated_control_panel()
+            self.integrated_control_panel.show()
+            QtCore.QTimer.singleShot(0, self._position_integrated_control_panel)
+            print("3D 뷰어 통합 컨트롤 패널이 추가되었습니다.")
         except Exception as e:
             print(f"3D 뷰어 컬러 컨트롤 설정 오류: {e}")
             import traceback
 
             traceback.print_exc()
+
+    def _create_color_palette(self):
+        """
+        내장 컬러 팔레트를 생성합니다.
+        """
+        palette_widget = QtWidgets.QWidget()
+        palette_layout = QtWidgets.QHBoxLayout(palette_widget)
+        palette_layout.setContentsMargins(0, 0, 0, 0)
+        palette_layout.setSpacing(2)
+
+        # 기본 컬러들
+        colors = [
+            (255, 255, 255),  # 흰색
+            (200, 200, 200),  # 밝은 회색
+            (100, 100, 100),  # 회색
+            (50, 50, 50),     # 어두운 회색
+            (255, 0, 0),      # 빨간색
+            (0, 255, 0),      # 초록색
+            (0, 0, 255),      # 파란색
+            (255, 255, 0),    # 노란색
+            (255, 0, 255),    # 자홍색
+            (0, 255, 255),    # 청록색
+        ]
+
+        for i, (r, g, b) in enumerate(colors):
+            color_btn = QtWidgets.QPushButton()
+            color_btn.setFixedSize(16, 16)
+            color_btn.setToolTip(f"RGB({r}, {g}, {b})")
+
+            # 컬러 버튼 스타일 설정
+            color_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: rgb({r}, {g}, {b});
+                    border: 1px solid rgba(255, 255, 255, 100);
+                    border-radius: 2px;
+                }}
+                QPushButton:hover {{
+                    border: 2px solid rgba(255, 255, 255, 200);
+                }}
+                QPushButton:pressed {{
+                    border: 2px solid rgba(0, 0, 0, 200);
+                }}
+            """)
+
+            # 컬러 선택 이벤트 연결
+            color_btn.clicked.connect(lambda checked, rgb=(r, g, b): self._select_color_from_palette(rgb))
+            palette_layout.addWidget(color_btn)
+
+        return palette_widget
+
+    def _select_color_from_palette(self, rgb):
+        """
+        팔레트에서 선택된 컬러를 배경색으로 적용합니다.
+        """
+        try:
+            if not hasattr(self, 'plotter') or self.plotter is None:
+                return
+
+            r, g, b = rgb
+            # RGB 값을 0-1 범위로 변환
+            r_norm = r / 255.0
+            g_norm = g / 255.0
+            b_norm = b / 255.0
+
+            # 배경 컬러 설정
+            self.plotter.background_color = (r_norm, g_norm, b_norm)
+            self.plotter.render()
+
+            print(f"배경 컬러가 변경되었습니다: RGB({r}, {g}, {b})")
+
+        except Exception as e:
+            print(f"컬러 적용 오류: {e}")
+
+    def _position_integrated_control_panel(self):
+        """
+        통합 컨트롤 패널을 3D 뷰어 상단 전체 영역에 배치합니다.
+        """
+        panel = getattr(self, "integrated_control_panel", None)
+        parent = getattr(self, "widget_3d", None)
+        if not panel or not parent:
+            return
+
+        # 패널 크기를 부모 위젯에 맞게 동적으로 조정
+        panel_width = parent.width() - 20  # 좌우 10px씩 여백
+        panel.setFixedSize(panel_width, 50)
+
+        # 상단 중앙에 배치 (전체 영역 사용)
+        x = 10  # 좌측 여백
+        y = 10  # 상단 여백
+        panel.move(x, y)
+        panel.raise_()
 
     def _position_color_control_panel(self):
         panel = getattr(self, "color_control_panel", None)
@@ -1755,7 +1961,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     f"평가판이 시작되었습니다. {days_left}일 동안 사용하실 수 있습니다.",
                 )
         self.setWindowTitle(f"{APP_NAME} ({APP_VER}){trial_message}")
-        self.resize(1600, 1000)
+        self.resize(1400, 800)  # 윈도우 크기를 줄여서 테이블에 맞춤
         # ▼▼▼ 탭 위젯 설정 코드 (삽입) ▼▼▼
         # 1. 탭 위젯을 생성하고 중앙에 배치합니다.
         self.tab_widget = QtWidgets.QTabWidget()
@@ -1924,14 +2130,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 다시 수정.. 4.00에서.
         # ===== ▼▼▼ 페이지 네비게이션 UI 생성 (수정) ▼▼▼ =====
         self.btn_prev = QtWidgets.QPushButton("< 이전")
-        self.btn_prev.setFixedWidth(55)  # 지시1: "이전 버튼 폭은 55로 고정해!"
+        self.btn_prev.setFixedWidth(40)  # 더 작은 크기로 조정
         self.btn_next = QtWidgets.QPushButton("다음 >")
-        self.btn_next.setFixedWidth(55)  # 지시2: "다음 버튼 폭도 55로 고정해!"
+        self.btn_next.setFixedWidth(40)  # 더 작은 크기로 조정
         self.spin_page = QtWidgets.QSpinBox()
         self.spin_page.setButtonSymbols(
             QtWidgets.QAbstractSpinBox.NoButtons
         )  # 지시3: "숫자창에 화살표는 만들지 마!"
-        self.spin_page.setMinimumWidth(40)  # 지시4: "대신 숫자창이 너무 좁아지진 않게 해줘!"
+        self.spin_page.setMinimumWidth(30)  # 더 작은 크기로 조정
         self.lbl_total_pages = QtWidgets.QLabel("/ 1")
         # 버튼 및 스핀박스 기능 연결
         self.btn_prev.clicked.connect(self.go_prev)
@@ -1941,7 +2147,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # --- 표 도크 ---
         self.table = QtWidgets.QTableWidget(0, 6, self)
         self.table.setHorizontalHeaderLabels(
-            ["No", "Demension Type", "Demension", "Maximum", "Minimum", "3d 파라메터"]
+            ["No", "Type", "Dim", "Max", "Min", "3D Parameter"]
         )
         self.table.setItemDelegateForColumn(1, ComboDelegate(DIM_TYPES, self.table))
         numeric_delegate = NumericDelegate(self)
@@ -2022,7 +2228,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.viewport_buttons = []
         for view_name, icon_file in viewport_info:
             btn = QtWidgets.QPushButton()
-            btn.setFixedSize(32, 32)  # 정사각형 버튼
+            btn.setFixedSize(24, 24)  # 더 작은 정사각형 버튼
             btn.setToolTip(view_name)  # 툴팁으로 텍스트 표시
             btn.clicked.connect(lambda checked=False, v=view_name: self.set_viewport(v))
             # 아이콘 설정
@@ -2051,8 +2257,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.custom_x_spin.setValue(1.0)
         self.custom_x_spin.setDecimals(1)
         self.custom_x_spin.setSingleStep(0.1)
-        self.custom_x_spin.setMaximumHeight(25)
-        self.custom_x_spin.setFixedWidth(50)
+        self.custom_x_spin.setMaximumHeight(20)
+        self.custom_x_spin.setFixedWidth(45)  # 소수값 표시를 위해 폭 확장
         # 세로 화살표 스타일 설정
         self.custom_x_spin.setStyleSheet(
             "QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }"
@@ -2065,8 +2271,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.custom_y_spin.setValue(1.0)
         self.custom_y_spin.setDecimals(1)
         self.custom_y_spin.setSingleStep(0.1)
-        self.custom_y_spin.setMaximumHeight(25)
-        self.custom_y_spin.setFixedWidth(50)
+        self.custom_y_spin.setMaximumHeight(20)
+        self.custom_y_spin.setFixedWidth(45)  # 소수값 표시를 위해 폭 확장
         # 세로 화살표 스타일 설정
         self.custom_y_spin.setStyleSheet(
             "QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }"
@@ -2079,8 +2285,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.custom_z_spin.setValue(1.0)
         self.custom_z_spin.setDecimals(1)
         self.custom_z_spin.setSingleStep(0.1)
-        self.custom_z_spin.setMaximumHeight(25)
-        self.custom_z_spin.setFixedWidth(50)
+        self.custom_z_spin.setMaximumHeight(20)
+        self.custom_z_spin.setFixedWidth(45)  # 소수값 표시를 위해 폭 확장
         # 세로 화살표 스타일 설정
         self.custom_z_spin.setStyleSheet(
             "QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }"
@@ -2097,8 +2303,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.distance_spin.setRange(0.1, 10.0)
         self.distance_spin.setValue(1.0)
         self.distance_spin.setDecimals(1)
-        self.distance_spin.setMaximumHeight(25)
-        self.distance_spin.setFixedWidth(60)
+        self.distance_spin.setMaximumHeight(20)
+        self.distance_spin.setFixedWidth(55)  # 소수값 표시를 위해 폭 확장
         # 세로 화살표 스타일 설정 (XYZ와 동일)
         self.distance_spin.setStyleSheet(
             "QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }"
@@ -2109,65 +2315,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.distance_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.distance_slider.setRange(1, 100)  # 0.1~10.0을 1~100으로 변환
         self.distance_slider.setValue(10)  # 1.0에 해당
-        self.distance_slider.setMaximumHeight(25)
+        self.distance_slider.setMaximumHeight(20)
         self.distance_slider.valueChanged.connect(self.on_distance_slider_changed)
         distance_layout.addWidget(self.distance_slider)
         # 사용자 정의 적용 버튼
         self.apply_custom_btn = QtWidgets.QPushButton("적용")
-        self.apply_custom_btn.setMaximumHeight(25)
-        self.apply_custom_btn.setFixedWidth(50)
+        self.apply_custom_btn.setMaximumHeight(20)
+        self.apply_custom_btn.setFixedWidth(35)
         self.apply_custom_btn.clicked.connect(self.apply_custom_view)
         distance_layout.addWidget(self.apply_custom_btn)
         custom_layout.addLayout(distance_layout)
         viewport_layout.addWidget(custom_group)
-        # 뷰 모드 섹션 (아이콘만 3개)
-        view_mode_group = QtWidgets.QGroupBox("뷰 모드")
-        view_mode_layout = QtWidgets.QHBoxLayout(view_mode_group)
-        view_mode_layout.setSpacing(8)  # 버튼 간격
-        view_mode_layout.setContentsMargins(5, 8, 5, 5)  # 상단 여백 최소화
-        # 뷰 모드 정보
-        view_mode_info = [
-            ("음영처리", "normal_mode.png", "shading"),
-            ("모서리 표시 음영", "edge_mode.png", "edges"),
-            ("와이어프레임", "wireframe_mode.png", "wireframe"),
-        ]
-        # 뷰 모드 버튼들 생성
-        self.shading_btn = QtWidgets.QPushButton()
-        self.shading_btn.setCheckable(True)
-        self.shading_btn.setChecked(True)
-        self.shading_btn.setFixedSize(32, 32)
-        self.shading_btn.setToolTip("음영처리")
-        self.shading_btn.clicked.connect(lambda: self.set_view_mode("shading"))
-        self.edges_btn = QtWidgets.QPushButton()
-        self.edges_btn.setCheckable(True)
-        self.edges_btn.setFixedSize(32, 32)
-        self.edges_btn.setToolTip("모서리 표시 음영")
-        self.edges_btn.clicked.connect(lambda: self.set_view_mode("edges"))
-        self.wireframe_btn = QtWidgets.QPushButton()
-        self.wireframe_btn.setCheckable(True)
-        self.wireframe_btn.setFixedSize(32, 32)
-        self.wireframe_btn.setToolTip("와이어프레임")
-        self.wireframe_btn.clicked.connect(lambda: self.set_view_mode("wireframe"))
-        # 뷰 모드 버튼에 아이콘 설정
-        try:
-            from utils.helpers import icon_if
-
-            # 음영처리 버튼 아이콘
-            shading_icon = icon_if("resources/icons/normal_mode.png")
-            self.shading_btn.setIcon(shading_icon)
-            # 모서리 표시 버튼 아이콘
-            edges_icon = icon_if("resources/icons/edge_mode.png")
-            self.edges_btn.setIcon(edges_icon)
-            # 와이어프레임 버튼 아이콘
-            wireframe_icon = icon_if("resources/icons/wireframe_mode.png")
-            self.wireframe_btn.setIcon(wireframe_icon)
-        except:
-            # 아이콘 로드 실패 시 빈 버튼
-            pass
-        view_mode_layout.addWidget(self.shading_btn)
-        view_mode_layout.addWidget(self.edges_btn)
-        view_mode_layout.addWidget(self.wireframe_btn)
-        view_mode_layout.addStretch()  # 오른쪽 여백
         # 현재 뷰 정보 섹션 (실시간 카메라 파라미터 표시)
         view_info_group = QtWidgets.QGroupBox("현재 뷰 정보")
         view_info_layout = QtWidgets.QVBoxLayout(view_info_group)
@@ -2191,9 +2349,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         )
         self.view_info_label.setWordWrap(True)
         view_info_layout.addWidget(self.view_info_label)
-        # 전체 레이아웃 구성 (컬러 설정 제거)
+        # 전체 레이아웃 구성 (뷰 모드 제거)
         navigator_layout.addWidget(viewport_group)
-        navigator_layout.addWidget(view_mode_group)
         navigator_layout.addWidget(view_info_group)
         navigator_layout.addStretch()  # 여백 추가
         self.navigator_dock.setWidget(navigator_container)
@@ -2221,6 +2378,28 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         dock_layout.addWidget(help_label)
         dock_layout.addWidget(self.dock_stack)  # 스택 위젯을 도크에 추가
         self.dock.setWidget(dock_container)
+        # 도크 위젯 크기 제한 설정 (3D Parameter 컬럼을 위해 더 넓게)
+        self.dock.setMinimumSize(400, 250)
+        self.dock.setMaximumSize(600, 500)
+        # 테이블 컬럼 크기 설정
+        self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)  # No
+        self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)  # Type
+        self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)  # Dim
+        self.table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)  # Max
+        self.table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.Fixed)  # Min
+        self.table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.Stretch)  # 3D Parameter
+        # 컬럼 너비 설정 (컬럼명이 깨지지 않을 최소 폭으로 조정)
+        self.table.setColumnWidth(0, 30)   # No
+        self.table.setColumnWidth(1, 40)   # Type
+        self.table.setColumnWidth(2, 50)   # Dim
+        self.table.setColumnWidth(3, 40)   # Max
+        self.table.setColumnWidth(4, 40)   # Min
+        # 3D Parameter는 Stretch로 설정되어 남은 공간을 차지
+        # 셀 내용 중앙 정렬 설정
+        self.table.setAlternatingRowColors(True)  # 행 색상 교대로 표시
+        # 기존 데이터가 있다면 새로운 포맷으로 강제 새로고침
+        # 약간의 지연을 두고 새로고침 (UI 초기화 완료 후)
+        QtCore.QTimer.singleShot(100, self._force_refresh_table)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.dock)
         # --- 4. 메뉴바, 툴바, 단축키 생성 ---
         self._create_menus()
@@ -2724,8 +2903,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.showMaximized()
         except:
             pass
-        # "프로그램 켜지면 왼쪽 패널 폭은 120, 오른쪽은 전체의 30%로 배치해!"
-        sizes = [120, int(self.width() * 0.30)]
+        # "프로그램 켜지면 왼쪽 패널 폭을 빨간색 박스 크기로 더 축소!"
+        sizes = [60, int(self.width() * 0.30)]  # 더 작은 크기로 설정
         self.resizeDocks([self.page_dock, self.dock], sizes, QtCore.Qt.Horizontal)
         # 3D Navigator를 왼쪽 도크의 아래쪽에 배치하도록 크기 조정
         # 페이지 도크는 위쪽 70%, Navigator는 아래쪽 30% 정도
@@ -2779,12 +2958,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        self._position_color_control_panel()
+        self._position_integrated_control_panel()
 
     def eventFilter(self, watched, event):
         widget_3d = getattr(self, "widget_3d", None)
         if watched is widget_3d and event.type() == QtCore.QEvent.Resize:
-            self._position_color_control_panel()
+            self._position_integrated_control_panel()
         return super().eventFilter(watched, event)
 
     def new_project(self):
@@ -3890,27 +4069,78 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             no_str = f"{no_val:.0f}"
         else:
             no_str = f"{no_val:g}"
+        # No 컬럼 (중앙 정렬)
         no_item = QtWidgets.QTableWidgetItem()
-        no_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        no_item.setTextAlignment(QtCore.Qt.AlignCenter)
         no_item.setData(QtCore.Qt.DisplayRole, no_str)
         no_item.setFlags(no_item.flags() & ~QtCore.Qt.ItemIsEditable)
         self.table.setItem(r, 0, no_item)
-        self.table.setItem(r, 1, QtWidgets.QTableWidgetItem(it.dim_type))
-        self.table.setItem(r, 2, QtWidgets.QTableWidgetItem(dim_format(it.dim_type, it.value)))
-        self.table.setItem(r, 3, QtWidgets.QTableWidgetItem(normalize_signed_text(it.tol_plus)))
-        self.table.setItem(r, 4, QtWidgets.QTableWidgetItem(normalize_signed_text(it.tol_minus)))
-        # 3D 뷰포트 컬럼 (5번째 컬럼) - 저장된 값이 있으면 표시
-        viewport_item = QtWidgets.QTableWidgetItem(it.viewport_parameters)
+
+        # Type 컬럼 (중앙 정렬)
+        type_item = QtWidgets.QTableWidgetItem(it.dim_type)
+        type_item.setTextAlignment(QtCore.Qt.AlignCenter)
+        self.table.setItem(r, 1, type_item)
+
+        # Dim 컬럼 (중앙 정렬)
+        dim_item = QtWidgets.QTableWidgetItem(dim_format(it.dim_type, it.value))
+        dim_item.setTextAlignment(QtCore.Qt.AlignCenter)
+        self.table.setItem(r, 2, dim_item)
+
+        # Max 컬럼 (중앙 정렬)
+        max_item = QtWidgets.QTableWidgetItem(normalize_signed_text(it.tol_plus))
+        max_item.setTextAlignment(QtCore.Qt.AlignCenter)
+        self.table.setItem(r, 3, max_item)
+
+        # Min 컬럼 (중앙 정렬)
+        min_item = QtWidgets.QTableWidgetItem(normalize_signed_text(it.tol_minus))
+        min_item.setTextAlignment(QtCore.Qt.AlignCenter)
+        self.table.setItem(r, 4, min_item)
+
+        # 3D Parameter 컬럼 (중앙 정렬, 새로운 포맷 적용, 읽기 전용)
+        viewport_display = self._format_3d_parameter(it.viewport_parameters)
+        viewport_item = QtWidgets.QTableWidgetItem(viewport_display)
+        viewport_item.setTextAlignment(QtCore.Qt.AlignCenter)
+        viewport_item.setFlags(viewport_item.flags() & ~QtCore.Qt.ItemIsEditable)  # 읽기 전용 설정
         self.table.setItem(r, 5, viewport_item)
+
+    def _format_3d_parameter(self, viewport_parameters: str) -> str:
+        """
+        3D 뷰포트 파라메터를 (x, y, z, distance) 형태로 포맷팅합니다.
+        Args:
+            viewport_parameters (str): JSON 형태의 뷰포트 파라메터 문자열
+        Returns:
+            str: 포맷팅된 3D 파라메터 문자열
+        """
+        if not viewport_parameters or not viewport_parameters.strip():
+            return ""
+
+        try:
+            import json
+            data = json.loads(viewport_parameters)
+            x = round(data.get("x", 0), 1)
+            y = round(data.get("y", 0), 1)
+            z = round(data.get("z", 0), 1)
+            distance = round(data.get("distance", 0), 1)
+            return f"({x}, {y}, {z}, {distance}d)"
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return viewport_parameters  # 파싱 실패 시 원본 반환
 
     def on_table_cell_clicked(self, row: int, col: int):
         # ===== ▼▼▼ 3D 뷰포트 기능: 어떤 컬럼을 클릭해도 해당 행의 뷰포트 적용 ▼▼▼ =====
-        viewport_item = self.table.item(row, 5)  # 3d 파라메터 컬럼 (항상 5번째 컬럼 확인)
-        if viewport_item and viewport_item.text().strip():
+        # MarkItem에서 원본 JSON 데이터를 가져옴
+        target_item = None
+        if hasattr(self, "cb_separate_numbering") and self.numbering_mode == "page_specific":
+            items_to_display = [it for it in self.items if it.page_index == self.cur_page_index]
+        else:
+            items_to_display = self.items
+        items_to_display.sort(key=lambda x: x.no)
+        if row < len(items_to_display):
+            target_item = items_to_display[row]
+
+        if target_item and target_item.viewport_parameters and target_item.viewport_parameters.strip():
             try:
                 import json
-
-                viewport_data = json.loads(viewport_item.text())
+                viewport_data = json.loads(target_item.viewport_parameters)
                 if self.apply_viewport_from_data(viewport_data):
                     print(f"행 {row}의 저장된 뷰포트가 적용되었습니다.")
                 else:
@@ -4015,6 +4245,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             target_item.tol_minus = norm
             self.table.blockSignals(True)
             qitem.setText(norm)
+            self.table.blockSignals(False)
+        elif c == 5:  # 3D Parameter 컬럼 처리
+            # 3D Parameter는 읽기 전용이므로 원본 데이터로 되돌림
+            self.table.blockSignals(True)
+            formatted_value = self._format_3d_parameter(target_item.viewport_parameters)
+            qitem.setText(formatted_value)
+            qitem.setTextAlignment(QtCore.Qt.AlignCenter)
+            qitem.setFlags(qitem.flags() & ~QtCore.Qt.ItemIsEditable)  # 읽기 전용 유지
             self.table.blockSignals(False)
         self._set_dirty()
 
@@ -4173,6 +4411,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._preview_ellipse.setRect(p.x() - r, p.y() - r, 2 * r, 2 * r)
         br = self._preview_text.boundingRect()
         self._preview_text.setPos(p.x() - br.width() / 2, p.y() - br.height() / 2)
+
+    def _force_refresh_table(self):
+        """테이블을 강제로 새로고침하여 새로운 포맷을 적용합니다."""
+        self._refresh_table_view()
 
     def _refresh_table_view(self):
         """체크박스 상태에 따라 테이블 뷰를 새로고침합니다."""
@@ -4806,8 +5048,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             it.tol_plus = normalize_signed_text(p_item.text()) if p_item else it.tol_plus
             it.tol_minus = normalize_signed_text(m_item.text()) if m_item else it.tol_minus
             # 3D 뷰포트 파라메터 동기화 (5번째 컬럼)
-            viewport_item = self.table.item(r, 5)
-            it.viewport_parameters = viewport_item.text() if viewport_item else ""
+            # 테이블에는 포맷팅된 값이 표시되지만, 원본 JSON 데이터는 이미 MarkItem에 저장되어 있음
+            # 따라서 별도로 동기화할 필요 없음 (이미 저장된 원본 데이터 유지)
 
     # ===== ★★★ 이 함수만 최종 버전으로 교체되었습니다 ★★★ =====
     # ===== 넘버링 흐름도 함께 저장 위해 통째로 교체(중간에 일부 코드 추가)v2.93에서함. =====

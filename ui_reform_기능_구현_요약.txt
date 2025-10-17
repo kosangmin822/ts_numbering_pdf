@@ -1,0 +1,175 @@
+TS Numbering Tool - UI Reform 기능 구현 요약
+====================================================
+브랜치: ui_reform
+작업일: 2024년 현재
+작업자: RIFAGO
+
+## 🎯 주요 구현 기능
+
+### 1. 오른쪽 넘버링 리스트 패널 개선
+----------------------------------------
+
+#### 1.1 컬럼명 변경
+- 기존: ["No", "Demension Type", "Demension", "Maximum", "Minimum", "3d 파라메터"]
+- 변경: ["No", "Type", "Dim", "Max", "Min", "3D Parameter"]
+- 더 간결하고 명확한 컬럼명으로 사용성 향상
+
+#### 1.2 컬럼 크기 최적화
+- No: 30px (기존 40px에서 축소)
+- Type: 40px (기존 60px에서 축소)
+- Dim: 50px (기존 80px에서 축소)
+- Max: 40px (기존 60px에서 축소)
+- Min: 40px (기존 60px에서 축소)
+- 3D Parameter: 나머지 공간을 모두 차지 (Stretch)
+- 컬럼명이 깨지지 않을 최소 폭으로 조정하여 공간 효율성 극대화
+
+#### 1.3 셀 내용 중앙 정렬
+- 모든 컬럼의 셀 내용을 중앙 정렬로 변경
+- `QtCore.Qt.AlignCenter` 적용
+- 시각적으로 더 깔끔하고 정돈된 표시
+
+#### 1.4 도크 위젯 크기 조정
+- 최소 크기: 400x250 (기존 350x250에서 증가)
+- 최대 크기: 600x500 (기존 450x500에서 증가)
+- 3D Parameter 컬럼을 위한 충분한 공간 확보
+
+### 2. 3D Parameter 컬럼 포맷 개선
+----------------------------------
+
+#### 2.1 표시 형식 변경
+- 기존: JSON 형태의 원시 데이터
+  예: {"x": 0.37, "y": -0.86, "z": -0.36, "distance": 1.23}
+- 변경: 사용자 친화적 형식
+  예: (0.4, -0.9, -0.4, 1.2d)
+- 소수점 아래 한 자리로 제한하여 가독성 향상
+
+#### 2.2 포맷팅 함수 구현
+```python
+def _format_3d_parameter(self, viewport_parameters: str) -> str:
+    """3D 뷰포트 파라메터를 (x, y, z, distance) 형태로 포맷팅"""
+    # JSON 파싱 후 소수점 한 자리로 반올림
+    x = round(data.get("x", 0), 1)
+    y = round(data.get("y", 0), 1)
+    z = round(data.get("z", 0), 1)
+    distance = round(data.get("distance", 0), 1)
+    return f"({x}, {y}, {z}, {distance}d)"
+```
+
+#### 2.3 읽기 전용 설정
+- 3D Parameter 컬럼을 읽기 전용으로 설정
+- `setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)`
+- 실수로 편집되는 것을 방지
+
+### 3. 뷰포트 전환 기능 복구
+----------------------------
+
+#### 3.1 문제 해결
+- 기존: 테이블의 포맷팅된 값에서 JSON 파싱 시도 (실패)
+- 해결: MarkItem에서 원본 JSON 데이터를 직접 가져와서 뷰포트 적용
+
+#### 3.2 개선된 로직
+```python
+def on_table_cell_clicked(self, row: int, col: int):
+    # MarkItem에서 원본 JSON 데이터를 가져옴
+    target_item = items_to_display[row]
+    if target_item and target_item.viewport_parameters:
+        viewport_data = json.loads(target_item.viewport_parameters)
+        self.apply_viewport_from_data(viewport_data)
+```
+
+### 4. 데이터 저장/동기화 개선
+-------------------------------
+
+#### 4.1 저장 로직 수정
+- `save_viewport_parameters` 함수에서 MarkItem에 원본 JSON 데이터 저장
+- 테이블에는 포맷팅된 값 표시
+- 읽기 전용 및 중앙 정렬 설정 적용
+
+#### 4.2 동기화 로직 개선
+- `_sync_items_from_table` 함수에서 3D Parameter는 별도 동기화 불필요
+- 원본 데이터는 MarkItem에 이미 저장되어 있음
+- 포맷팅된 값은 표시용으로만 사용
+
+### 5. 윈도우 크기 최적화
+------------------------
+
+#### 5.1 메인 윈도우 크기 조정
+- 기존: 1600x1000
+- 변경: 1400x800
+- 테이블 크기에 맞춰 전체 윈도우 크기 최적화
+
+#### 5.2 UI 요소 배치 개선
+- 행 색상 교대로 표시 (`setAlternatingRowColors(True)`)
+- 기존 데이터가 있을 경우 자동으로 새로운 포맷으로 새로고침
+
+## 🔧 기술적 구현 세부사항
+
+### 1. 테이블 컬럼 설정
+```python
+# 컬럼 크기 설정
+self.table.setColumnWidth(0, 30)   # No
+self.table.setColumnWidth(1, 40)   # Type
+self.table.setColumnWidth(2, 50)   # Dim
+self.table.setColumnWidth(3, 40)   # Max
+self.table.setColumnWidth(4, 40)   # Min
+# 3D Parameter는 Stretch로 설정
+
+# 셀 정렬 설정
+item.setTextAlignment(QtCore.Qt.AlignCenter)
+```
+
+### 2. 데이터 흐름
+```
+저장: 원본 JSON → MarkItem → 포맷팅된 표시
+로드: MarkItem의 원본 JSON → 포맷팅된 표시
+동기화: 테이블 편집 시 다른 컬럼만 동기화, 3D Parameter는 원본 유지
+```
+
+### 3. 강제 새로고침 기능
+```python
+def _force_refresh_table(self):
+    """테이블을 강제로 새로고침하여 새로운 포맷을 적용"""
+    self._refresh_table_view()
+```
+
+## 📊 개선 효과
+
+### 1. 사용성 향상
+- 컬럼명이 간결해져서 가독성 향상
+- 셀 내용 중앙 정렬로 시각적 정돈
+- 3D Parameter 값이 직관적인 형식으로 표시
+
+### 2. 공간 효율성
+- 컬럼 크기 최적화로 더 많은 정보를 한 화면에 표시
+- 도크 위젯 크기 조정으로 적절한 공간 배분
+
+### 3. 기능 안정성
+- 뷰포트 전환 기능 정상 복구
+- 데이터 저장/로드 안정성 확보
+- 읽기 전용 설정으로 실수 방지
+
+## 🎉 완료된 작업 목록
+
+✅ 컬럼명 변경 (No, Type, Dim, Max, Min, 3D Parameter)
+✅ 컬럼 크기 최적화 (컬럼명이 깨지지 않을 최소 폭)
+✅ 셀 내용 중앙 정렬
+✅ 3D Parameter 포맷 변경 (x, y, z, distance)
+✅ 소수점 자리수 제한 (한 자리)
+✅ 뷰포트 전환 기능 복구
+✅ 읽기 전용 설정
+✅ 데이터 저장/동기화 로직 개선
+✅ 윈도우 크기 최적화
+✅ 도크 위젯 크기 조정
+
+## 📝 참고사항
+
+- 모든 변경사항은 기존 기능을 손상시키지 않도록 구현
+- 코드 가독성과 유지보수성을 고려한 구조로 설계
+- 사용자 경험(UX) 개선에 중점을 둔 UI 개선
+- 데이터 무결성을 보장하는 안전한 저장/로드 로직 구현
+
+====================================================
+작업 완료일: 2024년 현재
+브랜치: ui_reform
+상태: 완료
+====================================================
