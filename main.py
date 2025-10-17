@@ -2031,6 +2031,21 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 약간의 지연을 두고 새로고침 (UI 초기화 완료 후)
         QtCore.QTimer.singleShot(100, self._force_refresh_table)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.dock)
+        
+        # --- 3.5. 매니저 초기화 (UI 생성 전에 필요) ---
+        # ViewportManager 초기화
+        self.viewport_manager = ViewportManager(self)
+        
+        # TableManager 초기화
+        self.table_manager = TableManager(self)
+        self.table_manager.set_table(self.table)
+        
+        # UIManager 초기화
+        self.ui_manager = UIManager(self)
+        
+        # StampManager 초기화
+        self.stamp_manager = StampManager(self)
+        
         # --- 4. 메뉴바, 툴바, 단축키 생성 ---
         self._create_menus()
         self._create_toolbar()
@@ -2086,20 +2101,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             QDockWidget::title { text-align: center; background-color: #E6E6E6; padding: 4px; }
         """
         )
-        # --- 7.5. 매니저 초기화 ---
-        # ViewportManager 초기화
-        self.viewport_manager = ViewportManager(self)
-
-        # TableManager 초기화
-        self.table_manager = TableManager(self)
-        self.table_manager.set_table(self.table)
-
-        # UIManager 초기화
-        self.ui_manager = UIManager(self)
-        
-        # StampManager 초기화
-        self.stamp_manager = StampManager(self)
-
         # --- 8. 최종 상태 업데이트 ---
         if pdf_path:
             self.import_pdf_from_path(pdf_path)
