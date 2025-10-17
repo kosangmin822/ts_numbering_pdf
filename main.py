@@ -988,6 +988,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.viewport_manager.set_plotter(self.plotter)
         return self.viewport_manager.on_distance_slider_changed(value)
 
+    def on_distance_spin_changed(self, value):
+        """거리 스핀박스 값이 변경될 때 호출됩니다."""
+        # 슬라이더와 연동 (0.1~10.0을 1~100으로 변환)
+        slider_value = int(value * 10)
+        self.distance_slider.blockSignals(True)
+        self.distance_slider.setValue(slider_value)
+        self.distance_slider.blockSignals(False)
+        
+        # 뷰 업데이트
+        self.on_custom_view_changed()
+
     def set_view_mode(self, mode):
         """뷰 모드를 설정합니다. 3D 뷰어의 렌더링 스타일을 변경합니다. (ViewportManager로 위임)"""
         if hasattr(self, 'plotter'):
@@ -1965,7 +1976,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.distance_spin.setStyleSheet(
             "QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; } QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; }"
         )
-        self.distance_spin.valueChanged.connect(self.update_custom_view)
+        self.distance_spin.valueChanged.connect(self.on_distance_spin_changed)
         distance_layout.addWidget(self.distance_spin)
         # 거리 슬라이더
         self.distance_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
