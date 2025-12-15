@@ -1546,21 +1546,24 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         group2_layout.addWidget(self.mode_button)
         group2_layout.addWidget(self.context_widget_stack)
         group3_actions = [self.action_highlight_toolbar, self.action_toggle_start_end]
-        group4_actions = [
-            self.action_radius_down,
-            self.action_radius_up,
-            None,
-            self.action_border_down,
-            self.action_border_up,
-            None,
-            self.action_font_down,
-            self.action_font_up,
-            None,
-            self.action_cycle_line_style,
-            self.action_cycle_arrow_style,
-        ]
         # ▼▼▼ 새로운 회전 그룹 추가 ▼▼▼
         group_rotate_actions = [self.action_rotate_left, self.action_rotate_right]
+        
+        # 색상 아이콘 로드
+        circle_color_icon = icon_if("resources/icons/circle_color.png")
+        text_color_icon = icon_if("resources/icons/text_color.png")
+        background_color_icon = icon_if("resources/icons/background_color.png")
+        
+        # 색상 액션 생성 (바로 색상 팔레트 열기)
+        self.action_stroke_color = QtGui.QAction(circle_color_icon, "테두리 색", self)
+        self.action_stroke_color.triggered.connect(lambda: self._open_color_dialog("stroke"))
+        
+        self.action_text_color = QtGui.QAction(text_color_icon, "숫자 색", self)
+        self.action_text_color.triggered.connect(lambda: self._open_color_dialog("text"))
+        
+        self.action_fill_color = QtGui.QAction(background_color_icon, "채우기 색", self)
+        self.action_fill_color.triggered.connect(lambda: self._open_color_dialog("fill"))
+        
         group4_actions = [
             self.action_radius_down,
             self.action_radius_up,
@@ -1570,6 +1573,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             None,
             self.action_font_down,
             self.action_font_up,
+            None,
+            self.action_stroke_color,  # 테두리 색
+            self.action_text_color,    # 숫자 색
+            self.action_fill_color,    # 채우기 색
             None,
             self.action_cycle_line_style,
             self.action_cycle_arrow_style,
@@ -4519,6 +4526,138 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if self._open_numbering_settings_dialog(self.style):
             self.load_page(self.cur_page_index)
             self._set_dirty()
+    
+    def _create_color_picker_dialog(self, initial_color, title):
+        """기존 색상 선택 팔레트(QColorDialog)에 투명도 슬라이더를 추가한 다이얼로그를 생성합니다."""
+        # 기존 QColorDialog를 생성
+        color_dialog = QtWidgets.QColorDialog(initial_color, self)
+        color_dialog.setWindowTitle(title)
+        color_dialog.setOption(QtWidgets.QColorDialog.ShowAlphaChannel, True)
+        color_dialog.setOption(QtWidgets.QColorDialog.DontUseNativeDialog, True)  # 네이티브 다이얼로그 비활성화하여 커스터마이징 가능하게 함
+        color_dialog.setCurrentColor(initial_color)
+        
+        # QColorDialog의 버튼 박스를 찾아서 그 위에 투명도 슬라이더를 추가
+        # QColorDialog는 내부적으로 복잡한 구조를 가지고 있으므로, 
+        # 모든 자식 위젯을 순회하여 QDialogButtonBox를 찾음
+        def find_button_box(widget):
+            """위젯 트리에서 QDialogButtonBox를 찾습니다."""
+            if isinstance(widget, QtWidgets.QDialogButtonBox):
+                return widget
+            for child in widget.findChildren(QtWidgets.QDialogButtonBox):
+                return child
+            return None
+        
+        button_box = find_button_box(color_dialog)
+        
+        # 투명도 슬라이더 추가
+        # 투명도 100% = 완전 투명 (alpha = 0), 투명도 0% = 불투명 (alpha = 255)
+        transparency_layout = QtWidgets.QHBoxLayout()
+        transparency_label = QtWidgets.QLabel("투명도:")
+        transparency_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        transparency_slider.setRange(0, 100)
+        # alpha를 투명도로 변환: 투명도 = 100 - (alpha * 100 / 255)
+        # 초기값은 0% (불투명)로 설정
+        initial_transparency = 100 - int(initial_color.alpha() * 100 / 255)
+        transparency_slider.setValue(initial_transparency)
+        transparency_slider.setMinimumWidth(200)
+        transparency_value_label = QtWidgets.QLabel(f"{transparency_slider.value()}%")
+        transparency_value_label.setMinimumWidth(40)
+        
+        def update_transparency(value):
+            transparency_value_label.setText(f"{value}%")
+            # 투명도를 alpha로 변환: alpha = (100 - 투명도) * 255 / 100
+            # 투명도 100% = alpha 0 (완전 투명), 투명도 0% = alpha 255 (불투명)
+            current = color_dialog.currentColor()
+            current.setAlpha(int((100 - value) * 255 / 100))
+            color_dialog.setCurrentColor(current)
+        
+        transparency_slider.valueChanged.connect(update_transparency)
+        
+        # 색상 변경 시 투명도 슬라이더 업데이트
+        def on_color_changed(color):
+            # alpha를 투명도로 변환: 투명도 = 100 - (alpha * 100 / 255)
+            transparency_percent = 100 - int(color.alpha() * 100 / 255)
+            transparency_slider.blockSignals(True)
+            transparency_slider.setValue(transparency_percent)
+            transparency_value_label.setText(f"{transparency_percent}%")
+            transparency_slider.blockSignals(False)
+        
+        color_dialog.currentColorChanged.connect(on_color_changed)
+        
+        transparency_layout.addWidget(transparency_label)
+        transparency_layout.addWidget(transparency_slider)
+        transparency_layout.addWidget(transparency_value_label)
+        transparency_layout.addStretch()
+        
+        # 버튼 박스를 찾았으면 그 위에 투명도 슬라이더를 삽입
+        if button_box:
+            button_box_parent = button_box.parent()
+            if button_box_parent:
+                parent_layout = button_box_parent.layout()
+                if parent_layout:
+                    # 버튼 박스의 인덱스를 찾아서 그 위에 삽입
+                    button_box_index = parent_layout.indexOf(button_box)
+                    if button_box_index >= 0:
+                        parent_layout.insertLayout(button_box_index, transparency_layout)
+                    else:
+                        parent_layout.addLayout(transparency_layout)
+                else:
+                    # 레이아웃이 없으면 직접 추가
+                    main_layout = color_dialog.layout()
+                    if main_layout:
+                        main_layout.insertLayout(main_layout.count() - 1, transparency_layout)
+        else:
+            # 버튼 박스를 찾지 못했으면 메인 레이아웃에 추가
+            main_layout = color_dialog.layout()
+            if main_layout:
+                main_layout.insertLayout(main_layout.count() - 1, transparency_layout)
+        
+        # 다이얼로그에 selected_color 속성 추가를 위한 래퍼
+        original_accept = color_dialog.accept
+        def custom_accept():
+            color_dialog.selected_color = color_dialog.currentColor()
+            original_accept()
+        color_dialog.accept = custom_accept
+        
+        return color_dialog
+    
+    def _open_color_dialog(self, color_type: str):
+        """
+        색상 팔레트 다이얼로그를 열고 선택한 색상을 바로 적용합니다.
+        
+        Args:
+            color_type: "stroke" (테두리), "text" (숫자), "fill" (채우기)
+        """
+        # 현재 색상 가져오기
+        if color_type == "stroke":
+            current_color = self.style.stroke_color
+            title = "테두리 색 선택"
+        elif color_type == "text":
+            current_color = self.style.text_color
+            title = "숫자 색 선택"
+        elif color_type == "fill":
+            current_color = self.style.fill_color
+            title = "채우기 색 선택"
+        else:
+            return
+        
+        # 색상 팔레트 다이얼로그 열기
+        dlg = self._create_color_picker_dialog(current_color, title)
+        if dlg.exec() == QtWidgets.QDialog.Accepted:
+            selected_color = dlg.selected_color
+            if selected_color.isValid():
+                if color_type == "stroke":
+                    self.style.stroke_color = selected_color
+                elif color_type == "text":
+                    self.style.text_color = selected_color
+                elif color_type == "fill":
+                    self.style.fill_color = selected_color
+                    # 채우기 색이 설정되면 fill_none 해제
+                    if selected_color.alpha() > 0:
+                        self.style.fill_none = False
+                
+                self.load_page(self.cur_page_index)
+                self._set_dirty()
 
     def _open_numbering_settings_dialog(self, style_object: LabelStyle) -> bool:
         """'넘버링 설정' 대화상자를 엽니다. 성공 시 True를 반환합니다."""
@@ -4547,6 +4686,20 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         btn_fill = QtWidgets.QPushButton("채우기 색…", dlg)
         btn_stk = QtWidgets.QPushButton("테두리 색…", dlg)
         btn_txt = QtWidgets.QPushButton("숫자 색…", dlg)
+        
+        # 테두리 색과 숫자 색 버튼에 아이콘 추가
+        try:
+            from utils.helpers import icon_if
+            circle_color_icon = icon_if("resources/icons/circle_color.png")
+            text_color_icon = icon_if("resources/icons/text_color.png")
+            if circle_color_icon and not circle_color_icon.isNull():
+                btn_stk.setIcon(circle_color_icon)
+                btn_stk.setIconSize(QtCore.QSize(16, 16))
+            if text_color_icon and not text_color_icon.isNull():
+                btn_txt.setIcon(text_color_icon)
+                btn_txt.setIconSize(QtCore.QSize(16, 16))
+        except Exception as e:
+            print(f"아이콘 로드 실패: {e}")
         cb_none = QtWidgets.QCheckBox("채우기 없음(투명)", dlg)
         cb_none.setChecked(style_object.fill_none or style_object.fill_color.alpha() == 0)
         separator2 = QtWidgets.QFrame()
@@ -4576,41 +4729,44 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         btn_flow_color.clicked.connect(pick_flow_color)
 
-        def enable_fill():
-            btn_fill.setEnabled(not cb_none.isChecked())
-
-        enable_fill()
+        # 채우기 색 제한 제거 (enable_fill 함수 제거)
 
         def pick_fill():
-            c = QtWidgets.QColorDialog.getColor(
-                temp_style.fill_color,
-                self,
-                "Select Color",
-                options=QtWidgets.QColorDialog.ShowAlphaChannel,
-            )
-            if c.isValid():
-                temp_style.fill_color = c
+            # 투명도 슬라이더가 있는 색상 팔레트 다이얼로그 열기
+            dlg = self._create_color_picker_dialog(temp_style.fill_color, "채우기 색 선택")
+            if dlg.exec() == QtWidgets.QDialog.Accepted:
+                temp_style.fill_color = dlg.selected_color
 
         def pick_stk():
-            c = QtWidgets.QColorDialog.getColor(temp_style.stroke_color, self)
-            if c.isValid():
-                temp_style.stroke_color = c
+            # 투명도 슬라이더가 있는 색상 팔레트 다이얼로그 열기
+            dlg = self._create_color_picker_dialog(temp_style.stroke_color, "테두리 색 선택")
+            if dlg.exec() == QtWidgets.QDialog.Accepted:
+                temp_style.stroke_color = dlg.selected_color
 
         def pick_txt():
-            c = QtWidgets.QColorDialog.getColor(temp_style.text_color, self)
-            if c.isValid():
-                temp_style.text_color = c
+            # 투명도 슬라이더가 있는 색상 팔레트 다이얼로그 열기
+            dlg = self._create_color_picker_dialog(temp_style.text_color, "숫자 색 선택")
+            if dlg.exec() == QtWidgets.QDialog.Accepted:
+                temp_style.text_color = dlg.selected_color
 
         btn_fill.clicked.connect(pick_fill)
         btn_stk.clicked.connect(pick_stk)
         btn_txt.clicked.connect(pick_txt)
-        cb_none.toggled.connect(enable_fill)
         form.addRow("원 반지름(px)", sp_r)
         form.addRow("테두리 두께(px)", sp_s)
         form.addRow("폰트 크기(px)", sp_f)
         form.addRow(cb_none)
-        form.addRow(btn_fill, btn_stk)
-        form.addRow(btn_txt)
+        form.addRow(btn_fill)
+        # 테두리 색과 숫자 색을 한 줄에 배치하고 구분선 추가
+        color_separator = QtWidgets.QFrame()
+        color_separator.setFrameShape(QtWidgets.QFrame.VLine)
+        color_separator.setFrameShadow(QtWidgets.QFrame.Sunken)
+        color_layout = QtWidgets.QHBoxLayout()
+        color_layout.addWidget(btn_stk)
+        color_layout.addWidget(color_separator)
+        color_layout.addWidget(btn_txt)
+        color_layout.addStretch()
+        form.addRow(color_layout)
         form.addRow(separator2)
         form.addRow("흐름도 투명도", opacity_layout)
         form.addRow(btn_flow_color, combo_flow_style)
