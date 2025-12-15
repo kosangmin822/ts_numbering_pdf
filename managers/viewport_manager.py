@@ -114,7 +114,12 @@ class ViewportManager:
 
             # 뷰 방향 벡터 계산
             view_direction = np.array([x, y, z])
-            view_direction = view_direction / np.linalg.norm(view_direction)
+            norm = np.linalg.norm(view_direction)
+            if norm > 0:
+                view_direction = view_direction / norm
+            else:
+                # 영벡터인 경우 기본값 설정
+                view_direction = np.array([0, 0, 1])
 
             # 카메라 위치 설정
             focal_point = np.array(self.plotter.camera.focal_point)
@@ -122,7 +127,21 @@ class ViewportManager:
 
             self.plotter.camera.position = position
             self.plotter.camera.focal_point = focal_point
-            self.plotter.camera.up = [0, 1, 0]  # 기본 up 벡터
+            
+            # up 벡터 설정: 상면/하면 뷰의 경우 특별 처리
+            # 상면(top): view_direction이 [0, 1, 0]에 가까우면 up 벡터를 Z축 방향으로 설정
+            # 하면(bottom): view_direction이 [0, -1, 0]에 가까우면 up 벡터를 Z축 방향으로 설정
+            if abs(y) > 0.9 and abs(x) < 0.1 and abs(z) < 0.1:
+                # 상면 또는 하면 뷰: up 벡터를 Z축 방향으로 설정
+                if y > 0:
+                    # 상면: 카메라가 위에서 내려다봄, up 벡터는 -Z 방향
+                    self.plotter.camera.up = [0, 0, -1]
+                else:
+                    # 하면: 카메라가 아래에서 올려다봄, up 벡터는 Z 방향
+                    self.plotter.camera.up = [0, 0, 1]
+            else:
+                # 다른 뷰: 기본 up 벡터 (Y축 양의 방향)
+                self.plotter.camera.up = [0, 1, 0]
 
             # 뷰 업데이트
             self.plotter.render()
@@ -290,6 +309,46 @@ class ViewportManager:
 
         except Exception as e:
             print(f"거리 슬라이더 변경 오류: {e}")
+
+    def set_projection_mode(self, mode: str):
+        """
+        투영 방식을 설정합니다.
+        3D 뷰어의 카메라 투영 방식을 변경합니다.
+
+        Args:
+            mode (str): 투영 방식 ("orthographic" 또는 "perspective")
+        """
+        if not self.plotter:
+            return
+
+        try:
+            if mode == "orthographic":
+                # 일반 뷰 (평행 투영): 원근감 없음, 정확한 치수 표시
+                self.plotter.camera.enable_parallel_projection()
+                print(f"투영 방식 설정: 일반 뷰 (Orthographic)")
+                # UI 버튼 상태 업데이트
+                if hasattr(self.main_window, 'normal_view_btn'):
+                    self.main_window.normal_view_btn.setChecked(True)
+                if hasattr(self.main_window, 'perspective_btn'):
+                    self.main_window.perspective_btn.setChecked(False)
+            elif mode == "perspective":
+                # 투시도 (원근 투영): 원근감 있음, 현실적인 시각화
+                self.plotter.camera.disable_parallel_projection()
+                print(f"투영 방식 설정: 투시도 (Perspective)")
+                # UI 버튼 상태 업데이트
+                if hasattr(self.main_window, 'normal_view_btn'):
+                    self.main_window.normal_view_btn.setChecked(False)
+                if hasattr(self.main_window, 'perspective_btn'):
+                    self.main_window.perspective_btn.setChecked(True)
+            else:
+                print(f"알 수 없는 투영 방식: {mode}")
+                return
+
+            # 화면 갱신
+            self.plotter.render()
+
+        except Exception as e:
+            print(f"투영 방식 설정 오류: {e}")
 
     def set_view_mode(self, mode: str):
         """

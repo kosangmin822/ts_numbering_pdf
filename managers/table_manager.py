@@ -9,7 +9,7 @@ from typing import List, Optional
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from core.models import MarkItem
-from utils.helpers import dim_format, normalize_signed_text
+from utils.helpers import dim_format, normalize_signed_text, strip_prefix_for_value
 
 
 class TableManager:
