@@ -273,6 +273,10 @@ class UIManager:
 
         QtGui.QShortcut(QtGui.QKeySequence("F1"), self.main_window, activated=self.main_window.show_shortcut_help)
 
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+C"), self.main_window.table, activated=self.main_window.copy_format)
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+V"), self.main_window.table, activated=self.main_window.paste_format)
+
         QtGui.QShortcut(QtGui.QKeySequence.MoveToPreviousPage, self.main_window, activated=self.main_window.go_prev)
 
         QtGui.QShortcut(QtGui.QKeySequence.MoveToNextPage, self.main_window, activated=self.main_window.go_next)

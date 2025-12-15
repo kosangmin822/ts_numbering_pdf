@@ -55,8 +55,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v6.02_3D_Viewer"
-TSN_VERSION = "6.02"
+APP_VER = "v7.00_stable"
+TSN_VERSION = "7.00"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -384,9 +384,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             )
             # 2. (중요) UI의 토글 버튼이 켜진 상태로 바뀌었을 것이므로, 다시 끈 상태로 되돌립니다.
             self.action_toggle_flow_view.setChecked(False)
+            if hasattr(self, "a_flow_menu"):
+                self.a_flow_menu.setChecked(False)
             return  # 함수 실행을 중단합니다.
         # 3. 조건에 맞을 때만 상태를 변경하고 새로고침합니다.
         self.flow_view_enabled = checked
+        # 메뉴 항목 동기화
+        if hasattr(self, "a_flow_menu"):
+            self.a_flow_menu.setChecked(checked)
         self.load_page(self.cur_page_index)
 
     def toggle_numbering_view(self, checked):
@@ -396,14 +401,22 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.flow_view_enabled = False
             # (중요) UI의 흐름도 토글 버튼 상태도 꺼짐으로 동기화합니다.
             self.action_toggle_flow_view.setChecked(False)
+            if hasattr(self, "a_flow_menu"):
+                self.a_flow_menu.setChecked(False)
         # 2. 원래의 기능을 수행합니다.
         self.view_show_numbering = checked
+        # 메뉴 항목 동기화
+        if hasattr(self, "a_numbering_view_menu"):
+            self.a_numbering_view_menu.setChecked(checked)
         self.load_page(self.cur_page_index)
 
     def toggle_stamps_view(self, checked):
         """스탬프 보기 상태를 변경하고, 화면 전체를 새로고침합니다."""
         # print(f"\n>>> [탐침 #3] 스탬프 보기 토글됨: {checked} <<<") # <-- 추가
         self.view_show_stamps = checked
+        # 메뉴 항목 동기화
+        if hasattr(self, "a_stamps_view_menu"):
+            self.a_stamps_view_menu.setChecked(checked)
         self.load_page(self.cur_page_index)
 
     def _format_no(self, no: float) -> str:
@@ -1090,8 +1103,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         """프로그램 정보 대화상자를 띄웁니다."""
         about_text = f"""
             <h3>{APP_NAME}</h3>
-            <p>Version {APP_VER}</p>
-            <p>측정용 PDF 도면 넘버링 프로그램입니다.</p>
+            <p>Version {APP_VER} 검사 도면(pdf) 넘버링 프로그램 입니다.</p>
             <br>
             <p><b>Created by Kosangmin</b></p>
             <p>Copyright © 2025 Taesung Engineering. All rights reserved.</p>
@@ -1310,6 +1322,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def _toggle_show_start_end(self, checked):
         """흐름도의 시작/끝점 강조 표시를 켜고 끕니다."""
         self.style.flow_show_start_end = checked
+        # 메뉴 항목 동기화
+        if hasattr(self, "a_start_end_menu"):
+            self.a_start_end_menu.setChecked(checked)
         self._update_flow_view()  # 흐름도만 다시 그리기
         self._set_dirty()
 
@@ -1413,6 +1428,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.rotate_left_icon = icon_if("resources/icons/rotate_left.png")
         self.rotate_right_icon = icon_if("resources/icons/rotate_right.png")
         # --- 액션 및 위젯 정의 ---
+        # 기존 모드 토글 액션 (Ctrl+E용 순환 전환)
         self.action_toggle_mode = QtGui.QAction(self._icon_edit_off, "작업 모드 전환", self)
         self.action_toggle_mode.setCheckable(True)
         self.action_toggle_mode.triggered.connect(self._cycle_active_mode)
@@ -1484,20 +1500,70 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_line_style_button_icon()
         self._update_line_style_button_icon()
         self._update_arrow_style_button_icon()
-        self.preview_toggle_button = QtWidgets.QToolButton()
-        self.preview_toggle_button.clicked.connect(self._cycle_preview_mode)
+        
+        # 미리보기 모드 버튼을 두 개로 분리 (원/십자)
+        self.preview_circle_button = QtWidgets.QToolButton()
+        self.preview_circle_button.setCheckable(True)
+        self.preview_circle_button.setChecked(True)  # 디폴트는 원 모드
+        circle_icon = icon_if("resources/icons/circle.png")
+        if circle_icon:
+            self.preview_circle_button.setIcon(circle_icon)
+        self.preview_circle_button.setToolTip("미리보기: 원")
+        self.preview_circle_button.clicked.connect(lambda: self.set_preview_mode("preview"))
+        
+        self.preview_crosshair_button = QtWidgets.QToolButton()
+        self.preview_crosshair_button.setCheckable(True)
+        crosshair_icon = icon_if("resources/icons/crossline.png")
+        if crosshair_icon:
+            self.preview_crosshair_button.setIcon(crosshair_icon)
+        self.preview_crosshair_button.setToolTip("미리보기: 십자선")
+        self.preview_crosshair_button.clicked.connect(lambda: self.set_preview_mode("crosshair"))
+        
+        # 미리보기 버튼들을 배타적 그룹으로 묶기
+        self.preview_button_group = QtWidgets.QButtonGroup(self)
+        self.preview_button_group.addButton(self.preview_circle_button, 0)
+        self.preview_button_group.addButton(self.preview_crosshair_button, 1)
+        self.preview_button_group.setExclusive(True)
+        
         self.stamp_button = QtWidgets.QToolButton()
         self.stamp_button.clicked.connect(self._cycle_next_stamp)
-        self._update_preview_button_visuals()
         # --- 그룹별 레이아웃 구성 ---
         group1_actions = [self.action_undo, self.action_redo]
+
+        # === 모드 선택 그룹 ===
+        # 넘버링 / 스탬프 / 보기 모드를 개별 아이콘으로 선택
+        self.mode_action_group = QtGui.QActionGroup(self)
+        self.mode_action_group.setExclusive(True)
+
+        self.action_mode_view = QtGui.QAction(self._icon_edit_off, "보기 모드", self)
+        self.action_mode_view.setCheckable(True)
+        self.action_mode_view.setChecked(True)  # 디폴트로 보기 모드 선택
+        self.action_mode_view.triggered.connect(lambda: self._set_active_mode_from_action("view"))
+        self.mode_action_group.addAction(self.action_mode_view)
+
+        # 넘버링 모드 아이콘
+        numbering_mode_icon = icon_if("resources/icons/numbering_mode.png")
+        self.action_mode_numbering = QtGui.QAction(numbering_mode_icon, "넘버링 모드", self)
+        self.action_mode_numbering.setCheckable(True)
+        self.action_mode_numbering.triggered.connect(lambda: self._set_active_mode_from_action("numbering"))
+        self.mode_action_group.addAction(self.action_mode_numbering)
+
+        # 스탬프 모드 아이콘
+        stamp_mode_icon = icon_if("resources/icons/stamp_mode.png")
+        self.action_mode_stamp = QtGui.QAction(stamp_mode_icon, "스탬프 모드", self)
+        self.action_mode_stamp.setCheckable(True)
+        self.action_mode_stamp.triggered.connect(lambda: self._set_active_mode_from_action("stamp"))
+        self.mode_action_group.addAction(self.action_mode_stamp)
+
+        mode_actions = [self.action_mode_view, self.action_mode_numbering, self.action_mode_stamp]
+
+        # === 작업 설정 그룹 ===
         group2 = QtWidgets.QGroupBox("작업 설정")
         group2.setAlignment(QtCore.Qt.AlignCenter)
         group2_layout = QtWidgets.QHBoxLayout(group2)
-        group2_layout.setContentsMargins(4, 12, 4, 4)
+        # 모드 선택 그룹이 별도로 생겼으므로 높이를 조금 줄임
+        group2_layout.setContentsMargins(4, 8, 4, 4)
         group2_layout.setSpacing(4)
-        self.mode_button = QtWidgets.QToolButton()
-        self.mode_button.clicked.connect(self._cycle_active_mode)
         self.context_widget_stack = QtWidgets.QStackedWidget()
         view_context_widget = QtWidgets.QWidget()
         view_layout = QtWidgets.QHBoxLayout(view_context_widget)
@@ -1518,26 +1584,38 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         numbering_layout.setSpacing(4)
         num_settings_button = QtWidgets.QToolButton()
         num_settings_button.setDefaultAction(self.action_numbering_settings)
-        numbering_layout.addWidget(self.preview_toggle_button)
+        # 미리보기 버튼 두 개 추가 (원/십자)
+        numbering_layout.addWidget(self.preview_circle_button)
+        numbering_layout.addWidget(self.preview_crosshair_button)
         numbering_layout.addWidget(num_settings_button)
         numbering_layout.addStretch()
         stamp_context_widget = QtWidgets.QWidget()
         stamp_layout = QtWidgets.QHBoxLayout(stamp_context_widget)
         stamp_layout.setContentsMargins(0, 0, 0, 0)
         stamp_layout.setSpacing(4)
+        
+        # 스탬프 이미지 관리 버튼 추가 (제일 왼쪽)
+        stamp_reg_icon = icon_if("resources/icons/stamp_reg.png")
+        self.action_stamp_manager = QtGui.QAction(stamp_reg_icon, "스탬프 이미지 관리", self)
+        self.action_stamp_manager.triggered.connect(self.open_stamp_manager)
+        stamp_manager_button = QtWidgets.QToolButton()
+        stamp_manager_button.setDefaultAction(self.action_stamp_manager)
+        
         stamp_settings_button = QtWidgets.QToolButton()
         stamp_settings_button.setDefaultAction(self.action_stamp_settings)
         self.stamp_button.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.stamp_button.customContextMenuRequested.connect(self._show_stamp_context_menu)
+        stamp_layout.addWidget(stamp_manager_button)
         stamp_layout.addWidget(self.stamp_button)
         stamp_layout.addWidget(stamp_settings_button)
         stamp_layout.addStretch()
         for btn in [
-            self.mode_button,
-            self.preview_toggle_button,
+            self.preview_circle_button,
+            self.preview_crosshair_button,
             self.stamp_button,
             num_settings_button,
             stamp_settings_button,
+            stamp_manager_button,
             numbering_view_button,
             stamp_view_button,
             flow_view_button,
@@ -1548,7 +1626,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.context_widget_stack.addWidget(stamp_context_widget)
         max_width = view_context_widget.sizeHint().width()
         self.context_widget_stack.setMinimumWidth(max_width)
-        group2_layout.addWidget(self.mode_button)
         group2_layout.addWidget(self.context_widget_stack)
         group3_actions = [self.action_highlight_toolbar, self.action_toggle_start_end]
         # ▼▼▼ 새로운 회전 그룹 추가 ▼▼▼
@@ -1589,6 +1666,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # --- 최종 툴바 레이아웃 구성 ---
         main_layout.addWidget(self._create_toolbar_group(group1_actions, "실행 취소/복구"))
         main_layout.addSpacing(18)
+        # 새 모드 선택 그룹을 작업 설정 왼쪽에 배치
+        main_layout.addWidget(self._create_toolbar_group(mode_actions, "모드 선택"))
+        main_layout.addSpacing(18)
         main_layout.addWidget(group2)
         main_layout.addSpacing(18)
         main_layout.addWidget(self._create_toolbar_group(group3_actions, "강조"))
@@ -1628,6 +1708,46 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 5. UI를 새 모드에 맞게 업데이트합니다.
         self._sync_ui_to_current_mode()
 
+    def _set_active_mode_from_action(self, mode: str):
+        """
+        모드 선택 리본(모드 선택 탭)에서 호출되는 헬퍼.
+        명시적으로 모드를 설정하고 UI를 동기화합니다.
+        """
+        if mode not in ("view", "numbering", "stamp"):
+            return
+        if self.active_mode == mode:
+            return
+        self.active_mode = mode
+        # 모드선택 메뉴 동기화
+        if hasattr(self, "a_mode_view"):
+            self.a_mode_view.setChecked(mode == "view")
+        if hasattr(self, "a_mode_numbering_menu"):
+            self.a_mode_numbering_menu.setChecked(mode == "numbering")
+        if hasattr(self, "a_mode_stamp"):
+            self.a_mode_stamp.setChecked(mode == "stamp")
+        self._sync_ui_to_current_mode()
+    
+    def _set_numbering_mode(self, input_mode: str):
+        """
+        넘버링 모드의 입력 방식을 설정하고, 활성 모드를 넘버링 모드로 전환합니다.
+        """
+        self.set_input_mode(input_mode)
+        # 활성 모드를 넘버링 모드로 전환
+        if self.active_mode != "numbering":
+            self.active_mode = "numbering"
+            # 모드선택 메뉴 동기화
+            if hasattr(self, "a_mode_view"):
+                self.a_mode_view.setChecked(False)
+            if hasattr(self, "a_mode_stamp"):
+                self.a_mode_stamp.setChecked(False)
+            if hasattr(self, "a_mode_numbering_menu"):
+                self.a_mode_numbering_menu.setChecked(True)
+            self._sync_ui_to_current_mode()
+        else:
+            # 이미 넘버링 모드인 경우에도 체크 상태만 업데이트
+            if hasattr(self, "a_mode_numbering_menu"):
+                self.a_mode_numbering_menu.setChecked(True)
+
     # ===== ▼▼▼ 스탬프 버튼 관련 함수 3개 (새로 추가) ▼▼▼ =====
     def _get_current_stamp_key(self) -> Optional[str]:
         """현재 인덱스에 해당하는 스탬프의 키(이름)를 반환합니다. (StampManager로 위임)"""
@@ -1644,28 +1764,15 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
     # ... _cycle_next_stamp 함수 아래에 추가 ...
     # ===== ▼▼▼ 미리보기 버튼 관련 함수 2개 (새로 추가) ▼▼▼ =====
-    def _cycle_preview_mode(self):
-        """넘버링 미리보기 모드를 순환시킵니다 (원 <-> 십자선)."""
-        if self.preview_mode == "preview":
-            self.set_preview_mode("crosshair")
-        else:
-            self.set_preview_mode("preview")
-        self._update_preview_button_visuals()
-
     def _update_preview_button_visuals(self):
-        """현재 미리보기 모드에 맞춰 버튼 아이콘과 툴팁을 변경합니다."""
-        if not hasattr(self, "preview_toggle_button"):
-            return
-        if self.preview_mode == "crosshair":
-            # "resources/icons/" 경로 추가
-            icon = icon_if("resources/icons/crossline.png")
-            tooltip = "미리보기: 십자선 (클릭하여 변경)"
-        else:  # "preview"
-            # "resources/icons/" 경로 추가
-            icon = icon_if("resources/icons/circle.png")
-            tooltip = "미리보기: 원 (클릭하여 변경)"
-        self.preview_toggle_button.setIcon(icon)
-        self.preview_toggle_button.setToolTip(tooltip)
+        """현재 미리보기 모드에 맞춰 버튼 체크 상태를 업데이트합니다."""
+        if hasattr(self, "preview_circle_button") and hasattr(self, "preview_crosshair_button"):
+            if self.preview_mode == "preview":
+                self.preview_circle_button.setChecked(True)
+                self.preview_crosshair_button.setChecked(False)
+            else:  # "crosshair"
+                self.preview_circle_button.setChecked(False)
+                self.preview_crosshair_button.setChecked(True)
 
     # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
     # ... _cycle_next_stamp 함수 바로 아래에 추가 ...
@@ -1706,14 +1813,27 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if self._stamp_preview_item:
             self._stamp_preview_item.hide()
         self.context_widget_stack.setCurrentIndex(0)
+
+        # 모드 선택 리본(액션) 상태 동기화
+        if hasattr(self, "action_mode_view"):
+            self.action_mode_view.setChecked(self.active_mode == "view")
+        if hasattr(self, "action_mode_numbering"):
+            self.action_mode_numbering.setChecked(self.active_mode == "numbering")
+        if hasattr(self, "action_mode_stamp"):
+            self.action_mode_stamp.setChecked(self.active_mode == "stamp")
+        # 모드선택 메뉴 상태 동기화
+        if hasattr(self, "a_mode_view"):
+            self.a_mode_view.setChecked(self.active_mode == "view")
+        if hasattr(self, "a_mode_numbering_menu"):
+            self.a_mode_numbering_menu.setChecked(self.active_mode == "numbering")
+        if hasattr(self, "a_mode_stamp"):
+            self.a_mode_stamp.setChecked(self.active_mode == "stamp")
         # 2. 모드에 따라 UI를 설정합니다.
         if self.active_mode == "numbering":
             # ▼▼▼ [핵심 추가] 넘버링 미리보기 객체가 없으면 즉시 생성! ▼▼▼
             if self._preview_ellipse is None or self._preview_text is None:
                 self._create_preview_items()
             # ▲▲▲ 여기까지 추가 ▲▲▲
-            self.mode_button.setIcon(self._icon_edit_on)
-            self.mode_button.setToolTip("넘버링 모드 (Ctrl+E로 전환)")
             self.context_widget_stack.setCurrentIndex(1)
             self.dock_stack.setCurrentWidget(self.table)
             self._update_preview_button_visuals()
@@ -1730,8 +1850,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 self._stamp_preview_item.hide()
             # ▲▲▲ 여기까지 추가 ▲▲▲
             stamp_icon = icon_if("resources/icons/stamp_on.png")  # "resources/icons/" 경로 추가
-            self.mode_button.setIcon(stamp_icon)
-            self.mode_button.setToolTip("스탬프 모드 (Ctrl+E로 전환)")
             self.context_widget_stack.setCurrentIndex(2)
             self.dock_stack.setCurrentWidget(self.stamp_table)
             self._update_stamp_button_icon()
@@ -1739,8 +1857,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.view.setCursor(QtCore.Qt.ArrowCursor)
             # ▲▲▲ 여기까지 수정 ▲▲▲
         else:  # "view" 모드
-            self.mode_button.setIcon(self._icon_edit_off)
-            self.mode_button.setToolTip("보기 모드 (Ctrl+E로 전환)")
             self.dock_stack.setCurrentWidget(self.table)
             self.view.setCursor(QtCore.Qt.ArrowCursor)
         # 3. 나머지 UI 상태를 업데이트합니다.
@@ -1841,9 +1957,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.render_scale = 2
         self.auto_highres = True
         # ===== ▼▼▼ 보기/숨기기 상태 변수 추가/수정 ▼▼▼ =====
-        self.flow_view_enabled = False  # 흐름도
-        self.view_show_numbering = True  # 넘버링
-        self.view_show_stamps = True  # 스탬프
+        self.flow_view_enabled = True  # 흐름도 (디폴트 ON)
+        self.view_show_numbering = True  # 넘버링 (디폴트 ON)
+        self.view_show_stamps = True  # 스탬프 (디폴트 ON)
         # ===== ▲▲▲ 여기까지 추가/수정 ▲▲▲ =====
         self.preview_mode = "preview"
         self.style = LabelStyle()
@@ -1865,7 +1981,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.insert_target_no = -1.0
         self.highlight_enabled = True
         # ===== ▼▼▼ 스탬프 기능 관련 변수 추가 ▼▼▼ =====
-        self.active_mode = "numbering"  # 현재 활성 모드: "view", "numbering", "stamp"
+        self.active_mode = "view"  # 현재 활성 모드: "view", "numbering", "stamp" (디폴트: 보기 모드)
         self.stamps: List[StampItem] = []  # PDF에 찍힌 스탬프 객체들을 저장하는 리스트
         self.stamp_shortcuts = []  # 단축키 객체를 저장하여 켜고 끄기 위한 리스트
         self.registered_stamps = {}  # 등록된 스탬프 목록 (예: {"내 서명": "C:/path/sig.png"})
@@ -2415,20 +2531,39 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         a_xlsx = m_file.addAction("Export XLSX…")
         a_xlsx.triggered.connect(self.export_xlsx_dialog)
         m_view = mb.addMenu("보기")
-        a_num_settings = m_view.addAction("넘버링 설정…")
-        a_num_settings.triggered.connect(self.open_numbering_settings)
+        # 첫 번째 세션: (넘버링보기, 스탬프보기, 흐름도보기)
+        self.a_numbering_view_menu = m_view.addAction("넘버링 보기")
+        self.a_numbering_view_menu.setCheckable(True)
+        self.a_numbering_view_menu.setChecked(self.view_show_numbering)
+        self.a_numbering_view_menu.toggled.connect(self.toggle_numbering_view)
+        
+        self.a_stamps_view_menu = m_view.addAction("스탬프 보기")
+        self.a_stamps_view_menu.setCheckable(True)
+        self.a_stamps_view_menu.setChecked(self.view_show_stamps)
+        self.a_stamps_view_menu.toggled.connect(self.toggle_stamps_view)
+        
+        self.a_flow_menu = m_view.addAction("흐름도 보기")
+        self.a_flow_menu.setCheckable(True)
+        self.a_flow_menu.setChecked(self.flow_view_enabled)
+        self.a_flow_menu.triggered.connect(self.toggle_flow_view)
+        
         m_view.addSeparator()
+        
+        # 두 번째 세션: (항목 하이라이트, 시작/끝점)
         self.a_highlight = m_view.addAction("항목 하이라이트 켜기")
         self.a_highlight.setCheckable(True)
         self.a_highlight.setChecked(True)
         self.a_highlight.toggled.connect(self.toggle_highlighting)
         self.a_highlight.setShortcut("Ctrl+H")
-        # 보기 메뉴
-        self.a_flow_menu = m_view.addAction("흐름도 보기")
-        self.a_flow_menu.setCheckable(True)
-        self.a_flow_menu.setChecked(self.flow_view_enabled)
-        self.a_flow_menu.triggered.connect(self.toggle_flow_view)
+        
+        self.a_start_end_menu = m_view.addAction("시작/끝점 강조 표시")
+        self.a_start_end_menu.setCheckable(True)
+        self.a_start_end_menu.setChecked(self.style.flow_show_start_end)
+        self.a_start_end_menu.triggered.connect(self._toggle_show_start_end)
+        
         m_view.addSeparator()
+        
+        # 세 번째 세션: (화면맞춤, 고해상도 자동 재랜더, 현재 배율로 재랜더)
         a_fit = m_view.addAction("화면 맞춤")
         a_fit.triggered.connect(self.fit_to_window)
         self.a_auto_hi = m_view.addAction("고해상도 자동 재렌더")
@@ -2437,27 +2572,59 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.a_auto_hi.toggled.connect(self.set_auto_highres)
         a_rerender = m_view.addAction("현재 배율로 재렌더")
         a_rerender.triggered.connect(self.rerender_now)
+        
         m_view.addSeparator()
         a_shortcuts = m_view.addAction("단축키 보기...")
         a_shortcuts.triggered.connect(self.show_shortcut_help)
         m_mode = mb.addMenu("모드선택")
-        self.a_only = m_mode.addAction("Numbering Only")
+        
+        # 보기 모드
+        self.a_mode_view = m_mode.addAction("보기 모드")
+        self.a_mode_view.setCheckable(True)
+        self.a_mode_view.setChecked(self.active_mode == "view")
+        self.a_mode_view.triggered.connect(lambda: self._set_active_mode_from_action("view"))
+        
+        # 넘버링 모드 (서브메뉴) - 체크 가능한 액션으로 생성
+        self.a_mode_numbering_menu = m_mode.addAction("넘버링 모드")
+        self.a_mode_numbering_menu.setCheckable(True)
+        self.a_mode_numbering_menu.setChecked(self.active_mode == "numbering")
+        m_numbering_submenu = QtWidgets.QMenu("넘버링 모드", self)
+        self.a_mode_numbering_menu.setMenu(m_numbering_submenu)
+        self.a_only = m_numbering_submenu.addAction("넘버링 only")
         self.a_only.setCheckable(True)
-        self.a_inp = m_mode.addAction("Numbering + Input Demension")
+        self.a_inp = m_numbering_submenu.addAction("넘버링 + 치수입력")
         self.a_inp.setCheckable(True)
+        numbering_mode_group = QtGui.QActionGroup(self)
+        numbering_mode_group.setExclusive(True)
+        numbering_mode_group.addAction(self.a_only)
+        numbering_mode_group.addAction(self.a_inp)
+        self.a_only.setChecked(self.input_mode == "number_only")
+        self.a_inp.setChecked(self.input_mode == "with_input")
+        self.a_only.triggered.connect(lambda: self._set_numbering_mode("number_only"))
+        self.a_inp.triggered.connect(lambda: self._set_numbering_mode("with_input"))
+        
+        # 스탬프 모드
+        self.a_mode_stamp = m_mode.addAction("스탬프 모드")
+        self.a_mode_stamp.setCheckable(True)
+        self.a_mode_stamp.setChecked(self.active_mode == "stamp")
+        self.a_mode_stamp.triggered.connect(lambda: self._set_active_mode_from_action("stamp"))
+        
+        # 모드 선택 그룹 (보기, 넘버링, 스탬프 모드만)
         mode_group = QtGui.QActionGroup(self)
         mode_group.setExclusive(True)
-        mode_group.addAction(self.a_only)
-        mode_group.addAction(self.a_inp)
-        self.a_only.setChecked(True)
-        self.a_only.triggered.connect(lambda: self.set_input_mode("number_only"))
-        self.a_inp.triggered.connect(lambda: self.set_input_mode("with_input"))
-        m_opt = mb.addMenu("옵션")
-        a_start = m_opt.addAction("Set Start Number…")
+        mode_group.addAction(self.a_mode_view)
+        mode_group.addAction(self.a_mode_numbering_menu)
+        mode_group.addAction(self.a_mode_stamp)
+        m_edit = mb.addMenu("편집")
+        # 넘버링 설정을 편집 메뉴로 이동
+        a_num_settings = m_edit.addAction("넘버링 설정…")
+        a_num_settings.triggered.connect(self.open_numbering_settings)
+        m_edit.addSeparator()
+        a_start = m_edit.addAction("Set Start Number…")
         a_start.triggered.connect(self.set_start_number)
         # ▼▼▼ 여기에 '스탬프 이미지 관리' 메뉴를 추가합니다. ▼▼▼
-        m_opt.addSeparator()  # 구분선 추가 (선택사항)
-        a_manage_stamps_menu = m_opt.addAction("스탬프 이미지 관리…")
+        m_edit.addSeparator()  # 구분선 추가 (선택사항)
+        a_manage_stamps_menu = m_edit.addAction("스탬프 이미지 관리…")
         a_manage_stamps_menu.triggered.connect(self.open_stamp_manager)
         # ▲▲▲ 메뉴 추가 완료 ▲▲▲
         # Windows 메뉴 추가
@@ -2500,6 +2667,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.a_preview.setChecked(mode == "preview")
         if hasattr(self, "a_crosshair"):
             self.a_crosshair.setChecked(mode == "crosshair")
+        # 미리보기 버튼 체크 상태 업데이트
+        self._update_preview_button_visuals()
         if hasattr(self, "action_preview_toolbar"):
             self.action_preview_toolbar.setChecked(mode == "preview")
         if hasattr(self, "action_crosshair_toolbar"):
