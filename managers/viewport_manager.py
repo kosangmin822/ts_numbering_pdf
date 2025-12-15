@@ -284,6 +284,54 @@ class ViewportManager:
         except Exception as e:
             print(f"사용자 정의 뷰 적용 오류: {e}")
 
+    def align_view_to_dominant_axis(self):
+        """
+        현재 뷰 벡터를 가장 큰 절대값 축으로 스냅합니다.
+        - 거리(카메라-초점 거리)는 유지
+        - 방향 벡터는 (+/-1,0,0), (0,+/-1,0), (0,0,+/-1) 중 하나가 되도록 정렬
+        - 기울어짐 방지를 위해 up 벡터도 재설정
+        """
+        if not self.plotter:
+            return
+
+        try:
+            position = np.array(self.plotter.camera.position, dtype=float)
+            focal_point = np.array(self.plotter.camera.focal_point, dtype=float)
+
+            view_dir = focal_point - position
+            norm = np.linalg.norm(view_dir)
+            if norm == 0:
+                return
+
+            distance = norm  # 현재 거리 유지
+            view_dir_normalized = view_dir / norm
+
+            # 가장 큰 축만 남기고 나머지 0
+            max_axis = np.argmax(np.abs(view_dir_normalized))
+            aligned_dir = np.zeros(3, dtype=float)
+            aligned_dir[max_axis] = np.sign(view_dir_normalized[max_axis]) if view_dir_normalized[max_axis] != 0 else 1.0
+
+            # 새로운 카메라 위치 = 초점 - 정렬된 단위벡터 * 거리
+            new_position = focal_point - aligned_dir * distance
+            self.plotter.camera.position = new_position
+
+            # 기울어짐 방지를 위해 up 벡터를 축에 따라 설정
+            # z 방향(상/하)에서는 y+가 up, y 방향(정면/후면)에서는 z+를 up, x 방향(좌/우)에서는 z+를 up
+            if max_axis == 2:  # z
+                self.plotter.camera.up = [0, 1, 0]
+            elif max_axis == 1:  # y
+                self.plotter.camera.up = [0, 0, 1]
+            else:  # x
+                self.plotter.camera.up = [0, 0, 1]
+
+            # 렌더 및 뷰 정보 업데이트
+            self.plotter.render()
+            if hasattr(self.main_window, "update_view_info"):
+                self.main_window.update_view_info()
+
+        except Exception as e:
+            print(f"뷰 정렬 오류: {e}")
+
     def on_distance_slider_changed(self, value: int):
         """
         거리 슬라이더 값 변경 이벤트 처리

@@ -286,9 +286,8 @@ class UIManager:
         QtGui.QShortcut(
             QtGui.QKeySequence("F5"), self.main_window, activated=lambda: self.main_window.set_input_mode("number_only")
         )
-        QtGui.QShortcut(
-            QtGui.QKeySequence("F6"), self.main_window, activated=lambda: self.main_window.set_input_mode("with_input")
-        )
+        # F6: 뷰 정렬 (가장 큰 축만 남기고 나머지는 0으로 정렬)
+        QtGui.QShortcut(QtGui.QKeySequence("F6"), self.main_window, activated=self.main_window.align_view_axis)
         QtGui.QShortcut(
             QtGui.QKeySequence("Shift+F1"),
             self.main_window,

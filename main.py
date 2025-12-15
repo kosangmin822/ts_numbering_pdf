@@ -1140,6 +1140,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.viewport_manager.set_plotter(self.plotter)
         return self.viewport_manager.update_view_info()
 
+    def align_view_axis(self):
+        """뷰 정렬 단축키(F6): 가장 큰 축만 남기고 나머지 축을 0으로 정렬"""
+        if hasattr(self, "viewport_manager"):
+            self.viewport_manager.align_view_to_dominant_axis()
+
     def set_viewport(self, view_name):
         """뷰포트를 설정합니다. 3D 뷰어의 카메라 위치를 변경합니다. (ViewportManager로 위임)"""
         if hasattr(self, 'plotter'):
