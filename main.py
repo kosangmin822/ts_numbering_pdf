@@ -79,30 +79,40 @@ def _pil_to_qimage(pil_image_or_bitmap):
     if pil_image.mode != "RGB":
         pil_image = pil_image.convert("RGB")
     
-    # QImage를 먼저 생성하고 픽셀 데이터를 직접 복사하는 방식으로 변경
-    # 이렇게 하면 메모리 관리 문제를 피할 수 있습니다
     width, height = pil_image.size
-    qimage = QtGui.QImage(width, height, QtGui.QImage.Format_RGB888)
     
-    # 픽셀 데이터를 직접 복사
-    # PIL Image의 픽셀 데이터를 QImage로 복사
-    import numpy as np
+    # numpy를 사용한 빠른 변환 (가능한 경우)
     try:
-        # numpy를 사용한 빠른 변환
-        img_array = np.array(pil_image)
-        # RGB 순서를 유지하면서 QImage 형식으로 변환
-        for y in range(height):
-            for x in range(width):
-                r, g, b = img_array[y, x]
-                qimage.setPixel(x, y, (r << 16) | (g << 8) | b)
+        import numpy as np
+        # PIL Image를 numpy 배열로 변환
+        img_array = np.array(pil_image, dtype=np.uint8)
+        
+        # QImage는 RGB888 포맷을 사용하므로, RGB 순서를 그대로 사용
+        # 하지만 QImage는 바이트 순서가 다를 수 있으므로 안전하게 처리
+        # QImage 생성자에 바이트 데이터를 전달할 때는 데이터가 유지되어야 함
+        img_bytes = img_array.tobytes()
+        
+        # QImage 생성 - 바이트 데이터를 직접 사용하되, 메모리 안정성을 위해 bytes()로 복사
+        qimage = QtGui.QImage(bytes(img_bytes), width, height, QtGui.QImage.Format_RGB888)
+        
+        # QImage가 제대로 생성되었는지 확인
+        if qimage.isNull():
+            raise ValueError("QImage creation failed")
+        
+        return qimage
     except Exception:
-        # numpy가 없거나 실패한 경우 픽셀 단위로 복사
+        # numpy가 없거나 실패한 경우: QImage를 먼저 생성하고 픽셀 데이터를 복사
+        # 이 방법은 느리지만 안전합니다
+        qimage = QtGui.QImage(width, height, QtGui.QImage.Format_RGB888)
+        
+        # 픽셀 데이터를 직접 복사 (느리지만 정확함)
         for y in range(height):
             for x in range(width):
                 r, g, b = pil_image.getpixel((x, y))
+                # RGB888 포맷: R(16-23), G(8-15), B(0-7)
                 qimage.setPixel(x, y, (r << 16) | (g << 8) | b)
-    
-    return qimage
+        
+        return qimage
 
 
 def _pdfium_insert_pdf(target_doc, source_doc, from_page=0, to_page=None):
