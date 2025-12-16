@@ -5415,6 +5415,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             width = pm.width()
             height = pm.height()
             
+            print(f"[DEBUG] _save_pdf_with_labels: 페이지 {i} - Painter 작업 완료, QPixmap 크기={width}x{height}")
+            
             try:
                 # QPixmap을 임시 파일로 저장한 후 PIL Image로 로드
                 import tempfile
@@ -5425,12 +5427,18 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     tmp_path = tmp_file.name
                 
                 # QPixmap을 PNG로 저장
-                pm.save(tmp_path, 'PNG')
+                success = pm.save(tmp_path, 'PNG')
+                print(f"[DEBUG] _save_pdf_with_labels: QPixmap PNG 저장 {'성공' if success else '실패'}, 파일 크기={os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0} bytes")
+                
+                if not success or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+                    raise ValueError("QPixmap PNG 저장 실패")
                 
                 # PIL Image로 로드
                 pil_img = Image.open(tmp_path)
+                print(f"[DEBUG] _save_pdf_with_labels: PIL Image 로드 완료, 크기={pil_img.width}x{pil_img.height}, 모드={pil_img.mode}")
                 if pil_img.mode != "RGB":
                     pil_img = pil_img.convert("RGB")
+                    print(f"[DEBUG] _save_pdf_with_labels: RGB로 변환 완료")
                 
                 os.unlink(tmp_path)
                 
