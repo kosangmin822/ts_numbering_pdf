@@ -5312,6 +5312,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 _pdfium_insert_pdf(out_doc, self.doc, from_page=i, to_page=i)
                 continue
             # --- 넘버링이나 스탬프가 있는 페이지는 이미지로 변환하여 처리 ---
+            # 원본 PDF 페이지 크기 가져오기 (포인트 단위)
+            page_width_pt = src_page.get_width()
+            page_height_pt = src_page.get_height()
+            
             zoom = self.render_scale * 2
             # pypdfium2의 render()는 PdfBitmap을 반환합니다
             bitmap = src_page.render(scale=zoom)
@@ -5491,26 +5495,28 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     else:
                         print(f"[DEBUG] _save_pdf_with_labels: 경고 - 임시 PDF에 페이지가 없음")
                     os.unlink(pdf_tmp_path)
-                except ImportError:
+                except ImportError as e:
+                    import traceback
+                    print(f"[DEBUG] _save_pdf_with_labels: reportlab ImportError: {e}")
+                    traceback.print_exc()
                     # reportlab이 없으면 빈 페이지 생성
-                    img_page = out_doc.new_page(width=width_pt, height=height_pt)
-                    os.unlink(pdf_tmp_path)
+                    img_page = out_doc.new_page(width=page_width_pt, height=page_height_pt)
+                    if os.path.exists(pdf_tmp_path):
+                        os.unlink(pdf_tmp_path)
                 except Exception as e:
                     import traceback
-                    print(f"_save_pdf_with_labels: PDF 변환 실패: {e}")
+                    print(f"[DEBUG] _save_pdf_with_labels: PDF 변환 실패: {e}")
                     traceback.print_exc()
                     # 실패 시 빈 페이지 생성
-                    img_page = out_doc.new_page(width=width_pt, height=height_pt)
+                    img_page = out_doc.new_page(width=page_width_pt, height=page_height_pt)
                     if os.path.exists(pdf_tmp_path):
                         os.unlink(pdf_tmp_path)
             except Exception as e:
                 import traceback
-                print(f"_save_pdf_with_labels: 이미지 처리 실패: {e}")
+                print(f"[DEBUG] _save_pdf_with_labels: 이미지 처리 실패: {e}")
                 traceback.print_exc()
                 # 변환 실패 시 빈 페이지 생성 (원본 페이지 크기 사용)
                 try:
-                    page_width_pt = src_page.get_width()
-                    page_height_pt = src_page.get_height()
                     img_page = out_doc.new_page(width=page_width_pt, height=page_height_pt)
                 except:
                     img_page = out_doc.new_page(width=width, height=height)
