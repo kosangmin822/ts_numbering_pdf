@@ -3033,18 +3033,38 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 self._update_window_title()
 
     def _close_current_doc(self):
-        self.clear_highlight()
-        self.scene.clear()
+        """현재 문서를 닫고 관련 상태를 초기화합니다."""
+        try:
+            self.clear_highlight()
+        except Exception as e:
+            print(f"_close_current_doc: clear_highlight 오류: {e}")
+        
+        # scene이 존재하는지 확인 후 clear
+        if hasattr(self, 'scene') and self.scene is not None:
+            try:
+                self.scene.clear()
+            except Exception as e:
+                print(f"_close_current_doc: scene.clear() 오류: {e}")
+        
         self._preview_ellipse = None
         self._preview_text = None
+        
         try:
             if self.doc is not None:
                 self.doc.close()
-        except:
-            pass
+        except Exception as e:
+            print(f"_close_current_doc: doc.close() 오류: {e}")
+        
         self.doc = None
-        self._update_page_navigation_ui()  # <-- 이 줄을 추가하세요
-        self._clear_thumbnails()  # <-- 이 줄을 추가하세요
+        try:
+            self._update_page_navigation_ui()
+        except Exception as e:
+            print(f"_close_current_doc: _update_page_navigation_ui 오류: {e}")
+        
+        try:
+            self._clear_thumbnails()
+        except Exception as e:
+            print(f"_close_current_doc: _clear_thumbnails 오류: {e}")
 
     def _reset_all_tables(self):
         """넘버링 테이블과 스탬프 테이블을 모두 초기화합니다."""
@@ -3457,29 +3477,42 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
     def import_pdf_from_path(self, path):
         # 이 함수는 이제 '새 집을 짓는' 역할에만 집중합니다.
+        print(f"[DEBUG] import_pdf_from_path 시작: path={path}")
+        print(f"[DEBUG] import_pdf_from_path: scene 존재={hasattr(self, 'scene')}, view 존재={hasattr(self, 'view')}")
+        
         try:
+            print(f"[DEBUG] import_pdf_from_path: pdfium.PdfDocument 호출 전")
             self.doc = pdfium.PdfDocument(path)
+            print(f"[DEBUG] import_pdf_from_path: PDF 열기 성공, 페이지 수={len(self.doc)}")
         except Exception as e:
+            import traceback
+            print(f"[DEBUG] import_pdf_from_path: PDF 열기 오류: {e}")
+            traceback.print_exc()
             _log_error(self, "PDF 열기 오류", e)
             self.doc = None  # 오류 시 doc 객체 확실히 비우기
             self._update_page_navigation_ui()
             self._clear_thumbnails()
             return
+        
         # ▼▼▼ [핵심 수정] 페이지 수와 상관없이 항상 넘버링 방식을 물어봅니다. ▼▼▼
+        print(f"[DEBUG] import_pdf_from_path: NumberingModeDialog 표시 전")
         dialog = NumberingModeDialog(self)
         if dialog.exec():
             self.numbering_mode = dialog.choice
+            print(f"[DEBUG] import_pdf_from_path: 넘버링 모드 선택됨: {self.numbering_mode}")
         else:
+            print(f"[DEBUG] import_pdf_from_path: 넘버링 모드 선택 취소")
             # 사용자가 넘버링 방식 선택을 취소하면, 문서 로드를 중단합니다.
             self._close_current_doc()
             return
         # ▲▲▲ 여기까지 수정 ▲▲▲
+        
         try:
             if hasattr(self, "cb_separate_numbering"):
                 self.cb_separate_numbering.setChecked(self.numbering_mode == "page_specific")
                 self.cb_separate_numbering.setEnabled(False)  # 한번 선택하면 프로젝트 내에서 변경 불가
         except Exception as e:
-            print(f"체크박스 설정 오류: {e}")
+            print(f"[DEBUG] 체크박스 설정 오류: {e}")
         
         # 새 PDF의 정보를 기반으로 프로젝트 기본 정보 설정
         if not self.project_name:
@@ -3488,12 +3521,15 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.pdf_path = path
         self.cur_page_index = 0
         self._set_dirty(True)
+        print(f"[DEBUG] import_pdf_from_path: 프로젝트 정보 설정 완료, load_page 호출 전")
         
         try:
+            print(f"[DEBUG] import_pdf_from_path: load_page({self.cur_page_index}) 호출")
             self.load_page(self.cur_page_index)
+            print(f"[DEBUG] import_pdf_from_path: load_page 완료")
         except Exception as e:
             import traceback
-            print(f"import_pdf_from_path - load_page 오류: {e}")
+            print(f"[DEBUG] import_pdf_from_path - load_page 오류: {e}")
             traceback.print_exc()
             _log_error(self, "PDF 페이지 로드 오류", e)
             self._close_current_doc()
@@ -3502,13 +3538,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         try:
             self._populate_thumbnails()
         except Exception as e:
+            print(f"[DEBUG] 썸네일 생성 오류: {e}")
             _log_error(self, "썸네일 생성 오류", e)
             # 썸네일 오류는 치명적이지 않으므로 계속 진행
         
         try:
             self._update_window_title()
         except Exception as e:
-            print(f"윈도우 제목 업데이트 오류: {e}")
+            print(f"[DEBUG] 윈도우 제목 업데이트 오류: {e}")
+        
+        print(f"[DEBUG] import_pdf_from_path: 모든 작업 완료")
 
     def _render_factor_for_scale(self, s: float) -> int:
         return 2 if s < 1.6 else (4 if s < 3.2 else 6)
@@ -3537,36 +3576,50 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # --- 수정 끝 ---
 
     def load_page(self, index: int):
+        print(f"[DEBUG] load_page 시작: index={index}, doc 존재={self.doc is not None}")
+        
         if not self.doc:
-            return
-        # scene과 view가 제대로 초기화되었는지 확인
-        if not hasattr(self, 'scene') or self.scene is None:
-            print("오류: scene이 초기화되지 않았습니다.")
-            return
-        if not hasattr(self, 'view') or self.view is None:
-            print("오류: view가 초기화되지 않았습니다.")
+            print(f"[DEBUG] load_page: doc이 None이므로 종료")
             return
         
+        # scene과 view가 제대로 초기화되었는지 확인
+        if not hasattr(self, 'scene') or self.scene is None:
+            print(f"[DEBUG] load_page 오류: scene이 초기화되지 않았습니다.")
+            return
+        if not hasattr(self, 'view') or self.view is None:
+            print(f"[DEBUG] load_page 오류: view가 초기화되지 않았습니다.")
+            return
+        
+        print(f"[DEBUG] load_page: scene/view 검증 완료, 페이지 로드 시작")
+        
         try:
+            print(f"[DEBUG] load_page: 인덱스 계산 전, len(doc)={len(self.doc)}")
             index = max(0, min(index, len(self.doc) - 1))
             self.cur_page_index = index
+            print(f"[DEBUG] load_page: get_page 호출 전, index={index}")
             page = self.doc.get_page(index)
+            print(f"[DEBUG] load_page: get_page 완료, render 호출 전, scale={self.render_scale}")
             # pypdfium2의 render()는 PdfBitmap을 반환합니다
             bitmap = page.render(scale=self.render_scale)
+            print(f"[DEBUG] load_page: render 완료, _pil_to_qimage 호출 전")
             img = _pil_to_qimage(bitmap)
+            print(f"[DEBUG] load_page: _pil_to_qimage 완료, QPixmap.fromImage 호출 전")
             # img.copy() 대신 직접 변환 (copy()가 문제를 일으킬 수 있음)
             pm = QtGui.QPixmap.fromImage(img)
+            print(f"[DEBUG] load_page: QPixmap.fromImage 완료, isNull={pm.isNull()}, size={pm.width()}x{pm.height()}")
             # pm이 유효한지 확인
             if pm.isNull():
-                print(f"오류: QPixmap 생성 실패 (페이지 {index})")
+                print(f"[DEBUG] load_page 오류: QPixmap 생성 실패 (페이지 {index})")
                 _log_error(self, "페이지 이미지 생성 실패", Exception("QPixmap이 null입니다"))
                 return
         except Exception as e:
             import traceback
-            print(f"load_page 오류: {e}")
+            print(f"[DEBUG] load_page 오류: {e}")
             traceback.print_exc()
             _log_error(self, "페이지 로드 오류", e)
             return
+        
+        print(f"[DEBUG] load_page: 이미지 생성 완료, scene 업데이트 시작")
         
         try:
             self.scene.clear()
