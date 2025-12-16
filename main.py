@@ -5433,14 +5433,27 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 if not success or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
                     raise ValueError("QPixmap PNG 저장 실패")
                 
-                # PIL Image로 로드
-                pil_img = Image.open(tmp_path)
-                print(f"[DEBUG] _save_pdf_with_labels: PIL Image 로드 완료, 크기={pil_img.width}x{pil_img.height}, 모드={pil_img.mode}")
-                if pil_img.mode != "RGB":
-                    pil_img = pil_img.convert("RGB")
-                    print(f"[DEBUG] _save_pdf_with_labels: RGB로 변환 완료")
+                # PIL Image로 로드하고 즉시 메모리로 복사 (파일 핸들 해제)
+                with Image.open(tmp_path) as img:
+                    print(f"[DEBUG] _save_pdf_with_labels: PIL Image 로드 완료, 크기={img.width}x{img.height}, 모드={img.mode}")
+                    if img.mode != "RGB":
+                        pil_img = img.convert("RGB")
+                        print(f"[DEBUG] _save_pdf_with_labels: RGB로 변환 완료")
+                    else:
+                        # 메모리로 복사하여 파일 핸들 해제
+                        pil_img = img.copy()
                 
-                os.unlink(tmp_path)
+                # 파일 핸들이 해제된 후 삭제
+                try:
+                    os.unlink(tmp_path)
+                except PermissionError:
+                    # Windows에서 파일이 아직 사용 중일 수 있으므로 잠시 대기 후 재시도
+                    import time
+                    time.sleep(0.1)
+                    try:
+                        os.unlink(tmp_path)
+                    except:
+                        pass  # 삭제 실패해도 계속 진행
                 
                 # PIL Image를 PDF 페이지로 변환
                 # 렌더링된 이미지 크기를 그대로 사용 (원본 PyMuPDF 방식)
