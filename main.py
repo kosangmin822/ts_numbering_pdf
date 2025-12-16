@@ -67,8 +67,14 @@ DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
 # =====================================================================
 #  pypdfium2 헬퍼 함수
 # =====================================================================
-def _pil_to_qimage(pil_image):
-    """PIL Image를 QImage로 변환합니다."""
+def _pil_to_qimage(pil_image_or_bitmap):
+    """PIL Image 또는 PdfBitmap을 QImage로 변환합니다."""
+    # pypdfium2의 PdfBitmap인 경우 PIL Image로 변환
+    if hasattr(pil_image_or_bitmap, 'to_pil'):
+        pil_image = pil_image_or_bitmap.to_pil()
+    else:
+        pil_image = pil_image_or_bitmap
+    
     # PIL Image를 RGB 모드로 변환
     if pil_image.mode != "RGB":
         pil_image = pil_image.convert("RGB")
@@ -3493,8 +3499,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.pdf_path = path
         self.cur_page_index = 0
         self._set_dirty(True)
-        self.load_page(self.cur_page_index)
-        self._populate_thumbnails()
+        try:
+            self.load_page(self.cur_page_index)
+            self._populate_thumbnails()
+        except Exception as e:
+            _log_error(self, "PDF 페이지 로드 오류", e)
+            self._close_current_doc()
+            return
         self._update_window_title()
 
     def _render_factor_for_scale(self, s: float) -> int:
@@ -3526,13 +3537,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def load_page(self, index: int):
         if not self.doc:
             return
-        index = max(0, min(index, len(self.doc) - 1))
-        self.cur_page_index = index
-        page = self.doc.get_page(index)
-        # pypdfium2의 render()는 PIL Image를 반환합니다
-        pil_img = page.render(scale=self.render_scale)
-        img = _pil_to_qimage(pil_img)
-        pm = QtGui.QPixmap.fromImage(img.copy())
+        try:
+            index = max(0, min(index, len(self.doc) - 1))
+            self.cur_page_index = index
+            page = self.doc.get_page(index)
+            # pypdfium2의 render()는 PdfBitmap을 반환합니다
+            bitmap = page.render(scale=self.render_scale)
+            img = _pil_to_qimage(bitmap)
+            pm = QtGui.QPixmap.fromImage(img.copy())
+        except Exception as e:
+            _log_error(self, "페이지 로드 오류", e)
+            return
         self.scene.clear()
         # ▼▼▼ [결정적 수정] 파괴된 객체에 대한 참조를 여기서 모두 초기화합니다. ▼▼▼
         self._preview_ellipse = None
