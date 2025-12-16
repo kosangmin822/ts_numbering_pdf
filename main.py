@@ -5312,11 +5312,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 _pdfium_insert_pdf(out_doc, self.doc, from_page=i, to_page=i)
                 continue
             # --- 넘버링이나 스탬프가 있는 페이지는 이미지로 변환하여 처리 ---
-            # 원본 PDF 페이지 크기 가져오기 (포인트 단위)
-            # pypdfium2에서는 get_width()와 get_height()를 사용
-            page_width_pt = src_page.get_width()
-            page_height_pt = src_page.get_height()
-            
             zoom = self.render_scale * 2
             # pypdfium2의 render()는 PdfBitmap을 반환합니다
             bitmap = src_page.render(scale=zoom)
@@ -5362,7 +5357,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 2. 넘버링 그리기 (기존 로직 복원)
             for it in sorted(items_on_this_page, key=lambda item: item.no):
                 style = it.custom_style if it.custom_style else self.style
-                img_point = self.pdf_to_view(it.pdf_point[0], it.pdf_point[1]) * 2
+                # pdf_to_view는 render_scale을 곱하므로, zoom(render_scale * 2)에 맞추려면 * 2를 추가
+                # 하지만 실제로는 zoom 배율로 렌더링했으므로 pdf_to_view 결과에 zoom/render_scale을 곱해야 함
+                img_point = self.pdf_to_view(it.pdf_point[0], it.pdf_point[1]) * (zoom / self.render_scale)
                 pen = QtGui.QPen(style.stroke_color)
                 pen.setWidth(style.stroke_width * 2)
                 painter.setPen(pen)
@@ -5405,7 +5402,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 )
                 # ▲▲▲ 스케일 계산 완료 ▲▲▲
                 painter.save()
-                img_point_stamp = self.pdf_to_view(st.pdf_point[0], st.pdf_point[1]) * 2
+                img_point_stamp = self.pdf_to_view(st.pdf_point[0], st.pdf_point[1]) * (zoom / self.render_scale)
                 painter.setOpacity(st.opacity)
                 painter.translate(img_point_stamp)
                 painter.rotate(st.rotation)
@@ -5438,14 +5435,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 os.unlink(tmp_path)
                 
                 # PIL Image를 PDF 페이지로 변환
-                # 원본 PDF 페이지 크기를 사용 (포인트 단위)
-                # 렌더링된 이미지 크기를 원본 페이지 크기에 맞게 스케일링
-                img_width = pil_img.width
-                img_height = pil_img.height
-                
-                # 원본 페이지 크기와 렌더링된 이미지 크기의 비율 계산
-                scale_x = page_width_pt / img_width
-                scale_y = page_height_pt / img_height
+                # 렌더링된 이미지 크기를 그대로 사용 (원본 PyMuPDF 방식)
+                # DPI 72 기준: 1 픽셀 = 1 포인트
+                width_pt = width
+                height_pt = height
                 
                 # 임시 PDF로 변환 후 import
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
@@ -5455,11 +5448,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     from reportlab.pdfgen import canvas
                     from reportlab.lib.utils import ImageReader
                     
-                    # 원본 페이지 크기로 PDF 생성
-                    c = canvas.Canvas(pdf_tmp_path, pagesize=(page_width_pt, page_height_pt))
+                    # 렌더링된 이미지 크기로 PDF 생성
+                    c = canvas.Canvas(pdf_tmp_path, pagesize=(width_pt, height_pt))
                     img_reader = ImageReader(pil_img)
-                    # 이미지를 원본 페이지 크기에 맞게 그리기
-                    c.drawImage(img_reader, 0, 0, width=page_width_pt, height=page_height_pt)
+                    # 이미지를 렌더링된 크기 그대로 그리기
+                    c.drawImage(img_reader, 0, 0, width=width_pt, height=height_pt)
                     c.save()
                     
                     # 변환된 PDF를 읽어서 페이지 import
@@ -5470,22 +5463,27 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     os.unlink(pdf_tmp_path)
                 except ImportError:
                     # reportlab이 없으면 빈 페이지 생성
-                    img_page = out_doc.new_page(width=page_width_pt, height=page_height_pt)
+                    img_page = out_doc.new_page(width=width_pt, height=height_pt)
                     os.unlink(pdf_tmp_path)
                 except Exception as e:
                     import traceback
                     print(f"_save_pdf_with_labels: PDF 변환 실패: {e}")
                     traceback.print_exc()
                     # 실패 시 빈 페이지 생성
-                    img_page = out_doc.new_page(width=page_width_pt, height=page_height_pt)
+                    img_page = out_doc.new_page(width=width_pt, height=height_pt)
                     if os.path.exists(pdf_tmp_path):
                         os.unlink(pdf_tmp_path)
             except Exception as e:
                 import traceback
                 print(f"_save_pdf_with_labels: 이미지 처리 실패: {e}")
                 traceback.print_exc()
-                # 변환 실패 시 빈 페이지 생성
-                img_page = out_doc.new_page(width=width, height=height)
+                # 변환 실패 시 빈 페이지 생성 (원본 페이지 크기 사용)
+                try:
+                    page_width_pt = src_page.get_width()
+                    page_height_pt = src_page.get_height()
+                    img_page = out_doc.new_page(width=page_width_pt, height=page_height_pt)
+                except:
+                    img_page = out_doc.new_page(width=width, height=height)
         if len(out_doc) > 0:
             out_doc.save(path)
         out_doc.close()
