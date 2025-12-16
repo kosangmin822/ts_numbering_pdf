@@ -5313,10 +5313,38 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 continue
             # --- 넘버링이나 스탬프가 있는 페이지는 이미지로 변환하여 처리 ---
             zoom = self.render_scale * 2
-            # pypdfium2의 render()는 scale 파라미터를 사용합니다
-            pil_img = src_page.render(scale=zoom)
-            img = _pil_to_qimage(pil_img)
-            pm = QtGui.QPixmap.fromImage(img)
+            # pypdfium2의 render()는 PdfBitmap을 반환합니다
+            bitmap = src_page.render(scale=zoom)
+            
+            # PIL Image를 임시 파일로 저장한 후 QPixmap으로 로드 (크래시 방지)
+            import tempfile
+            import os
+            from PIL import Image
+            
+            try:
+                # PdfBitmap을 PIL Image로 변환
+                pil_image = bitmap.to_pil()
+                if pil_image.mode != "RGB":
+                    pil_image = pil_image.convert("RGB")
+                
+                # 임시 파일에 PIL Image를 직접 저장
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                    tmp_path = tmp_file.name
+                pil_image.save(tmp_path, 'PNG')
+                
+                # QPixmap으로 직접 로드 (QImage 완전히 우회)
+                pm = QtGui.QPixmap(tmp_path)
+                os.unlink(tmp_path)
+                
+                if pm.isNull():
+                    raise ValueError("QPixmap is null")
+            except Exception as e:
+                import traceback
+                print(f"_save_pdf_with_labels: 이미지 변환 실패: {e}")
+                traceback.print_exc()
+                # 실패 시 빈 페이지 생성
+                _pdfium_insert_pdf(out_doc, self.doc, from_page=i, to_page=i)
+                continue
             painter = QtGui.QPainter(pm)
             painter.setRenderHint(QtGui.QPainter.Antialiasing)
             # 1. 흐름도 그리기 (기존 로직 복원)
@@ -5380,52 +5408,69 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 painter.drawPixmap(offset, scaled_pixmap)  # 스케일된 pixmap을 사용
                 painter.restore()
             painter.end()
-            # 이미지 데이터를 PDF 페이지로 변환
-            buffer = QtCore.QBuffer()
-            buffer.open(QtCore.QIODevice.ReadWrite)
-            pm.save(buffer, "PNG")
-            image_bytes = bytes(buffer.data())
-            buffer.close()
-            # QPixmap을 PIL Image로 변환
-            qimg = pm.toImage()
-            width = qimg.width()
-            height = qimg.height()
-            # QImage를 numpy array로 변환
-            ptr = qimg.constBits()
-            if ptr:
-                ptr.setsize(qimg.byteCount())
-                arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 4))  # RGBA
-                pil_img = Image.fromarray(arr[:, :, :3])  # RGB만 사용
+            
+            # QPixmap을 PIL Image로 변환 (안전한 방법)
+            width = pm.width()
+            height = pm.height()
+            
+            try:
+                # QPixmap을 임시 파일로 저장한 후 PIL Image로 로드
+                import tempfile
+                import os
+                from PIL import Image
+                
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                    tmp_path = tmp_file.name
+                
+                # QPixmap을 PNG로 저장
+                pm.save(tmp_path, 'PNG')
+                
+                # PIL Image로 로드
+                pil_img = Image.open(tmp_path)
+                if pil_img.mode != "RGB":
+                    pil_img = pil_img.convert("RGB")
+                
+                os.unlink(tmp_path)
                 
                 # PIL Image를 PDF 페이지로 변환 (포인트 단위: 1 픽셀 = 1 포인트, DPI 72 기준)
                 width_pt = width
                 height_pt = height
                 
                 # 임시 PDF로 변환 후 import
-                import tempfile
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                    tmp_path = tmp_file.name
+                    pdf_tmp_path = tmp_file.name
                 
                 try:
                     from reportlab.pdfgen import canvas
                     from reportlab.lib.utils import ImageReader
                     
-                    c = canvas.Canvas(tmp_path, pagesize=(width_pt, height_pt))
+                    c = canvas.Canvas(pdf_tmp_path, pagesize=(width_pt, height_pt))
                     img_reader = ImageReader(pil_img)
                     c.drawImage(img_reader, 0, 0, width=width_pt, height=height_pt)
                     c.save()
                     
                     # 변환된 PDF를 읽어서 페이지 import
-                    img_doc = pdfium.PdfDocument(tmp_path)
+                    img_doc = pdfium.PdfDocument(pdf_tmp_path)
                     if len(img_doc) > 0:
                         out_doc.import_pages(img_doc, pages=[0])
                         img_doc.close()
-                    os.unlink(tmp_path)
+                    os.unlink(pdf_tmp_path)
                 except ImportError:
                     # reportlab이 없으면 빈 페이지 생성
                     img_page = out_doc.new_page(width=width_pt, height=height_pt)
-                    os.unlink(tmp_path)
-            else:
+                    os.unlink(pdf_tmp_path)
+                except Exception as e:
+                    import traceback
+                    print(f"_save_pdf_with_labels: PDF 변환 실패: {e}")
+                    traceback.print_exc()
+                    # 실패 시 빈 페이지 생성
+                    img_page = out_doc.new_page(width=width_pt, height=height_pt)
+                    if os.path.exists(pdf_tmp_path):
+                        os.unlink(pdf_tmp_path)
+            except Exception as e:
+                import traceback
+                print(f"_save_pdf_with_labels: 이미지 처리 실패: {e}")
+                traceback.print_exc()
                 # 변환 실패 시 빈 페이지 생성
                 img_page = out_doc.new_page(width=width, height=height)
         if len(out_doc) > 0:
