@@ -3606,56 +3606,58 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             print(f"[DEBUG] load_page: get_page 완료, render 호출 전, scale={self.render_scale}")
             # pypdfium2의 render()는 PdfBitmap을 반환합니다
             bitmap = page.render(scale=self.render_scale)
-            print(f"[DEBUG] load_page: render 완료, _pil_to_qimage 호출 전")
-            img = _pil_to_qimage(bitmap)
-            print(f"[DEBUG] load_page: _pil_to_qimage 완료, QImage 유효성 검사 시작")
-            # QImage 유효성 검사
-            if img.isNull():
-                print(f"[DEBUG] load_page 오류: QImage가 null입니다 (페이지 {index})")
-                _log_error(self, "페이지 이미지 생성 실패", Exception("QImage가 null입니다"))
-                return
+            print(f"[DEBUG] load_page: render 완료, PIL Image 변환 시작")
             
-            print(f"[DEBUG] load_page: QImage 유효, size={img.width()}x{img.height()}, format={img.format()}")
-            
-            # QPixmap.fromImage 호출
-            # 특정 PDF에서 크래시가 발생하므로 QImage 변환을 우회하고 임시 파일 사용
+            # QImage를 완전히 우회하고 PIL Image를 직접 임시 파일로 저장
             pm = None
-            
-            # 방법 1: 임시 파일을 통한 변환 (가장 안전 - QImage 변환을 완전히 우회)
             try:
                 import tempfile
                 import os
-                print(f"[DEBUG] load_page: 방법 1 시도 - 임시 파일을 통한 변환 (QImage 우회)")
+                from PIL import Image
+                
+                # PdfBitmap을 PIL Image로 변환
+                pil_image = bitmap.to_pil()
+                if pil_image.mode != "RGB":
+                    pil_image = pil_image.convert("RGB")
+                
+                print(f"[DEBUG] load_page: PIL Image 생성 완료, 임시 파일 저장 시작")
+                # 임시 파일에 PIL Image를 직접 저장
                 with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
                     tmp_path = tmp_file.name
-                img.save(tmp_path, 'PNG')
+                pil_image.save(tmp_path, 'PNG')
+                print(f"[DEBUG] load_page: 임시 파일 저장 완료, QPixmap 로드 시작")
+                
+                # QPixmap으로 직접 로드 (QImage 완전히 우회)
                 pm = QtGui.QPixmap(tmp_path)
                 os.unlink(tmp_path)
+                
                 if not pm.isNull():
-                    print(f"[DEBUG] load_page: 방법 1 성공, size={pm.width()}x{pm.height()}")
+                    print(f"[DEBUG] load_page: QPixmap 로드 성공, size={pm.width()}x{pm.height()}")
                 else:
                     raise ValueError("QPixmap is null")
             except Exception as e:
                 import traceback
-                print(f"[DEBUG] load_page: 방법 1 실패: {e}")
+                print(f"[DEBUG] load_page: PIL Image 임시 파일 방법 실패: {e}")
                 traceback.print_exc()
                 pm = None
-            
-            # 방법 2: QImage를 복사한 후 변환 (QImage 변환 시도)
-            if pm is None or pm.isNull():
+                
+                # 대체 방법: QImage를 통한 변환 시도
                 try:
-                    print(f"[DEBUG] load_page: 방법 2 시도 - QImage 복사 후 변환")
-                    img_copy = img.copy()
-                    pm = QtGui.QPixmap.fromImage(img_copy)
+                    print(f"[DEBUG] load_page: 대체 방법 시도 - QImage를 통한 변환")
+                    img = _pil_to_qimage(bitmap)
+                    if img.isNull():
+                        raise ValueError("QImage is null")
+                    pm = QtGui.QPixmap.fromImage(img)
                     if not pm.isNull():
-                        print(f"[DEBUG] load_page: 방법 2 성공, size={pm.width()}x{pm.height()}")
+                        print(f"[DEBUG] load_page: 대체 방법 성공, size={pm.width()}x{pm.height()}")
                     else:
                         raise ValueError("QPixmap is null")
-                except Exception as e:
+                except Exception as e2:
                     import traceback
-                    print(f"[DEBUG] load_page: 방법 2 실패: {e}")
+                    print(f"[DEBUG] load_page: 대체 방법도 실패: {e2}")
                     traceback.print_exc()
-                    pm = None
+                    _log_error(self, "페이지 이미지 변환 실패", e2)
+                    return
             
             # 최종 검증
             if pm is None or pm.isNull():
