@@ -3618,15 +3618,19 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             print(f"[DEBUG] load_page: QImage 유효, size={img.width()}x{img.height()}, format={img.format()}")
             
             # QPixmap.fromImage 호출
-            # 특정 PDF에서 크래시가 발생하므로 가장 안전한 방법 사용
+            # 특정 PDF에서 크래시가 발생하므로 QImage 변환을 우회하고 임시 파일 사용
             pm = None
             
-            # 방법 1: QImage를 ARGB32 포맷으로 변환 후 복사하여 변환 (가장 안전)
+            # 방법 1: 임시 파일을 통한 변환 (가장 안전 - QImage 변환을 완전히 우회)
             try:
-                print(f"[DEBUG] load_page: 방법 1 시도 - ARGB32 변환 후 복사")
-                img_argb = img.convertToFormat(QtGui.QImage.Format_ARGB32)
-                img_argb_copy = img_argb.copy()
-                pm = QtGui.QPixmap.fromImage(img_argb_copy)
+                import tempfile
+                import os
+                print(f"[DEBUG] load_page: 방법 1 시도 - 임시 파일을 통한 변환 (QImage 우회)")
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                    tmp_path = tmp_file.name
+                img.save(tmp_path, 'PNG')
+                pm = QtGui.QPixmap(tmp_path)
+                os.unlink(tmp_path)
                 if not pm.isNull():
                     print(f"[DEBUG] load_page: 방법 1 성공, size={pm.width()}x{pm.height()}")
                 else:
@@ -3637,7 +3641,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 traceback.print_exc()
                 pm = None
             
-            # 방법 2: 원본 QImage를 복사한 후 변환
+            # 방법 2: QImage를 복사한 후 변환 (QImage 변환 시도)
             if pm is None or pm.isNull():
                 try:
                     print(f"[DEBUG] load_page: 방법 2 시도 - QImage 복사 후 변환")
@@ -3652,28 +3656,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     print(f"[DEBUG] load_page: 방법 2 실패: {e}")
                     traceback.print_exc()
                     pm = None
-            
-            # 방법 3: 임시 파일을 통한 변환 (최후의 수단)
-            if pm is None or pm.isNull():
-                try:
-                    import tempfile
-                    import os
-                    print(f"[DEBUG] load_page: 방법 3 시도 - 임시 파일을 통한 변환")
-                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
-                        tmp_path = tmp_file.name
-                    img.save(tmp_path, 'PNG')
-                    pm = QtGui.QPixmap(tmp_path)
-                    os.unlink(tmp_path)
-                    if not pm.isNull():
-                        print(f"[DEBUG] load_page: 방법 3 성공, size={pm.width()}x{pm.height()}")
-                    else:
-                        raise ValueError("QPixmap is null")
-                except Exception as e:
-                    import traceback
-                    print(f"[DEBUG] load_page: 방법 3도 실패: {e}")
-                    traceback.print_exc()
-                    _log_error(self, "페이지 이미지 변환 실패", e)
-                    return
             
             # 최종 검증
             if pm is None or pm.isNull():
