@@ -5312,6 +5312,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 _pdfium_insert_pdf(out_doc, self.doc, from_page=i, to_page=i)
                 continue
             # --- 넘버링이나 스탬프가 있는 페이지는 이미지로 변환하여 처리 ---
+            # 원본 PDF 페이지 크기 가져오기 (포인트 단위)
+            page_rect = src_page.get_rect()
+            page_width_pt = page_rect.width
+            page_height_pt = page_rect.height
+            
             zoom = self.render_scale * 2
             # pypdfium2의 render()는 PdfBitmap을 반환합니다
             bitmap = src_page.render(scale=zoom)
@@ -5432,9 +5437,15 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 
                 os.unlink(tmp_path)
                 
-                # PIL Image를 PDF 페이지로 변환 (포인트 단위: 1 픽셀 = 1 포인트, DPI 72 기준)
-                width_pt = width
-                height_pt = height
+                # PIL Image를 PDF 페이지로 변환
+                # 원본 PDF 페이지 크기를 사용 (포인트 단위)
+                # 렌더링된 이미지 크기를 원본 페이지 크기에 맞게 스케일링
+                img_width = pil_img.width
+                img_height = pil_img.height
+                
+                # 원본 페이지 크기와 렌더링된 이미지 크기의 비율 계산
+                scale_x = page_width_pt / img_width
+                scale_y = page_height_pt / img_height
                 
                 # 임시 PDF로 변환 후 import
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
@@ -5444,9 +5455,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     from reportlab.pdfgen import canvas
                     from reportlab.lib.utils import ImageReader
                     
-                    c = canvas.Canvas(pdf_tmp_path, pagesize=(width_pt, height_pt))
+                    # 원본 페이지 크기로 PDF 생성
+                    c = canvas.Canvas(pdf_tmp_path, pagesize=(page_width_pt, page_height_pt))
                     img_reader = ImageReader(pil_img)
-                    c.drawImage(img_reader, 0, 0, width=width_pt, height=height_pt)
+                    # 이미지를 원본 페이지 크기에 맞게 그리기
+                    c.drawImage(img_reader, 0, 0, width=page_width_pt, height=page_height_pt)
                     c.save()
                     
                     # 변환된 PDF를 읽어서 페이지 import
@@ -5457,14 +5470,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     os.unlink(pdf_tmp_path)
                 except ImportError:
                     # reportlab이 없으면 빈 페이지 생성
-                    img_page = out_doc.new_page(width=width_pt, height=height_pt)
+                    img_page = out_doc.new_page(width=page_width_pt, height=page_height_pt)
                     os.unlink(pdf_tmp_path)
                 except Exception as e:
                     import traceback
                     print(f"_save_pdf_with_labels: PDF 변환 실패: {e}")
                     traceback.print_exc()
                     # 실패 시 빈 페이지 생성
-                    img_page = out_doc.new_page(width=width_pt, height=height_pt)
+                    img_page = out_doc.new_page(width=page_width_pt, height=page_height_pt)
                     if os.path.exists(pdf_tmp_path):
                         os.unlink(pdf_tmp_path)
             except Exception as e:
