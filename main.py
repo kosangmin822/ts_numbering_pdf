@@ -5460,10 +5460,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                         pass  # 삭제 실패해도 계속 진행
                 
                 # PIL Image를 PDF 페이지로 변환
-                # 렌더링된 이미지 크기를 그대로 사용 (원본 PyMuPDF 방식)
-                # DPI 72 기준: 1 픽셀 = 1 포인트
-                width_pt = width
-                height_pt = height
+                # 원본 PDF 페이지 크기를 사용 (포인트 단위)
+                # 렌더링된 이미지를 원본 페이지 크기에 맞게 스케일링
+                
+                print(f"[DEBUG] _save_pdf_with_labels: 원본 페이지 크기={page_width_pt}x{page_height_pt}, 렌더링 이미지 크기={pil_img.width}x{pil_img.height}")
                 
                 # 임시 PDF로 변환 후 import
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
@@ -5473,15 +5473,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     from reportlab.pdfgen import canvas
                     from reportlab.lib.utils import ImageReader
                     
-                    print(f"[DEBUG] _save_pdf_with_labels: PIL Image 크기={pil_img.width}x{pil_img.height}, PDF 크기={width_pt}x{height_pt}")
-                    
-                    # 렌더링된 이미지 크기로 PDF 생성
-                    c = canvas.Canvas(pdf_tmp_path, pagesize=(width_pt, height_pt))
+                    # 원본 페이지 크기로 PDF 생성
+                    c = canvas.Canvas(pdf_tmp_path, pagesize=(page_width_pt, page_height_pt))
                     img_reader = ImageReader(pil_img)
-                    # 이미지를 렌더링된 크기 그대로 그리기
-                    # preserveAspectRatio=False로 설정하여 정확한 크기로 그리기
-                    c.drawImage(img_reader, 0, 0, width=width_pt, height=height_pt, preserveAspectRatio=False)
+                    # 이미지를 원본 페이지 크기에 맞게 그리기
+                    c.drawImage(img_reader, 0, 0, width=page_width_pt, height=page_height_pt, preserveAspectRatio=False)
                     c.save()
+                    print(f"[DEBUG] _save_pdf_with_labels: Canvas 저장 완료, 파일 크기={os.path.getsize(pdf_tmp_path) if os.path.exists(pdf_tmp_path) else 0} bytes")
                     
                     print(f"[DEBUG] _save_pdf_with_labels: 임시 PDF 생성 완료, 파일 크기={os.path.getsize(pdf_tmp_path) if os.path.exists(pdf_tmp_path) else 0} bytes")
                     
