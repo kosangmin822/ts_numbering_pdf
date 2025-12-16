@@ -81,38 +81,15 @@ def _pil_to_qimage(pil_image_or_bitmap):
     
     width, height = pil_image.size
     
-    # numpy를 사용한 빠른 변환 (가능한 경우)
-    try:
-        import numpy as np
-        # PIL Image를 numpy 배열로 변환
-        img_array = np.array(pil_image, dtype=np.uint8)
-        
-        # QImage는 RGB888 포맷을 사용하므로, RGB 순서를 그대로 사용
-        # 하지만 QImage는 바이트 순서가 다를 수 있으므로 안전하게 처리
-        # QImage 생성자에 바이트 데이터를 전달할 때는 데이터가 유지되어야 함
-        img_bytes = img_array.tobytes()
-        
-        # QImage 생성 - 바이트 데이터를 직접 사용하되, 메모리 안정성을 위해 bytes()로 복사
-        qimage = QtGui.QImage(bytes(img_bytes), width, height, QtGui.QImage.Format_RGB888)
-        
-        # QImage가 제대로 생성되었는지 확인
-        if qimage.isNull():
-            raise ValueError("QImage creation failed")
-        
-        return qimage
-    except Exception:
-        # numpy가 없거나 실패한 경우: QImage를 먼저 생성하고 픽셀 데이터를 복사
-        # 이 방법은 느리지만 안전합니다
-        qimage = QtGui.QImage(width, height, QtGui.QImage.Format_RGB888)
-        
-        # 픽셀 데이터를 직접 복사 (느리지만 정확함)
-        for y in range(height):
-            for x in range(width):
-                r, g, b = pil_image.getpixel((x, y))
-                # RGB888 포맷: R(16-23), G(8-15), B(0-7)
-                qimage.setPixel(x, y, (r << 16) | (g << 8) | b)
-        
-        return qimage
+    # PIL Image를 바이트로 변환 (RGB 순서)
+    # 중요: bytes()로 명시적으로 복사하여 메모리 안정성 확보
+    img_data = bytes(pil_image.tobytes("raw", "RGB"))
+    
+    # QImage 생성 - 바이트 데이터를 직접 사용
+    # QImage는 내부적으로 데이터를 복사하므로 안전합니다
+    qimage = QtGui.QImage(img_data, width, height, QtGui.QImage.Format_RGB888)
+    
+    return qimage
 
 
 def _pdfium_insert_pdf(target_doc, source_doc, from_page=0, to_page=None):
@@ -3640,49 +3617,28 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             
             print(f"[DEBUG] load_page: QImage 유효, size={img.width()}x{img.height()}, format={img.format()}")
             
-            # QPixmap.fromImage 호출을 try-except로 감싸기
-            # 특정 PDF에서 크래시가 발생하므로 안전하게 처리
-            pm = None
+            # QPixmap.fromImage 호출
+            # QImage는 이미 안전하게 생성되었으므로 직접 변환 시도
             try:
                 print(f"[DEBUG] load_page: QPixmap.fromImage 호출 전, img.size={img.width()}x{img.height()}")
-                # QImage를 먼저 완전히 복사한 후 변환 (메모리 안정성 확보)
-                # QImage.copy()는 깊은 복사를 수행하여 메모리 문제를 방지합니다
-                img_copy = img.copy()
-                print(f"[DEBUG] load_page: QImage 복사 완료, QPixmap.fromImage 호출")
-                pm = QtGui.QPixmap.fromImage(img_copy)
+                pm = QtGui.QPixmap.fromImage(img)
                 print(f"[DEBUG] load_page: QPixmap.fromImage 완료, isNull={pm.isNull()}, size={pm.width()}x{pm.height()}")
             except Exception as e:
                 import traceback
                 print(f"[DEBUG] load_page: QPixmap.fromImage 예외 발생: {e}")
                 traceback.print_exc()
-                # 대체 방법 1: QImage를 다른 포맷으로 변환 후 시도
+                # 대체 방법: QImage를 복사한 후 변환
                 try:
-                    print(f"[DEBUG] load_page: 대체 방법 1 시도 - QImage를 ARGB32로 변환 후 시도")
-                    img_argb = img.convertToFormat(QtGui.QImage.Format_ARGB32)
-                    img_argb_copy = img_argb.copy()
-                    pm = QtGui.QPixmap.fromImage(img_argb_copy)
-                    print(f"[DEBUG] load_page: 대체 방법 1 성공, isNull={pm.isNull()}")
+                    print(f"[DEBUG] load_page: 대체 방법 시도 - QImage 복사 후 변환")
+                    img_copy = img.copy()
+                    pm = QtGui.QPixmap.fromImage(img_copy)
+                    print(f"[DEBUG] load_page: 대체 방법 성공, isNull={pm.isNull()}")
                 except Exception as e2:
                     import traceback
-                    print(f"[DEBUG] load_page: 대체 방법 1 실패: {e2}")
+                    print(f"[DEBUG] load_page: 대체 방법도 실패: {e2}")
                     traceback.print_exc()
-                    # 대체 방법 2: QImage를 파일로 저장한 후 QPixmap으로 로드
-                    try:
-                        import tempfile
-                        print(f"[DEBUG] load_page: 대체 방법 2 시도 - 임시 파일을 통한 변환")
-                        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
-                            tmp_path = tmp_file.name
-                        img.save(tmp_path, 'PNG')
-                        pm = QtGui.QPixmap(tmp_path)
-                        import os
-                        os.unlink(tmp_path)
-                        print(f"[DEBUG] load_page: 대체 방법 2 성공, isNull={pm.isNull()}")
-                    except Exception as e3:
-                        import traceback
-                        print(f"[DEBUG] load_page: 대체 방법 2도 실패: {e3}")
-                        traceback.print_exc()
-                        _log_error(self, "페이지 이미지 변환 실패", e3)
-                        return
+                    _log_error(self, "페이지 이미지 변환 실패", e2)
+                    return
             
             # pm이 유효한지 확인
             if pm is None or pm.isNull():
