@@ -112,6 +112,54 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     # Worker를 시작시키는 신호 추가
     start_loading_3d = Signal(str)
 
+    def check_trial_status(self):
+        """
+        30일 트라이얼 상태를 확인합니다.
+        Returns:
+            tuple: (status, days_left)
+            - status: "just_installed", "active", "expired"
+            - days_left: 남은 일수
+        """
+        import winreg
+        from datetime import datetime, timedelta
+        
+        # 레지스트리 키 경로
+        reg_key_path = r"SOFTWARE\TS_Numbering_PDF"
+        reg_value_name = "InstallDate"
+        
+        try:
+            # 레지스트리에서 설치 날짜 읽기
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_key_path, 0, winreg.KEY_READ)
+            install_date_str = winreg.QueryValueEx(key, reg_value_name)[0]
+            winreg.CloseKey(key)
+            
+            # 문자열을 날짜로 변환
+            install_date = datetime.strptime(install_date_str, "%Y-%m-%d")
+            current_date = datetime.now()
+            days_passed = (current_date - install_date).days
+            days_left = 30 - days_passed
+            
+            if days_left <= 0:
+                return ("expired", 0)
+            else:
+                return ("active", days_left)
+                
+        except FileNotFoundError:
+            # 레지스트리 키가 없으면 처음 설치
+            try:
+                # 레지스트리 키 생성 및 설치 날짜 저장
+                key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, reg_key_path)
+                install_date_str = datetime.now().strftime("%Y-%m-%d")
+                winreg.SetValueEx(key, reg_value_name, 0, winreg.REG_SZ, install_date_str)
+                winreg.CloseKey(key)
+                return ("just_installed", 30)
+            except Exception as e:
+                # 레지스트리 접근 실패 시 개발 모드로 처리
+                return ("active", 30)
+        except Exception as e:
+            # 기타 오류 시 개발 모드로 처리
+            return ("active", 30)
+
     def publish_project(self):
 
         SERVER_URL = "http://127.0.0.1:5000/api/publish"
