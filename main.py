@@ -724,11 +724,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             panel_width = self.widget_3d.width() - 20  # 좌우 10px씩 여백
             # 패널 높이: 현재 90px의 75% = 67.5px → 68px
             self.integrated_control_panel.setFixedSize(panel_width, 68)  # 높이 75%로 조정
-            # 반투명 배경 설정
+            # 불투명 배경 설정 (회색 배경, 완전 불투명)
             self.integrated_control_panel.setStyleSheet("""
                 QWidget {
-                    background-color: rgba(40, 40, 40, 200);
-                    border: 1px solid rgba(80, 80, 80, 200);
+                    background-color: rgba(128, 128, 128, 255);
+                    border: 1px solid rgba(100, 100, 100, 255);
                     border-radius: 6px;
                 }
             """)
@@ -2039,9 +2039,20 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.tab_widget.addTab(self.view, "2D View")
         # 3. 3D 뷰어를 위한 두 번째 탭을 만듭니다. (지금은 빈 공간)
         self.vlayout_3d = QtWidgets.QVBoxLayout()
+        self.vlayout_3d.setContentsMargins(0, 0, 0, 0)
+        self.vlayout_3d.setSpacing(0)
         self.widget_3d = QtWidgets.QWidget()
+        # ▼▼▼ [수정] 3D 뷰어 배경을 흰색으로 설정하여 2D PDF가 보이지 않도록 함 ▼▼▼
+        self.widget_3d.setStyleSheet("background-color: white;")
+        self.widget_3d.setAutoFillBackground(True)  # 배경을 자동으로 채우도록 설정
+        # widget_3d를 완전히 불투명하게 설정
+        self.widget_3d.setAttribute(QtCore.Qt.WA_OpaquePaintEvent, True)
+        # ▲▲▲ 여기까지 추가 ▲▲▲
         self.widget_3d.setLayout(self.vlayout_3d)
         self.tab_widget.addTab(self.widget_3d, "3D View")
+        # ▼▼▼ [수정] 탭 전환 시 2D 뷰어가 확실히 숨겨지도록 설정 ▼▼▼
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+        # ▲▲▲ 여기까지 추가 ▲▲▲
         # 신호/슬롯 연결
         self.scene.clicked.connect(self.on_clicked)
         self.scene.moved.connect(self.on_scene_moved)
@@ -2842,6 +2853,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 3. 새로운 3D 뷰어(plotter)를 만듭니다.
         plotter = QtInteractor(self.widget_3d)
         self.plotter = plotter  # Navigator에서 접근할 수 있도록 저장
+        # ▼▼▼ [수정] 3D 뷰어 배경색을 흰색으로 초기화하고 렌더링 ▼▼▼
+        plotter.background_color = "white"
+        # plotter.interactor의 배경을 불투명하게 설정
+        plotter.interactor.setStyleSheet("background-color: white;")
+        plotter.interactor.setAutoFillBackground(True)
+        plotter.interactor.show()  # interactor를 명시적으로 표시
+        # ▲▲▲ 여기까지 추가 ▲▲▲
         self.vlayout_3d.addWidget(plotter.interactor)
         # 3-1. 3D 뷰어에 컬러 컨트롤 패널 추가
         self._setup_3d_viewer_color_controls()
@@ -2891,10 +2909,20 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             plotter.add_mesh(pv.lines_from_points(geometry.vertices), color="yellow", line_width=5)
         # 5. 카메라 위치를 모델에 맞게 재설정합니다.
         plotter.reset_camera()
+        # ▼▼▼ [수정] 3D 뷰어를 렌더링하여 배경이 제대로 표시되도록 함 ▼▼▼
+        plotter.background_color = "white"  # 배경색을 다시 설정
+        plotter.render()
+        # plotter.interactor가 제대로 렌더링되도록 강제 업데이트
+        plotter.interactor.update()
+        # ▲▲▲ 여기까지 추가 ▲▲▲
         # 5-1. 기본 뷰 모드를 "음영 처리"로 설정 (엣지 없음)
         self.set_view_mode("shading")
         # 5-2. 초기 뷰 정보 표시
         self.update_view_info()
+        # ▼▼▼ [수정] plotter.interactor를 완전히 불투명하게 만들기 ▼▼▼
+        plotter.interactor.setAttribute(QtCore.Qt.WA_OpaquePaintEvent, True)
+        plotter.interactor.setAttribute(QtCore.Qt.WA_NoSystemBackground, True)
+        # ▲▲▲ 여기까지 추가 ▲▲▲
         # 6. 화면을 3D 탭으로 전환합니다.
         # self.tab_widget.setCurrentWidget(self.widget_3d)
         # ▼▼▼ [수정 3] 대신 상태 표시줄에 완료 메시지를 표시 ▼▼▼
@@ -3206,6 +3234,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.project_dir = os.path.dirname(path)
         # 이 함수가 PDF 뷰어, 테이블, 썸네일 등 모든 것을 화면에 다시 그립니다.
         self.load_page(self.cur_page_index)  # <<--- [수정 1] 화면을 먼저 로드
+        # ▼▼▼ [수정] 프로젝트 열 때 흐름도 시작/끝점이 제대로 표시되도록 흐름도를 다시 그립니다 ▼▼▼
+        if self.flow_view_enabled:
+            self._update_flow_view()
+        # ▲▲▲ 여기까지 추가 ▲▲▲
         self._set_dirty(False)
         self._update_window_title()
         self._update_undo_redo_hint()
@@ -3726,6 +3758,25 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if self.doc and self.cur_page_index < len(self.doc) - 1:
             self.load_page(self.cur_page_index + 1)
 
+    # ===== ▼▼▼ 탭 전환 핸들러 추가 ▼▼▼ =====
+    def _on_tab_changed(self, index: int):
+        """탭이 전환될 때 호출되는 핸들러"""
+        # 3D 뷰어 탭(인덱스 1)이 활성화되면 2D 뷰어를 숨기고 3D 뷰어를 보이도록 함
+        if index == 1:  # 3D View 탭
+            if hasattr(self, 'view'):
+                self.view.hide()
+            if hasattr(self, 'widget_3d'):
+                self.widget_3d.show()
+                # 3D 뷰어가 제대로 렌더링되도록 강제 업데이트
+                if hasattr(self, 'plotter') and self.plotter:
+                    self.plotter.render()
+        else:  # 2D View 탭
+            if hasattr(self, 'view'):
+                self.view.show()
+            if hasattr(self, 'widget_3d'):
+                self.widget_3d.hide()
+    # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
+    
     # ===== ▼▼▼ 아래 4개 함수를 여기에 새로 추가해주세요 ▼▼▼ =====
     def _go_to_page_from_spinbox(self, page_num):
         """페이지 번호 입력창(SpinBox)의 값이 변경되었을 때 호출됩니다."""
