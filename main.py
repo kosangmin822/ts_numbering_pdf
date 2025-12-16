@@ -3490,8 +3490,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self._close_current_doc()
             return
         # ▲▲▲ 여기까지 수정 ▲▲▲
-        self.cb_separate_numbering.setChecked(self.numbering_mode == "page_specific")
-        self.cb_separate_numbering.setEnabled(False)  # 한번 선택하면 프로젝트 내에서 변경 불가
+        try:
+            if hasattr(self, "cb_separate_numbering"):
+                self.cb_separate_numbering.setChecked(self.numbering_mode == "page_specific")
+                self.cb_separate_numbering.setEnabled(False)  # 한번 선택하면 프로젝트 내에서 변경 불가
+        except Exception as e:
+            print(f"체크박스 설정 오류: {e}")
+        
         # 새 PDF의 정보를 기반으로 프로젝트 기본 정보 설정
         if not self.project_name:
             self.project_name = os.path.splitext(os.path.basename(path))[0]
@@ -3499,14 +3504,28 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.pdf_path = path
         self.cur_page_index = 0
         self._set_dirty(True)
+        
         try:
             self.load_page(self.cur_page_index)
-            self._populate_thumbnails()
         except Exception as e:
             _log_error(self, "PDF 페이지 로드 오류", e)
+            import traceback
+            traceback.print_exc()
             self._close_current_doc()
             return
-        self._update_window_title()
+        
+        try:
+            self._populate_thumbnails()
+        except Exception as e:
+            _log_error(self, "썸네일 생성 오류", e)
+            import traceback
+            traceback.print_exc()
+            # 썸네일 오류는 치명적이지 않으므로 계속 진행
+        
+        try:
+            self._update_window_title()
+        except Exception as e:
+            print(f"윈도우 제목 업데이트 오류: {e}")
 
     def _render_factor_for_scale(self, s: float) -> int:
         return 2 if s < 1.6 else (4 if s < 3.2 else 6)
@@ -5300,12 +5319,39 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 #  프로그램 실행 부분
 # =====================================================================
 def main():
+    # 전역 예외 핸들러 설정
+    def exception_hook(exc_type, exc_value, exc_traceback):
+        """프로그램이 예기치 않게 종료되는 것을 방지하기 위한 예외 핸들러"""
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        print(f"Uncaught exception:\n{error_msg}", file=sys.stderr)
+        # Qt 메시지 박스로도 표시
+        app = QtWidgets.QApplication.instance()
+        if app:
+            QtWidgets.QMessageBox.critical(
+                None, "치명적 오류", 
+                f"예기치 않은 오류가 발생했습니다:\n\n{exc_type.__name__}: {exc_value}\n\n자세한 내용은 콘솔을 확인하세요."
+            )
+    
+    sys.excepthook = exception_hook
+    
     app = QtWidgets.QApplication(sys.argv)
     # 이제 main.py를 실행하므로, pdf_to_open 로직은 그대로 둡니다.
     pdf_to_open = sys.argv[1] if len(sys.argv) > 1 else None
-    w = PdfAnnotator(pdf_path=pdf_to_open)
-    w.show()
-    sys.exit(app.exec())
+    try:
+        w = PdfAnnotator(pdf_path=pdf_to_open)
+        w.show()
+        sys.exit(app.exec())
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        QtWidgets.QMessageBox.critical(
+            None, "시작 오류", 
+            f"프로그램 시작 중 오류가 발생했습니다:\n\n{str(e)}\n\n자세한 내용은 콘솔을 확인하세요."
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":
