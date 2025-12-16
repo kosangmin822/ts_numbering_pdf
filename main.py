@@ -3618,27 +3618,68 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             print(f"[DEBUG] load_page: QImage 유효, size={img.width()}x{img.height()}, format={img.format()}")
             
             # QPixmap.fromImage 호출
-            # QImage는 이미 안전하게 생성되었으므로 직접 변환 시도
+            # 특정 PDF에서 크래시가 발생하므로 가장 안전한 방법 사용
+            pm = None
+            
+            # 방법 1: QImage를 ARGB32 포맷으로 변환 후 복사하여 변환 (가장 안전)
             try:
-                print(f"[DEBUG] load_page: QPixmap.fromImage 호출 전, img.size={img.width()}x{img.height()}")
-                pm = QtGui.QPixmap.fromImage(img)
-                print(f"[DEBUG] load_page: QPixmap.fromImage 완료, isNull={pm.isNull()}, size={pm.width()}x{pm.height()}")
+                print(f"[DEBUG] load_page: 방법 1 시도 - ARGB32 변환 후 복사")
+                img_argb = img.convertToFormat(QtGui.QImage.Format_ARGB32)
+                img_argb_copy = img_argb.copy()
+                pm = QtGui.QPixmap.fromImage(img_argb_copy)
+                if not pm.isNull():
+                    print(f"[DEBUG] load_page: 방법 1 성공, size={pm.width()}x{pm.height()}")
+                else:
+                    raise ValueError("QPixmap is null")
             except Exception as e:
                 import traceback
-                print(f"[DEBUG] load_page: QPixmap.fromImage 예외 발생: {e}")
+                print(f"[DEBUG] load_page: 방법 1 실패: {e}")
                 traceback.print_exc()
-                # 대체 방법: QImage를 복사한 후 변환
+                pm = None
+            
+            # 방법 2: 원본 QImage를 복사한 후 변환
+            if pm is None or pm.isNull():
                 try:
-                    print(f"[DEBUG] load_page: 대체 방법 시도 - QImage 복사 후 변환")
+                    print(f"[DEBUG] load_page: 방법 2 시도 - QImage 복사 후 변환")
                     img_copy = img.copy()
                     pm = QtGui.QPixmap.fromImage(img_copy)
-                    print(f"[DEBUG] load_page: 대체 방법 성공, isNull={pm.isNull()}")
-                except Exception as e2:
+                    if not pm.isNull():
+                        print(f"[DEBUG] load_page: 방법 2 성공, size={pm.width()}x{pm.height()}")
+                    else:
+                        raise ValueError("QPixmap is null")
+                except Exception as e:
                     import traceback
-                    print(f"[DEBUG] load_page: 대체 방법도 실패: {e2}")
+                    print(f"[DEBUG] load_page: 방법 2 실패: {e}")
                     traceback.print_exc()
-                    _log_error(self, "페이지 이미지 변환 실패", e2)
+                    pm = None
+            
+            # 방법 3: 임시 파일을 통한 변환 (최후의 수단)
+            if pm is None or pm.isNull():
+                try:
+                    import tempfile
+                    import os
+                    print(f"[DEBUG] load_page: 방법 3 시도 - 임시 파일을 통한 변환")
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                        tmp_path = tmp_file.name
+                    img.save(tmp_path, 'PNG')
+                    pm = QtGui.QPixmap(tmp_path)
+                    os.unlink(tmp_path)
+                    if not pm.isNull():
+                        print(f"[DEBUG] load_page: 방법 3 성공, size={pm.width()}x{pm.height()}")
+                    else:
+                        raise ValueError("QPixmap is null")
+                except Exception as e:
+                    import traceback
+                    print(f"[DEBUG] load_page: 방법 3도 실패: {e}")
+                    traceback.print_exc()
+                    _log_error(self, "페이지 이미지 변환 실패", e)
                     return
+            
+            # 최종 검증
+            if pm is None or pm.isNull():
+                print(f"[DEBUG] load_page 오류: 모든 방법 실패")
+                _log_error(self, "페이지 이미지 변환 실패", Exception("모든 변환 방법 실패"))
+                return
             
             # pm이 유효한지 확인
             if pm is None or pm.isNull():
