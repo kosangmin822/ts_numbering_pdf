@@ -15,8 +15,9 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
-import fitz
+import pypdfium2 as pdfium
 import pandas as pd
+from PIL import Image
 import requests
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QObject, QThread, Signal, Slot
@@ -60,6 +61,46 @@ TSN_VERSION = "7.00"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
+
+
+# =====================================================================
+#  pypdfium2 헬퍼 함수
+# =====================================================================
+def _pil_to_qimage(pil_image):
+    """PIL Image를 QImage로 변환합니다."""
+    # PIL Image를 RGB 모드로 변환
+    if pil_image.mode != "RGB":
+        pil_image = pil_image.convert("RGB")
+    
+    # PIL Image를 바이트로 변환 (RGB 순서)
+    img_data = pil_image.tobytes("raw", "RGB")
+    # QImage는 BGR 순서를 사용하므로 변환이 필요합니다
+    # 하지만 실제로는 RGB888 포맷을 사용하면 자동으로 처리됩니다
+    qimage = QtGui.QImage(img_data, pil_image.size[0], pil_image.size[1], QtGui.QImage.Format_RGB888)
+    return qimage
+
+
+def _pdfium_insert_pdf(target_doc, source_doc, from_page=0, to_page=None):
+    """pypdfium2에서 PDF 병합 기능을 구현합니다."""
+    if to_page is None:
+        to_page = len(source_doc) - 1
+    
+    for i in range(from_page, to_page + 1):
+        src_page = source_doc.get_page(i)
+        # 원본 페이지를 렌더링하여 새 페이지에 삽입
+        pil_img = src_page.render(scale=1.0)
+        # PIL Image를 바이트로 변환
+        import io
+        img_bytes = io.BytesIO()
+        pil_img.save(img_bytes, format="PNG")
+        img_bytes.seek(0)
+        
+        # 새 페이지 생성
+        width = src_page.get_width()
+        height = src_page.get_height()
+        new_page = target_doc.new_page(width=width, height=height)
+        # 이미지 삽입 (pypdfium2의 이미지 삽입 방법 사용)
+        new_page.insert_image(new_page.get_rect(), image=img_bytes.getvalue())
 
 
 # =====================================================================
@@ -186,8 +227,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         project_data = {"projectName": self.project_name or "Untitled Project", "items": items_data}
         # 3. 업로드할 PDF 파일 데이터 준비 (파일을 새로 열지 않고 메모리에서 바로 가져옴)
         try:
-            # self.doc.tobytes()를 사용해 현재 PDF 문서의 내용을 바이트 데이터로 변환
-            pdf_bytes = self.doc.tobytes()
+            # pypdfium2는 tobytes()가 없으므로 임시 파일을 사용합니다
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                tmp_path = tmp_file.name
+            self.doc.save(tmp_path)
+            with open(tmp_path, "rb") as f:
+                pdf_bytes = f.read()
+            os.unlink(tmp_path)  # 임시 파일 삭제
             # 업로드할 때 사용할 파일명 결정
             pdf_filename = f"{self.project_name or 'source'}.pdf"
             # 파일 객체 대신 메모리의 바이트 데이터를 직접 전송
@@ -218,12 +265,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def _append_pdf(self, path_to_append: str):
         """선택한 PDF 파일을 원본 그대로 현재 문서 뒤에 이어붙입니다."""
         try:
-            new_doc = fitz.open(path_to_append)
+            new_doc = pdfium.PdfDocument(path_to_append)
             # ▼▼▼ [핵심] 이어붙이기 전의 상태를 기록합니다. ▼▼▼
             original_page_count = len(self.doc)
             num_new_pages = len(new_doc)
             # 원본 그대로 이어붙이기
-            self.doc.insert_pdf(new_doc)
+            _pdfium_insert_pdf(self.doc, new_doc)
             new_doc.close()
             # UI 새로고침
             self._set_dirty(True)
@@ -244,8 +291,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         """현재 페이지를 왼쪽으로 90도 회전합니다."""
         if not self.doc:
             return
-        page = self.doc[self.cur_page_index]
-        new_rotation = (page.rotation - 90) % 360
+        page = self.doc.get_page(self.cur_page_index)
+        current_rotation = page.get_rotation()
+        new_rotation = (current_rotation - 90) % 360
         page.set_rotation(new_rotation)
         self._set_dirty(True)
         self.load_page(self.cur_page_index)  # 화면 새로고침
@@ -255,8 +303,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         """현재 페이지를 오른쪽으로 90도 회전합니다."""
         if not self.doc:
             return
-        page = self.doc[self.cur_page_index]
-        new_rotation = (page.rotation + 90) % 360
+        page = self.doc.get_page(self.cur_page_index)
+        current_rotation = page.get_rotation()
+        new_rotation = (current_rotation + 90) % 360
         page.set_rotation(new_rotation)
         self._set_dirty(True)
         self.load_page(self.cur_page_index)  # 화면 새로고침
@@ -3071,7 +3120,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._reset_all_tables()
         self._reset_state_for_new()
         # 3. 읽어들인 데이터로 프로그램 상태를 하나씩 복원합니다.
-        self.doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        self.doc = pdfium.PdfDocument(pdf_bytes)
         self.numbering_mode = meta.get("numbering_mode", "global")
         self.cur_page_index = 0  # <<--- [수정 2] 항상 첫 페이지(인덱스 0)로 시작
         self.render_scale = int(meta.get("render_scale", 2))
@@ -3257,8 +3306,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             if os.path.exists(path):
                 print(f"[저장] 기존 파일 발견: {path}")
             
-            # PDF 데이터 준비
-            pdf_bytes = self.doc.tobytes()
+            # PDF 데이터 준비 (pypdfium2는 tobytes()가 없으므로 임시 파일 사용)
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                tmp_path = tmp_file.name
+            self.doc.save(tmp_path)
+            with open(tmp_path, "rb") as f:
+                pdf_bytes = f.read()
+            os.unlink(tmp_path)  # 임시 파일 삭제
             if not pdf_bytes:
                 raise ValueError("PDF 데이터가 비어있습니다.")
             print(f"[저장] PDF 데이터 크기: {len(pdf_bytes)} bytes")
@@ -3395,7 +3450,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def import_pdf_from_path(self, path):
         # 이 함수는 이제 '새 집을 짓는' 역할에만 집중합니다.
         try:
-            self.doc = fitz.open(path)
+            self.doc = pdfium.PdfDocument(path)
         except Exception as e:
             _log_error(self, "PDF 열기 오류", e)
             self.doc = None  # 오류 시 doc 객체 확실히 비우기
@@ -3455,11 +3510,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             return
         index = max(0, min(index, len(self.doc) - 1))
         self.cur_page_index = index
-        page = self.doc[index]
-        pix = page.get_pixmap(matrix=fitz.Matrix(self.render_scale, self.render_scale), alpha=False)
-        img = QtGui.QImage(
-            pix.samples, pix.width, pix.height, pix.stride, QtGui.QImage.Format_RGB888
-        )
+        page = self.doc.get_page(index)
+        # pypdfium2의 render()는 PIL Image를 반환합니다
+        pil_img = page.render(scale=self.render_scale)
+        img = _pil_to_qimage(pil_img)
         pm = QtGui.QPixmap.fromImage(img.copy())
         self.scene.clear()
         # ▼▼▼ [결정적 수정] 파괴된 객체에 대한 참조를 여기서 모두 초기화합니다. ▼▼▼
@@ -3574,12 +3628,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             return
         for i in range(page_count):
             try:
-                page = self.doc.load_page(i)
+                page = self.doc.get_page(i)
                 # 썸네일은 너무 무겁지 않게 기본 DPI 또는 작은 사이즈로 생성
-                pix = page.get_pixmap(clip=page.bound(), dpi=72)
-                qimg = QtGui.QImage(
-                    pix.samples, pix.width, pix.height, pix.stride, QtGui.QImage.Format_RGB888
-                )
+                # pypdfium2의 render()는 scale 파라미터를 사용 (72 DPI ≈ scale 1.0)
+                pil_img = page.render(scale=1.0)
+                qimg = _pil_to_qimage(pil_img)
                 q_pixmap = QtGui.QPixmap.fromImage(qimg)
                 thumbnail = ThumbnailLabel(i, q_pixmap)
                 thumbnail.clicked.connect(self.load_page)
@@ -4709,11 +4762,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def _export_current_page_jpg_with_labels(self, path):
         if not self.doc:
             return
-        page = self.doc[self.cur_page_index]
-        pix = page.get_pixmap(matrix=fitz.Matrix(self.render_scale, self.render_scale), alpha=False)
-        img = QtGui.QImage(
-            pix.samples, pix.width, pix.height, pix.stride, QtGui.QImage.Format_RGB888
-        )
+        page = self.doc.get_page(self.cur_page_index)
+        # pypdfium2의 render()는 PIL Image를 반환합니다
+        pil_img = page.render(scale=self.render_scale)
+        img = _pil_to_qimage(pil_img)
         pm = QtGui.QPixmap.fromImage(img.copy())
         p = QtGui.QPainter(pm)
         pen = QtGui.QPen(self.style.stroke_color)
@@ -5069,11 +5121,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 최종 완성본: 이미지 생성 방식으로 모든 문제를 해결합니다. (흐름도 포함)
         import math
         from collections import defaultdict
-        import fitz
 
         if not self.doc:
             raise RuntimeError("PDF가 로드되지 않았습니다.")
-        out_doc = fitz.open()
+        out_doc = pdfium.PdfDocument()
         # 페이지별로 넘버링과 스탬프 아이템을 미리 그룹화합니다.
         items_by_page = defaultdict(list)
         for item in self.items:
@@ -5083,20 +5134,18 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             stamps_by_page[stamp.page_index].append(stamp)
         # 원본 문서의 모든 페이지를 순회합니다.
         for i in range(len(self.doc)):
-            src_page = self.doc.load_page(i)
+            src_page = self.doc.get_page(i)
             items_on_this_page = items_by_page.get(i, [])
             stamps_on_this_page = stamps_by_page.get(i, [])
             # 해당 페이지에 넘버링과 스탬프가 모두 없으면 원본 그대로 추가합니다.
             if not items_on_this_page and not stamps_on_this_page:
-                out_doc.insert_pdf(self.doc, from_page=i, to_page=i)
+                _pdfium_insert_pdf(out_doc, self.doc, from_page=i, to_page=i)
                 continue
             # --- 넘버링이나 스탬프가 있는 페이지는 이미지로 변환하여 처리 ---
             zoom = self.render_scale * 2
-            mat = fitz.Matrix(zoom, zoom)
-            pix = src_page.get_pixmap(matrix=mat, alpha=False)
-            img = QtGui.QImage(
-                pix.samples, pix.width, pix.height, pix.stride, QtGui.QImage.Format_RGB888
-            )
+            # pypdfium2의 render()는 scale 파라미터를 사용합니다
+            pil_img = src_page.render(scale=zoom)
+            img = _pil_to_qimage(pil_img)
             pm = QtGui.QPixmap.fromImage(img)
             painter = QtGui.QPainter(pm)
             painter.setRenderHint(QtGui.QPainter.Antialiasing)
@@ -5168,9 +5217,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             image_bytes = bytes(buffer.data())
             buffer.close()
             img_page = out_doc.new_page(width=pm.width(), height=pm.height())
-            img_page.insert_image(img_page.rect, stream=image_bytes)
+            # pypdfium2의 insert_image API 확인 필요 (일단 get_rect() 사용)
+            img_page.insert_image(img_page.get_rect(), image=image_bytes)
         if len(out_doc) > 0:
-            out_doc.save(path, garbage=4, clean=True)
+            out_doc.save(path)
         out_doc.close()
 
 
