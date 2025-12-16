@@ -69,21 +69,31 @@ DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
 # =====================================================================
 def _pil_to_qimage(pil_image_or_bitmap):
     """PIL Image 또는 PdfBitmap을 QImage로 변환합니다."""
+    print(f"[DEBUG] _pil_to_qimage: 시작, type={type(pil_image_or_bitmap)}")
     # pypdfium2의 PdfBitmap인 경우 PIL Image로 변환
     if hasattr(pil_image_or_bitmap, 'to_pil'):
+        print("[DEBUG] _pil_to_qimage: PdfBitmap 감지, to_pil() 호출")
         pil_image = pil_image_or_bitmap.to_pil()
+        print(f"[DEBUG] _pil_to_qimage: to_pil() 완료, type={type(pil_image)}")
     else:
+        print("[DEBUG] _pil_to_qimage: PIL Image로 간주")
         pil_image = pil_image_or_bitmap
     
     # PIL Image를 RGB 모드로 변환
+    print(f"[DEBUG] _pil_to_qimage: PIL Image 모드 확인, mode={pil_image.mode}")
     if pil_image.mode != "RGB":
+        print(f"[DEBUG] _pil_to_qimage: RGB로 변환 중")
         pil_image = pil_image.convert("RGB")
+        print(f"[DEBUG] _pil_to_qimage: RGB 변환 완료")
     
     # PIL Image를 바이트로 변환 (RGB 순서)
+    print(f"[DEBUG] _pil_to_qimage: tobytes 호출 전, size={pil_image.size}")
     img_data = pil_image.tobytes("raw", "RGB")
+    print(f"[DEBUG] _pil_to_qimage: tobytes 완료, QImage 생성 전")
     # QImage는 BGR 순서를 사용하므로 변환이 필요합니다
     # 하지만 실제로는 RGB888 포맷을 사용하면 자동으로 처리됩니다
     qimage = QtGui.QImage(img_data, pil_image.size[0], pil_image.size[1], QtGui.QImage.Format_RGB888)
+    print(f"[DEBUG] _pil_to_qimage: QImage 생성 완료")
     return qimage
 
 
@@ -2999,10 +3009,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         return super().eventFilter(watched, event)
 
     def new_project(self):
+        print("[DEBUG] new_project: 시작")
         if not self._maybe_save(
             "새 프로젝트", "새로운 프로젝트를 시작합니다.\n현재 작업을 저장하시겠습니까?"
         ):
+            print("[DEBUG] new_project: 저장 확인 취소")
             return
+        print("[DEBUG] new_project: 저장 확인 완료")
         # ... (기본 프로젝트 이름 생성 로직은 그대로) ...
         try:
             default_dir = os.getcwd()
@@ -3021,32 +3034,51 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             next_num = max_num + 1
             default_name = f"{base_name_prefix}{next_num:02d}"
         except Exception as e:
-            print(f"기본 프로젝트 이름 생성 오류: {e}")
+            print(f"[DEBUG] 기본 프로젝트 이름 생성 오류: {e}")
             default_name = ""
             default_dir = ""
+        print(f"[DEBUG] new_project: 다이얼로그 표시 전, default_name={default_name}")
         dialog = NewProjectDialog(self, default_name=default_name, default_dir=default_dir)
         if dialog.exec():
+            print("[DEBUG] new_project: 다이얼로그 OK")
             self.project_name = dialog.project_name
             self.project_dir = dialog.project_dir
+            print(f"[DEBUG] new_project: 프로젝트 정보 설정 완료, name={self.project_name}, dir={self.project_dir}")
             self._close_current_doc()
+            print("[DEBUG] new_project: 문서 닫기 완료")
             self._reset_all_tables()  # <-- 모든 테이블 초기화
+            print("[DEBUG] new_project: 테이블 초기화 완료")
             self._reset_state_for_new()  # <-- 모든 상태 초기화
+            print("[DEBUG] new_project: 상태 초기화 완료")
             self.project_path = None
             self._set_dirty(False)  # 새 프로젝트는 '저장됨' 상태
             self._update_window_title()  # 윈도우 제목 업데이트
+            print("[DEBUG] new_project: PDF 파일 선택 다이얼로그 표시 전")
             path, _ = QtWidgets.QFileDialog.getOpenFileName(
                 self,
                 f"'{self.project_name}' 프로젝트의 PDF 파일 가져오기",
                 self.project_dir,
                 "PDF Files (*.pdf)",
             )
+            print(f"[DEBUG] new_project: PDF 파일 선택 완료, path={path}")
             if path:
-                self.import_pdf_from_path(path)
+                print(f"[DEBUG] new_project: import_pdf_from_path 호출 시작, path={path}")
+                try:
+                    self.import_pdf_from_path(path)
+                    print("[DEBUG] new_project: import_pdf_from_path 완료")
+                except Exception as e:
+                    print(f"[DEBUG] new_project: import_pdf_from_path 예외 발생: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
             else:
+                print("[DEBUG] new_project: PDF 파일 선택 취소")
                 # PDF를 선택하지 않으면 프로젝트 생성을 취소
                 self.project_name = None
                 self.project_dir = None
                 self._update_window_title()
+        else:
+            print("[DEBUG] new_project: 다이얼로그 취소")
 
     def _close_current_doc(self):
         self.clear_highlight()
@@ -3473,59 +3505,89 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
     def import_pdf_from_path(self, path):
         # 이 함수는 이제 '새 집을 짓는' 역할에만 집중합니다.
+        print(f"[DEBUG] import_pdf_from_path: 시작, path={path}")
         try:
+            print(f"[DEBUG] import_pdf_from_path: pdfium.PdfDocument 호출 전")
             self.doc = pdfium.PdfDocument(path)
+            print(f"[DEBUG] import_pdf_from_path: pdfium.PdfDocument 성공, 페이지 수={len(self.doc)}")
         except Exception as e:
+            print(f"[DEBUG] import_pdf_from_path: PDF 열기 오류 발생: {e}")
+            import traceback
+            traceback.print_exc()
             _log_error(self, "PDF 열기 오류", e)
             self.doc = None  # 오류 시 doc 객체 확실히 비우기
             self._update_page_navigation_ui()
             self._clear_thumbnails()
             return
         # ▼▼▼ [핵심 수정] 페이지 수와 상관없이 항상 넘버링 방식을 물어봅니다. ▼▼▼
+        print("[DEBUG] import_pdf_from_path: NumberingModeDialog 생성 전")
         dialog = NumberingModeDialog(self)
+        print("[DEBUG] import_pdf_from_path: NumberingModeDialog.exec() 호출 전")
         if dialog.exec():
+            print(f"[DEBUG] import_pdf_from_path: 다이얼로그 OK, choice={dialog.choice}")
             self.numbering_mode = dialog.choice
         else:
+            print("[DEBUG] import_pdf_from_path: 다이얼로그 취소")
             # 사용자가 넘버링 방식 선택을 취소하면, 문서 로드를 중단합니다.
             self._close_current_doc()
             return
         # ▲▲▲ 여기까지 수정 ▲▲▲
+        print("[DEBUG] import_pdf_from_path: 체크박스 설정 전")
         try:
             if hasattr(self, "cb_separate_numbering"):
                 self.cb_separate_numbering.setChecked(self.numbering_mode == "page_specific")
                 self.cb_separate_numbering.setEnabled(False)  # 한번 선택하면 프로젝트 내에서 변경 불가
+                print("[DEBUG] import_pdf_from_path: 체크박스 설정 완료")
+            else:
+                print("[DEBUG] import_pdf_from_path: cb_separate_numbering 속성 없음")
         except Exception as e:
-            print(f"체크박스 설정 오류: {e}")
+            print(f"[DEBUG] 체크박스 설정 오류: {e}")
+            import traceback
+            traceback.print_exc()
         
         # 새 PDF의 정보를 기반으로 프로젝트 기본 정보 설정
+        print("[DEBUG] import_pdf_from_path: 프로젝트 정보 설정 전")
         if not self.project_name:
             self.project_name = os.path.splitext(os.path.basename(path))[0]
             self.project_dir = os.path.dirname(path)
         self.pdf_path = path
         self.cur_page_index = 0
         self._set_dirty(True)
+        print(f"[DEBUG] import_pdf_from_path: 프로젝트 정보 설정 완료, pdf_path={self.pdf_path}, cur_page_index={self.cur_page_index}")
         
+        print("[DEBUG] import_pdf_from_path: load_page 호출 전")
         try:
             self.load_page(self.cur_page_index)
+            print("[DEBUG] import_pdf_from_path: load_page 완료")
         except Exception as e:
+            print(f"[DEBUG] import_pdf_from_path: load_page 오류 발생: {e}")
             _log_error(self, "PDF 페이지 로드 오류", e)
             import traceback
             traceback.print_exc()
             self._close_current_doc()
             return
         
+        print("[DEBUG] import_pdf_from_path: _populate_thumbnails 호출 전")
         try:
             self._populate_thumbnails()
+            print("[DEBUG] import_pdf_from_path: _populate_thumbnails 완료")
         except Exception as e:
+            print(f"[DEBUG] import_pdf_from_path: _populate_thumbnails 오류 발생: {e}")
             _log_error(self, "썸네일 생성 오류", e)
             import traceback
             traceback.print_exc()
             # 썸네일 오류는 치명적이지 않으므로 계속 진행
         
+        print("[DEBUG] import_pdf_from_path: _update_window_title 호출 전")
         try:
             self._update_window_title()
+            print("[DEBUG] import_pdf_from_path: _update_window_title 완료")
         except Exception as e:
-            print(f"윈도우 제목 업데이트 오류: {e}")
+            print(f"[DEBUG] 윈도우 제목 업데이트 오류: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        print("[DEBUG] import_pdf_from_path: 모든 작업 완료")
 
     def _render_factor_for_scale(self, s: float) -> int:
         return 2 if s < 1.6 else (4 if s < 3.2 else 6)
@@ -3554,16 +3616,24 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # --- 수정 끝 ---
 
     def load_page(self, index: int):
+        print(f"[DEBUG] load_page: 시작, index={index}, doc={self.doc is not None}")
         if not self.doc:
+            print("[DEBUG] load_page: doc이 None이므로 종료")
             return
         try:
+            print(f"[DEBUG] load_page: 인덱스 계산 전, len(doc)={len(self.doc)}")
             index = max(0, min(index, len(self.doc) - 1))
             self.cur_page_index = index
+            print(f"[DEBUG] load_page: get_page 호출 전, index={index}")
             page = self.doc.get_page(index)
+            print(f"[DEBUG] load_page: get_page 완료, render 호출 전, scale={self.render_scale}")
             # pypdfium2의 render()는 PdfBitmap을 반환합니다
             bitmap = page.render(scale=self.render_scale)
+            print(f"[DEBUG] load_page: render 완료, _pil_to_qimage 호출 전")
             img = _pil_to_qimage(bitmap)
+            print(f"[DEBUG] load_page: _pil_to_qimage 완료, QPixmap 생성 전")
             pm = QtGui.QPixmap.fromImage(img.copy())
+            print(f"[DEBUG] load_page: QPixmap 생성 완료")
         except Exception as e:
             _log_error(self, "페이지 로드 오류", e)
             return
