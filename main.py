@@ -2173,22 +2173,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._egg_timer = QtCore.QTimer(self)
         self._egg_timer.setSingleShot(True)
         self._egg_timer.timeout.connect(self._reset_egg_sequence)
-        # 1. 탭 위젯을 생성하고 중앙에 배치합니다.
-        self.tab_widget = QtWidgets.QTabWidget()
-        self.setCentralWidget(self.tab_widget)
-        # 2. 기존의 PDF 뷰어를 첫 번째 탭에 추가합니다.
-        self.scene = PdfScene(self)
-        self.view = PdfView(self.scene, self)
-        self.tab_widget.addTab(self.view, "2D View")
-        # 3. 3D 뷰어를 위한 두 번째 탭을 만듭니다. (지금은 빈 공간)
-        self.vlayout_3d = QtWidgets.QVBoxLayout()
-        self.widget_3d = QtWidgets.QWidget()
-        self.widget_3d.setLayout(self.vlayout_3d)
-        self.tab_widget.addTab(self.widget_3d, "3D View")
-        # ▲▲▲ [수정 끝] ▲▲▲
-        self.scene.clicked.connect(self.on_clicked)
-        self.scene.moved.connect(self.on_scene_moved)
-        self.view.zoom_changed.connect(self._on_zoom_changed)
         # 다시 수정.. 4.00에서.
         # ===== ▼▼▼ 페이지 네비게이션 UI 생성 (수정) ▼▼▼ =====
         self.btn_prev = QtWidgets.QPushButton("< 이전")
@@ -3555,6 +3539,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def load_page(self, index: int):
         if not self.doc:
             return
+        # scene과 view가 제대로 초기화되었는지 확인
+        if not hasattr(self, 'scene') or self.scene is None:
+            print("오류: scene이 초기화되지 않았습니다.")
+            return
+        if not hasattr(self, 'view') or self.view is None:
+            print("오류: view가 초기화되지 않았습니다.")
+            return
+        
         try:
             index = max(0, min(index, len(self.doc) - 1))
             self.cur_page_index = index
@@ -3564,6 +3556,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             img = _pil_to_qimage(bitmap)
             # img.copy() 대신 직접 변환 (copy()가 문제를 일으킬 수 있음)
             pm = QtGui.QPixmap.fromImage(img)
+            # pm이 유효한지 확인
+            if pm.isNull():
+                print(f"오류: QPixmap 생성 실패 (페이지 {index})")
+                _log_error(self, "페이지 이미지 생성 실패", Exception("QPixmap이 null입니다"))
+                return
         except Exception as e:
             import traceback
             print(f"load_page 오류: {e}")
