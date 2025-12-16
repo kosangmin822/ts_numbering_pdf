@@ -3508,6 +3508,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         try:
             self.load_page(self.cur_page_index)
         except Exception as e:
+            import traceback
+            print(f"import_pdf_from_path - load_page 오류: {e}")
+            traceback.print_exc()
             _log_error(self, "PDF 페이지 로드 오류", e)
             self._close_current_doc()
             return
@@ -3562,40 +3565,50 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # img.copy() 대신 직접 변환 (copy()가 문제를 일으킬 수 있음)
             pm = QtGui.QPixmap.fromImage(img)
         except Exception as e:
+            import traceback
+            print(f"load_page 오류: {e}")
+            traceback.print_exc()
             _log_error(self, "페이지 로드 오류", e)
             return
-        self.scene.clear()
-        # ▼▼▼ [결정적 수정] 파괴된 객체에 대한 참조를 여기서 모두 초기화합니다. ▼▼▼
-        self._preview_ellipse = None
-        self._preview_text = None
-        self._stamp_preview_item = None
-        # ▲▲▲ 여기까지 3줄 추가 ▲▲▲
-        self._stamp_graphics_items.clear()
-        self._clear_stamp_highlight()
-        self._page_pix = self.scene.addPixmap(pm)
-        self.view.setSceneRect(pm.rect())
-        if self.view_show_numbering:
-            for it in self.items:
-                if it.page_index == index:
-                    self._draw_label(it)
-        if self.view_show_stamps:
-            for st in self.stamps:
-                if st.page_index == index:
-                    self._draw_stamp(st)
-        if self.flow_view_enabled:
-            self._draw_flow_elements()
-        self._preview_ellipse = None
-        self._preview_text = None
-        self._on_zoom_changed(self.view._scale())
-        self._reapply_highlight_from_selection(same_page_only=True)
-        self._update_page_navigation_ui()
-        self._update_thumbnail_selection()
-        self._refresh_table_view()
-        self._refresh_stamp_table()
-        # [핵심 수정] UI 업데이트를 바로 호출하지 않고, 0초 뒤에 실행하도록 예약합니다.
-        QtCore.QTimer.singleShot(0, self._sync_ui_to_current_mode)
-        # ▼▼▼ 여기에 이 한 줄을 추가! ▼▼▼
-        self.view.setFocus()
+        
+        try:
+            self.scene.clear()
+            # ▼▼▼ [결정적 수정] 파괴된 객체에 대한 참조를 여기서 모두 초기화합니다. ▼▼▼
+            self._preview_ellipse = None
+            self._preview_text = None
+            self._stamp_preview_item = None
+            # ▲▲▲ 여기까지 3줄 추가 ▲▲▲
+            self._stamp_graphics_items.clear()
+            self._clear_stamp_highlight()
+            self._page_pix = self.scene.addPixmap(pm)
+            self.view.setSceneRect(pm.rect())
+            if self.view_show_numbering:
+                for it in self.items:
+                    if it.page_index == index:
+                        self._draw_label(it)
+            if self.view_show_stamps:
+                for st in self.stamps:
+                    if st.page_index == index:
+                        self._draw_stamp(st)
+            if self.flow_view_enabled:
+                self._draw_flow_elements()
+            self._preview_ellipse = None
+            self._preview_text = None
+            self._on_zoom_changed(self.view._scale())
+            self._reapply_highlight_from_selection(same_page_only=True)
+            self._update_page_navigation_ui()
+            self._update_thumbnail_selection()
+            self._refresh_table_view()
+            self._refresh_stamp_table()
+            # [핵심 수정] UI 업데이트를 바로 호출하지 않고, 0초 뒤에 실행하도록 예약합니다.
+            QtCore.QTimer.singleShot(0, self._sync_ui_to_current_mode)
+            # ▼▼▼ 여기에 이 한 줄을 추가! ▼▼▼
+            self.view.setFocus()
+        except Exception as e:
+            import traceback
+            print(f"load_page - UI 업데이트 오류: {e}")
+            traceback.print_exc()
+            _log_error(self, "페이지 UI 업데이트 오류", e)
 
     def go_prev(self):
         if self.doc and self.cur_page_index > 0:
