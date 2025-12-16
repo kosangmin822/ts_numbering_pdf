@@ -3603,12 +3603,44 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             bitmap = page.render(scale=self.render_scale)
             print(f"[DEBUG] load_page: render 완료, _pil_to_qimage 호출 전")
             img = _pil_to_qimage(bitmap)
-            print(f"[DEBUG] load_page: _pil_to_qimage 완료, QPixmap.fromImage 호출 전")
-            # img.copy() 대신 직접 변환 (copy()가 문제를 일으킬 수 있음)
-            pm = QtGui.QPixmap.fromImage(img)
-            print(f"[DEBUG] load_page: QPixmap.fromImage 완료, isNull={pm.isNull()}, size={pm.width()}x{pm.height()}")
+            print(f"[DEBUG] load_page: _pil_to_qimage 완료, QImage 유효성 검사 시작")
+            # QImage 유효성 검사
+            if img.isNull():
+                print(f"[DEBUG] load_page 오류: QImage가 null입니다 (페이지 {index})")
+                _log_error(self, "페이지 이미지 생성 실패", Exception("QImage가 null입니다"))
+                return
+            
+            print(f"[DEBUG] load_page: QImage 유효, size={img.width()}x{img.height()}, format={img.format()}")
+            
+            # QPixmap.fromImage 호출을 try-except로 감싸기
+            # 특정 PDF에서 크래시가 발생하므로 안전하게 처리
+            pm = None
+            try:
+                print(f"[DEBUG] load_page: QPixmap.fromImage 호출 전")
+                # QImage의 바이트 데이터가 유효한지 확인
+                # QImage를 QPixmap으로 변환하기 전에 메모리 안정성을 위해 복사
+                img_copy = img.copy()
+                pm = QtGui.QPixmap.fromImage(img_copy)
+                print(f"[DEBUG] load_page: QPixmap.fromImage 완료, isNull={pm.isNull()}, size={pm.width()}x{pm.height()}")
+            except Exception as e:
+                import traceback
+                print(f"[DEBUG] load_page: QPixmap.fromImage 예외 발생: {e}")
+                traceback.print_exc()
+                # 대체 방법: QImage를 다른 포맷으로 변환 후 시도
+                try:
+                    print(f"[DEBUG] load_page: 대체 방법 시도 - QImage를 ARGB32로 변환 후 시도")
+                    img_argb = img.convertToFormat(QtGui.QImage.Format_ARGB32)
+                    pm = QtGui.QPixmap.fromImage(img_argb)
+                    print(f"[DEBUG] load_page: 대체 방법 성공, isNull={pm.isNull()}")
+                except Exception as e2:
+                    import traceback
+                    print(f"[DEBUG] load_page: 대체 방법도 실패: {e2}")
+                    traceback.print_exc()
+                    _log_error(self, "페이지 이미지 변환 실패", e2)
+                    return
+            
             # pm이 유효한지 확인
-            if pm.isNull():
+            if pm is None or pm.isNull():
                 print(f"[DEBUG] load_page 오류: QPixmap 생성 실패 (페이지 {index})")
                 _log_error(self, "페이지 이미지 생성 실패", Exception("QPixmap이 null입니다"))
                 return
