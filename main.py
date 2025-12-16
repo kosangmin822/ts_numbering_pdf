@@ -5313,9 +5313,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 continue
             # --- 넘버링이나 스탬프가 있는 페이지는 이미지로 변환하여 처리 ---
             # 원본 PDF 페이지 크기 가져오기 (포인트 단위)
-            page_rect = src_page.get_rect()
-            page_width_pt = page_rect.width
-            page_height_pt = page_rect.height
+            # pypdfium2에서는 get_width()와 get_height()를 사용
+            page_width_pt = src_page.get_width()
+            page_height_pt = src_page.get_height()
             
             zoom = self.render_scale * 2
             # pypdfium2의 render()는 PdfBitmap을 반환합니다
