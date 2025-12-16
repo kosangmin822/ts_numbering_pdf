@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 import pypdfium2 as pdfium
 import pandas as pd
+import numpy as np
 from PIL import Image
 import requests
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -85,22 +86,39 @@ def _pdfium_insert_pdf(target_doc, source_doc, from_page=0, to_page=None):
     if to_page is None:
         to_page = len(source_doc) - 1
     
-    for i in range(from_page, to_page + 1):
-        src_page = source_doc.get_page(i)
-        # 원본 페이지를 렌더링하여 새 페이지에 삽입
-        pil_img = src_page.render(scale=1.0)
-        # PIL Image를 바이트로 변환
-        import io
-        img_bytes = io.BytesIO()
-        pil_img.save(img_bytes, format="PNG")
-        img_bytes.seek(0)
-        
-        # 새 페이지 생성
-        width = src_page.get_width()
-        height = src_page.get_height()
-        new_page = target_doc.new_page(width=width, height=height)
-        # 이미지 삽입 (pypdfium2의 이미지 삽입 방법 사용)
-        new_page.insert_image(new_page.get_rect(), image=img_bytes.getvalue())
+    # pypdfium2의 import_pages를 사용하여 페이지를 직접 복사
+    target_doc.import_pages(source_doc, pages=[i for i in range(from_page, to_page + 1)])
+
+
+def _pil_image_to_pdf_page(pil_image, width_points, height_points):
+    """PIL Image를 pypdfium2 PDF 페이지로 변환합니다."""
+    import io
+    import tempfile
+    
+    # PIL Image를 PDF로 변환 (임시 파일 사용)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        tmp_path = tmp_file.name
+    
+    # PIL Image를 PDF로 저장 (reportlab 또는 다른 방법 사용)
+    # 간단한 방법: 이미지를 PNG로 저장 후 PDF에 삽입
+    # 하지만 pypdfium2는 이미지 삽입이 복잡하므로, 
+    # 대신 이미지를 PDF로 변환한 후 import_pages 사용
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.utils import ImageReader
+    
+    c = canvas.Canvas(tmp_path, pagesize=(width_points, height_points))
+    img_reader = ImageReader(pil_image)
+    c.drawImage(img_reader, 0, 0, width=width_points, height=height_points)
+    c.save()
+    
+    # 변환된 PDF를 읽어서 페이지 반환
+    img_doc = pdfium.PdfDocument(tmp_path)
+    if len(img_doc) > 0:
+        page = img_doc.get_page(0)
+        os.unlink(tmp_path)
+        return page
+    os.unlink(tmp_path)
+    return None
 
 
 # =====================================================================
@@ -5124,7 +5142,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         if not self.doc:
             raise RuntimeError("PDF가 로드되지 않았습니다.")
-        out_doc = pdfium.PdfDocument()
+        out_doc = pdfium.PdfDocument.new()
         # 페이지별로 넘버링과 스탬프 아이템을 미리 그룹화합니다.
         items_by_page = defaultdict(list)
         for item in self.items:
@@ -5216,9 +5234,48 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             pm.save(buffer, "PNG")
             image_bytes = bytes(buffer.data())
             buffer.close()
-            img_page = out_doc.new_page(width=pm.width(), height=pm.height())
-            # pypdfium2의 insert_image API 확인 필요 (일단 get_rect() 사용)
-            img_page.insert_image(img_page.get_rect(), image=image_bytes)
+            # QPixmap을 PIL Image로 변환
+            qimg = pm.toImage()
+            width = qimg.width()
+            height = qimg.height()
+            # QImage를 numpy array로 변환
+            ptr = qimg.constBits()
+            if ptr:
+                ptr.setsize(qimg.byteCount())
+                arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 4))  # RGBA
+                pil_img = Image.fromarray(arr[:, :, :3])  # RGB만 사용
+                
+                # PIL Image를 PDF 페이지로 변환 (포인트 단위: 1 픽셀 = 1 포인트, DPI 72 기준)
+                width_pt = width
+                height_pt = height
+                
+                # 임시 PDF로 변환 후 import
+                import tempfile
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                    tmp_path = tmp_file.name
+                
+                try:
+                    from reportlab.pdfgen import canvas
+                    from reportlab.lib.utils import ImageReader
+                    
+                    c = canvas.Canvas(tmp_path, pagesize=(width_pt, height_pt))
+                    img_reader = ImageReader(pil_img)
+                    c.drawImage(img_reader, 0, 0, width=width_pt, height=height_pt)
+                    c.save()
+                    
+                    # 변환된 PDF를 읽어서 페이지 import
+                    img_doc = pdfium.PdfDocument(tmp_path)
+                    if len(img_doc) > 0:
+                        out_doc.import_pages(img_doc, pages=[0])
+                        img_doc.close()
+                    os.unlink(tmp_path)
+                except ImportError:
+                    # reportlab이 없으면 빈 페이지 생성
+                    img_page = out_doc.new_page(width=width_pt, height=height_pt)
+                    os.unlink(tmp_path)
+            else:
+                # 변환 실패 시 빈 페이지 생성
+                img_page = out_doc.new_page(width=width, height=height)
         if len(out_doc) > 0:
             out_doc.save(path)
         out_doc.close()
