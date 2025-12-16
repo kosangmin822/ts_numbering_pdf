@@ -5448,18 +5448,27 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     from reportlab.pdfgen import canvas
                     from reportlab.lib.utils import ImageReader
                     
+                    print(f"[DEBUG] _save_pdf_with_labels: PIL Image 크기={pil_img.width}x{pil_img.height}, PDF 크기={width_pt}x{height_pt}")
+                    
                     # 렌더링된 이미지 크기로 PDF 생성
                     c = canvas.Canvas(pdf_tmp_path, pagesize=(width_pt, height_pt))
                     img_reader = ImageReader(pil_img)
                     # 이미지를 렌더링된 크기 그대로 그리기
-                    c.drawImage(img_reader, 0, 0, width=width_pt, height=height_pt)
+                    # reportlab은 하단 좌측이 원점이므로 Y 좌표를 반전해야 할 수도 있음
+                    c.drawImage(img_reader, 0, 0, width=width_pt, height=height_pt, preserveAspectRatio=True)
                     c.save()
+                    
+                    print(f"[DEBUG] _save_pdf_with_labels: 임시 PDF 생성 완료, 파일 크기={os.path.getsize(pdf_tmp_path) if os.path.exists(pdf_tmp_path) else 0} bytes")
                     
                     # 변환된 PDF를 읽어서 페이지 import
                     img_doc = pdfium.PdfDocument(pdf_tmp_path)
+                    print(f"[DEBUG] _save_pdf_with_labels: 임시 PDF 로드 완료, 페이지 수={len(img_doc)}")
                     if len(img_doc) > 0:
                         out_doc.import_pages(img_doc, pages=[0])
+                        print(f"[DEBUG] _save_pdf_with_labels: 페이지 import 완료")
                         img_doc.close()
+                    else:
+                        print(f"[DEBUG] _save_pdf_with_labels: 경고 - 임시 PDF에 페이지가 없음")
                     os.unlink(pdf_tmp_path)
                 except ImportError:
                     # reportlab이 없으면 빈 페이지 생성
