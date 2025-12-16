@@ -3632,8 +3632,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             print(f"[DEBUG] load_page: render 완료, _pil_to_qimage 호출 전")
             img = _pil_to_qimage(bitmap)
             print(f"[DEBUG] load_page: _pil_to_qimage 완료, QPixmap 생성 전")
-            pm = QtGui.QPixmap.fromImage(img.copy())
-            print(f"[DEBUG] load_page: QPixmap 생성 완료")
+            # img.copy() 대신 직접 변환 (copy()가 문제를 일으킬 수 있음)
+            pm = QtGui.QPixmap.fromImage(img)
+            print(f"[DEBUG] load_page: QPixmap 생성 완료, size={pm.width()}x{pm.height()}")
         except Exception as e:
             _log_error(self, "페이지 로드 오류", e)
             return
@@ -4888,7 +4889,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # pypdfium2의 render()는 PIL Image를 반환합니다
         pil_img = page.render(scale=self.render_scale)
         img = _pil_to_qimage(pil_img)
-        pm = QtGui.QPixmap.fromImage(img.copy())
+        pm = QtGui.QPixmap.fromImage(img)
         p = QtGui.QPainter(pm)
         pen = QtGui.QPen(self.style.stroke_color)
         pen.setWidth(self.style.stroke_width)
