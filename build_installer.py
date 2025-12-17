@@ -20,7 +20,7 @@ PyInstaller.__main__.run([
     '--hidden-import=PySide6.QtGui',
     '--hidden-import=PySide6.QtWidgets',
     '--hidden-import=PySide6.QtMultimedia',
-    '--hidden-import=fitz',  # PyMuPDF
+    '--hidden-import=pypdfium2',  # pypdfium2 (PyMuPDF 대체)
     '--hidden-import=pandas',
     '--hidden-import=numpy',
     '--hidden-import=pyvista',
