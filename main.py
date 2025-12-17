@@ -2225,12 +2225,19 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.measure_points = []
         self.measure_actors = []
         self.measure_meshes = []  # 스냅 계산을 위한 메시 객체들 (실시간 계산)
-        self.measure_snap_distance = 5.0  # 스냅 거리 (mm 단위, 기본값 5mm)
+        # NOTE: 3D 모델 좌표계는 "meter"로 들어오는 케이스가 많습니다(STEP/STP 등).
+        # 스냅 반경을 5mm 기준으로 잡되, 실제 계산은 meter 단위로 맞춥니다.
+        # 5mm = 0.005m
+        self.measure_snap_distance = 0.005  # 스냅 거리 (meter 단위, 기본값 5mm)
         # 스냅 포인트 미리보기 관련 변수
         self.measure_snap_preview_actor = None  # 미리보기 마커 액터
+        self.measure_snap_preview_raw_actor = None  # RAW(스냅 전) 미리보기 마커
         self.measure_hover_timer = None  # 호버 타이머
         self.measure_last_mouse_pos = None  # 마지막 마우스 위치
         self.measure_hover_delay = 1000  # 호버 감지 지연 시간 (ms)
+        # 스냅 캐시(모서리 표시 음영의 feature edges 라인 기반)
+        self._snap_edge_cache = None
+        self._measure_hover_seen = False  # 호버 이벤트가 실제로 들어오는지 확인용
         self.numbering_mode = "global"  # <--- 이 줄을 추가해주세요
         self.flow_items = []  # <--- 이 줄을 추가해주세요
         # ===== ▼▼▼ [추가] 페이지 연결점 색상표 ▼▼▼ =====
@@ -3139,6 +3146,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if checked:
             # 측정 모드 활성화
             self.measure_mode_active = True
+            self._measure_hover_seen = False
             self.measure_points = []  # 선택된 점들을 저장할 리스트
             self._clear_measurements()  # 기존 측정 결과 제거
             
@@ -3166,6 +3174,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                         # 이벤트 필터 설치
                         self.plotter.interactor.installEventFilter(self)
                         self._measure_event_filter_installed = True
+                        # 마우스를 누르지 않아도 Move 이벤트가 오도록 설정
+                        try:
+                            self.plotter.interactor.setMouseTracking(True)
+                        except Exception:
+                            pass
                         print("마우스 이동 이벤트 필터 설치 완료")
                 except Exception as e:
                     print(f"마우스 이동 이벤트 핸들러 추가 실패 (미리보기 기능 비활성화): {e}")
@@ -3337,6 +3350,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             return
         
         try:
+            # 호버 이벤트가 실제로 들어오는지 사용자가 즉시 알 수 있도록 1회만 표시
+            if not getattr(self, "_measure_hover_seen", False):
+                self._measure_hover_seen = True
+                try:
+                    self.statusBar().showMessage("호버 감지 중... (1초 정지 시 스냅 미리보기)", 2000)
+                except Exception:
+                    pass
+
             # 마우스 위치 가져오기 (위젯 좌표)
             mouse_pos = event.position().toPoint()
             
@@ -3358,7 +3379,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self._clear_snap_preview()
             
             # 새로운 타이머 시작
-            self.measure_hover_timer = QtCore.QTimer()
+            self.measure_hover_timer = QtCore.QTimer(self)
             self.measure_hover_timer.setSingleShot(True)
             self.measure_hover_timer.timeout.connect(
                 lambda: self._show_snap_preview_qt(mouse_pos)
@@ -3380,43 +3401,76 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         
         import numpy as np
         import pyvista as pv
-        import vtk
         
         try:
-            # 위젯 좌표를 화면 좌표로 변환
-            global_pos = self.plotter.interactor.mapToGlobal(widget_pos)
-            screen_pos = [global_pos.x(), global_pos.y()]
-            
-            # 화면 좌표를 3D 좌표로 변환
-            picker = vtk.vtkCellPicker()
-            picker.SetTolerance(0.001)
-            
-            renderer = self.plotter.renderer
-            # 위젯 좌표를 직접 사용
-            picker.Pick(widget_pos.x(), widget_pos.y(), 0, renderer)
-            
-            picked_point = picker.GetPickPosition()
-            if picked_point is None or len(picked_point) != 3:
+            # 모서리 표시 음영(Feature edges)이 보이는 상태에서만 미리보기 제공
+            if not self._is_feature_edges_visible():
+                self._clear_snap_preview()
                 return
-            
-            point = np.array(picked_point)
-            
-            # 가장 가까운 스냅 포인트 찾기
-            snapped_point = self._find_nearest_snap_point(point)
-            
-            # 스냅 포인트가 원래 점과 다른 경우에만 미리보기 표시
-            distance = np.linalg.norm(point - snapped_point)
-            if distance > 0.001:  # 1mm 이상 차이가 나는 경우
-                # 미리보기 마커 표시 (작은 구체)
-                # 반경을 모델 스케일에 맞게 조정 (0.5m = 500mm)
-                sphere = pv.Sphere(radius=0.0005, center=snapped_point)  # 반경 0.5mm (meter 단위)
-                self.measure_snap_preview_actor = self.plotter.add_mesh(
-                    sphere,
-                    color="yellow",
-                    opacity=0.7,
-                    name="snap_preview"
+
+            # 기존 미리보기 제거
+            self._clear_snap_preview()
+
+            # 1) 우선 feature_edges 라인에서만 픽킹(엣지 기반 스냅 정확도 향상)
+            raw_point = self._pick_world_point_from_feature_edges(widget_pos)
+            picked_from_edges = raw_point is not None
+            # 2) 실패하면 일반 픽킹으로 폴백
+            if raw_point is None:
+                raw_point = self._pick_world_point_generic(widget_pos)
+            if raw_point is None:
+                return
+
+            point = np.array(raw_point, dtype=float)
+
+            # 규칙 기반 스냅 포인트 선택
+            snapped_point, kind, dist = self._select_snap_point_on_edges(point)
+            if snapped_point is None:
+                # 어떤 후보도 반경 내에 없으면 RAW 포인트만 표시(호버는 동작함을 보여줌)
+                # NOTE: 모델 단위(meter) 기준으로 미리보기 구 크기를 조정합니다.
+                # 기존 0.5mm(0.0005m)는 잘 안 보인다는 피드백이 있어 2.5mm로 확대합니다.
+                preview_radius_m = 0.0025
+                sphere_raw = pv.Sphere(radius=preview_radius_m, center=point)
+                self.measure_snap_preview_raw_actor = self.plotter.add_mesh(
+                    sphere_raw, color="gray", opacity=0.35, name="snap_preview_raw"
                 )
                 self.plotter.render()
+                return
+
+            # RAW 포인트(회색) + 스냅 포인트(색상) 동시 표시 -> 차이 체감 가능
+            preview_radius_m = 0.0025
+            sphere_raw = pv.Sphere(radius=preview_radius_m, center=point)
+            self.measure_snap_preview_raw_actor = self.plotter.add_mesh(
+                sphere_raw, color="gray", opacity=0.35, name="snap_preview_raw"
+            )
+
+            sphere = pv.Sphere(radius=preview_radius_m, center=snapped_point)
+
+            color_map = {
+                "end": "red",
+                "mid": "lime",
+                "cen": "cyan",
+                "near": "yellow",
+            }
+            color = color_map.get(kind, "yellow")
+
+            self.measure_snap_preview_actor = self.plotter.add_mesh(
+                sphere,
+                color=color,
+                opacity=0.7,
+                name="snap_preview",
+            )
+            self.plotter.render()
+
+            # 상태바에 현재 스냅 결과를 표시(스냅/호버 구분 용)
+            try:
+                dist_mm = float(dist) * 1000.0 if dist is not None else 0.0
+                src = "EDGE" if picked_from_edges else "SURF"
+                self.statusBar().showMessage(
+                    f"호버 스냅: {kind}  (거리 {dist_mm:.2f}mm, 픽={src})",
+                    1200,
+                )
+            except Exception:
+                pass
         
         except Exception as e:
             print(f"스냅 포인트 미리보기 표시 오류: {e}")
@@ -3432,9 +3486,346 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 except:
                     pass
                 self.measure_snap_preview_actor = None
-                self.plotter.render()
+            if hasattr(self, 'measure_snap_preview_raw_actor') and self.measure_snap_preview_raw_actor is not None:
+                try:
+                    self.plotter.remove_actor(self.measure_snap_preview_raw_actor)
+                except:
+                    pass
+                self.measure_snap_preview_raw_actor = None
+            self.plotter.render()
         except Exception as e:
             print(f"스냅 포인트 미리보기 제거 오류: {e}")
+
+    def _pick_world_point_from_feature_edges(self, widget_pos):
+        """
+        feature_edges(actor)에서만 픽킹하여 월드 좌표를 얻습니다.
+
+        Returns:
+            (np.ndarray | None): 픽 성공 시 3D 좌표
+        """
+        import numpy as np
+        import vtk
+
+        try:
+            if not hasattr(self, "plotter") or self.plotter is None:
+                return None
+            actor = getattr(self.plotter.renderer, "actors", {}).get("feature_edges")
+            if actor is None:
+                return None
+
+            picker = vtk.vtkCellPicker()
+            picker.SetTolerance(0.01)  # 화면 비율 기반(조금 넉넉하게)
+            picker.PickFromListOn()
+            picker.InitializePickList()
+            picker.AddPickList(actor)
+
+            renderer = self.plotter.renderer
+
+            interactor_h = 0
+            try:
+                interactor_h = int(self.plotter.interactor.height())
+            except Exception:
+                interactor_h = 0
+            x = int(widget_pos.x())
+            y = int(widget_pos.y())
+            y_vtk = int(interactor_h - y - 1)
+            if interactor_h > 0:
+                y_vtk = max(0, min(interactor_h - 1, y_vtk))
+            else:
+                y_vtk = max(0, y_vtk)
+
+            picker.Pick(x, y_vtk, 0, renderer)
+            if picker.GetCellId() < 0:
+                return None
+
+            picked = picker.GetPickPosition()
+            if picked is None or len(picked) != 3:
+                return None
+            return np.array(picked, dtype=float)
+        except Exception:
+            return None
+
+    def _pick_world_point_generic(self, widget_pos):
+        """일반(surface 포함) 픽킹으로 월드 좌표를 얻습니다."""
+        import numpy as np
+        import vtk
+
+        try:
+            if not hasattr(self, "plotter") or self.plotter is None:
+                return None
+            picker = vtk.vtkCellPicker()
+            picker.SetTolerance(0.01)
+            renderer = self.plotter.renderer
+
+            interactor_h = 0
+            try:
+                interactor_h = int(self.plotter.interactor.height())
+            except Exception:
+                interactor_h = 0
+            x = int(widget_pos.x())
+            y = int(widget_pos.y())
+            y_vtk = int(interactor_h - y - 1)
+            if interactor_h > 0:
+                y_vtk = max(0, min(interactor_h - 1, y_vtk))
+            else:
+                y_vtk = max(0, y_vtk)
+
+            picker.Pick(x, y_vtk, 0, renderer)
+            if picker.GetCellId() < 0:
+                return None
+            picked = picker.GetPickPosition()
+            if picked is None or len(picked) != 3:
+                return None
+            return np.array(picked, dtype=float)
+        except Exception:
+            return None
+
+    # =====================================================================
+    # 3D 스냅(모서리 표시 음영의 feature edges 기반)
+    # =====================================================================
+    def _is_feature_edges_visible(self) -> bool:
+        """
+        현재 3D 뷰어가 '모서리 표시 음영' 상태인지 판단합니다.
+
+        NOTE:
+            ViewportManager가 feature_edges actor의 visibility를 토글하므로,
+            실제로 라인이 보이는 상태에서만 스냅을 수행하도록 제한합니다.
+        """
+        try:
+            if not hasattr(self, "plotter") or self.plotter is None:
+                return False
+            actor = getattr(self.plotter.renderer, "actors", {}).get("feature_edges")
+            if actor is None:
+                return False
+            return bool(actor.GetVisibility())
+        except Exception:
+            return False
+
+    def _get_feature_edges_polydata(self):
+        """
+        렌더러에 올라가 있는 feature edges 라인의 vtkPolyData를 가져옵니다.
+
+        Returns:
+            vtk.vtkPolyData | None
+        """
+        try:
+            if not hasattr(self, "plotter") or self.plotter is None:
+                return None
+            actor = getattr(self.plotter.renderer, "actors", {}).get("feature_edges")
+            if actor is None:
+                return None
+            mapper = actor.GetMapper()
+            if mapper is None:
+                return None
+            poly = mapper.GetInput()
+            if poly is None:
+                return None
+            # 라인(엣지) 데이터가 있어야 함
+            if hasattr(poly, "GetNumberOfLines") and poly.GetNumberOfLines() <= 0:
+                return None
+            return poly
+        except Exception:
+            return None
+
+    def _unique_points(self, pts, decimals: int = 6):
+        """부동소수점 좌표를 반올림하여 중복 점을 제거합니다."""
+        import numpy as np
+
+        if pts is None or len(pts) == 0:
+            return np.empty((0, 3), dtype=float)
+        key = np.round(np.asarray(pts, dtype=float), decimals=decimals)
+        _, idx = np.unique(key, axis=0, return_index=True)
+        idx = np.sort(idx)
+        return np.asarray(pts, dtype=float)[idx]
+
+    def _build_point_locator(self, points_np):
+        """
+        numpy 포인트 배열로 vtkStaticPointLocator를 생성합니다.
+
+        Returns:
+            (vtkPolyData, vtkStaticPointLocator)
+        """
+        import vtk
+        import numpy as np
+
+        pts = np.asarray(points_np, dtype=float)
+        vtk_points = vtk.vtkPoints()
+        vtk_points.SetNumberOfPoints(len(pts))
+        for i, p in enumerate(pts):
+            vtk_points.SetPoint(i, float(p[0]), float(p[1]), float(p[2]))
+
+        poly = vtk.vtkPolyData()
+        poly.SetPoints(vtk_points)
+
+        locator = vtk.vtkStaticPointLocator()
+        locator.SetDataSet(poly)
+        locator.BuildLocator()
+        return poly, locator
+
+    def _extract_edge_snap_points(self, edge_poly):
+        """
+        feature edges(polyline)에서 End/Mid/Cen 후보 점을 추출합니다.
+
+        Assumption:
+            - edge_poly는 vtkPolyData이며 Lines에 polyline cell이 들어있습니다.
+            - End: 각 polyline의 시작/끝 점
+            - Mid: 각 polyline의 중간 인덱스 점(곡선도 대략적인 중간점)
+            - Cen: 닫힌 polyline(시작/끝이 거의 같은 경우)의 점 평균(대략 중심)
+        """
+        import numpy as np
+        import vtk
+
+        endpoints = []
+        midpoints = []
+        centers = []
+
+        if edge_poly is None:
+            return (
+                np.empty((0, 3), dtype=float),
+                np.empty((0, 3), dtype=float),
+                np.empty((0, 3), dtype=float),
+            )
+
+        pts_vtk = edge_poly.GetPoints()
+        lines = edge_poly.GetLines()
+        if pts_vtk is None or lines is None:
+            return (
+                np.empty((0, 3), dtype=float),
+                np.empty((0, 3), dtype=float),
+                np.empty((0, 3), dtype=float),
+            )
+
+        id_list = vtk.vtkIdList()
+        lines.InitTraversal()
+
+        # meter 단위에서 "거의 같은 점" 판단 (0.1mm 수준으로 완화)
+        closed_tol = 1e-4
+
+        while lines.GetNextCell(id_list):
+            n = id_list.GetNumberOfIds()
+            if n < 2:
+                continue
+
+            first_id = id_list.GetId(0)
+            last_id = id_list.GetId(n - 1)
+            p0 = np.array(pts_vtk.GetPoint(first_id), dtype=float)
+            p1 = np.array(pts_vtk.GetPoint(last_id), dtype=float)
+
+            endpoints.append(p0)
+            endpoints.append(p1)
+
+            mid_id = id_list.GetId(n // 2)
+            pm = np.array(pts_vtk.GetPoint(mid_id), dtype=float)
+            midpoints.append(pm)
+
+            # 닫힌 라인(loop)인 경우 중심점 후보 추가
+            if np.linalg.norm(p0 - p1) <= closed_tol and n >= 6:
+                loop_pts = np.array(
+                    [pts_vtk.GetPoint(id_list.GetId(i)) for i in range(n)], dtype=float
+                )
+                centers.append(loop_pts.mean(axis=0))
+
+        return (
+            np.asarray(endpoints, dtype=float),
+            np.asarray(midpoints, dtype=float),
+            np.asarray(centers, dtype=float),
+        )
+
+    def _select_snap_point_on_edges(self, world_point):
+        """
+        규칙 기반 스냅 포인트 선택기.
+
+        Rules:
+            1) 스냅 후보는 feature edges(모서리 표시 음영의 라인) 기반으로 제한한다.
+               - End, Mid, Near(라인 위 최근접점), Center(닫힌 루프의 중심)만 사용
+            2) 우선순위는 End → Mid (→ Center) 이다.
+               - Near는 End/Mid(그리고 Center)가 반경 내에 없을 때만 사용한다.
+
+        Returns:
+            (snapped_point: np.ndarray, kind: str, dist: float) or (None, None, None)
+        """
+        import numpy as np
+        import vtk
+        import math
+
+        if world_point is None:
+            return None, None, None
+
+        if not self._is_feature_edges_visible():
+            return None, None, None
+
+        cache = getattr(self, "_snap_edge_cache", None)
+        if not cache:
+            return None, None, None
+
+        radius = float(getattr(self, "measure_snap_distance", 0.005))
+        p = np.asarray(world_point, dtype=float)
+
+        want_end = bool(getattr(self, "snap_endpoint_cb", None) and self.snap_endpoint_cb.isChecked())
+        want_mid = bool(getattr(self, "snap_midpoint_cb", None) and self.snap_midpoint_cb.isChecked())
+        want_cen = bool(getattr(self, "snap_center_cb", None) and self.snap_center_cb.isChecked())
+        want_near = bool(getattr(self, "snap_near_cb", None) and self.snap_near_cb.isChecked())
+
+        def _nearest_from_point_cache(point_cache):
+            if not point_cache:
+                return None, None
+            pts = point_cache.get("points")
+            locator = point_cache.get("locator")
+            if pts is None or locator is None or len(pts) == 0:
+                return None, None
+
+            id_list = vtk.vtkIdList()
+            locator.FindPointsWithinRadius(radius, p, id_list)
+            n = id_list.GetNumberOfIds()
+            if n <= 0:
+                return None, None
+
+            # 후보들 중 실제 거리 기준 최단 선택
+            best_dist = float("inf")
+            best_pt = None
+            for i in range(n):
+                pid = id_list.GetId(i)
+                cand = pts[pid]
+                d = float(np.linalg.norm(p - cand))
+                if d < best_dist:
+                    best_dist = d
+                    best_pt = cand
+            return best_pt, best_dist
+
+        # 1) End
+        if want_end:
+            pt, dist = _nearest_from_point_cache(cache.get("end"))
+            if pt is not None:
+                return np.asarray(pt, dtype=float), "end", float(dist)
+
+        # 2) Mid
+        if want_mid:
+            pt, dist = _nearest_from_point_cache(cache.get("mid"))
+            if pt is not None:
+                return np.asarray(pt, dtype=float), "mid", float(dist)
+
+        # 3) Center
+        if want_cen:
+            pt, dist = _nearest_from_point_cache(cache.get("cen"))
+            if pt is not None:
+                return np.asarray(pt, dtype=float), "cen", float(dist)
+
+        # 4) Near: End/Mid/Cen이 반경 내에 없을 때만
+        if want_near:
+            locator = cache.get("cell_locator")
+            if locator is None:
+                return None, None, None
+
+            closest = [0.0, 0.0, 0.0]
+            cell_id = vtk.mutable(0)
+            sub_id = vtk.mutable(0)
+            dist2 = vtk.mutable(0.0)
+            locator.FindClosestPoint(p, closest, cell_id, sub_id, dist2)
+            d = math.sqrt(float(dist2))
+            if d <= radius:
+                return np.asarray(closest, dtype=float), "near", float(d)
+
+        return None, None, None
 
     def _on_measure_point_picked_with_snap(self, point):
         """
@@ -3522,59 +3913,74 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
     def _calculate_snap_points(self, plotter):
         """
-        메시에서 스냅 가능한 점들을 계산합니다.
-        성능 최적화: 메시의 꼭짓점만 저장하고, 엣지/면 정보는 필요 시 실시간 계산.
+        스냅 캐시를 준비합니다.
+
+        구현 의도(중요):
+            - 사용자 요구사항: "모서리 표시 음영"에서 보이는 모서리 라인(feature edges)만을
+              스냅 후보로 사용해야 함.
+            - 따라서 기존처럼 전체 메시 표면 점을 대상으로 스냅하는 방식은 사용하지 않음.
+
+        준비하는 데이터:
+            - End/Mid/Cen 후보 점 + vtkStaticPointLocator
+            - Near(라인 위 최근접점) 계산용 vtkCellLocator
         
         Args:
             plotter: PyVista plotter 객체
         """
-        import numpy as np
-        import pyvista as pv
+        import vtk
         
         try:
-            if plotter is None or not hasattr(plotter, 'renderer') or plotter.renderer is None:
-                self.measure_meshes = []
+            self._snap_edge_cache = None
+
+            if plotter is None or not hasattr(plotter, "renderer") or plotter.renderer is None:
                 return
-            
-            # 메시 객체들을 저장 (실시간 스냅 계산을 위해)
-            self.measure_meshes = []
-            
-            # plotter에 추가된 모든 메시 가져오기
-            actors = plotter.renderer.GetActors()
-            if actors is None:
-                self.measure_meshes = []
+
+            edge_poly = self._get_feature_edges_polydata()
+            if edge_poly is None:
+                # 모서리 라인이 없으면 스냅 자체를 비활성화
+                print("스냅 준비 실패: feature_edges 라인을 찾지 못했습니다.")
                 return
-            
-            for actor in actors:
-                try:
-                    if actor is None or actor.GetMapper() is None:
-                        continue
-                    
-                    mapper = actor.GetMapper()
-                    if mapper.GetInput() is None:
-                        continue
-                    
-                    # 메시 래핑 시도
-                    try:
-                        mesh = pv.wrap(mapper.GetInput())
-                        if mesh is not None and mesh.n_points > 0:
-                            self.measure_meshes.append(mesh)
-                    except Exception as e:
-                        print(f"메시 래핑 오류: {e}")
-                        continue
-                
-                except Exception as e:
-                    continue
-            
-            print(f"스냅 메시 준비 완료: {len(self.measure_meshes)}개 메시")
+
+            end_pts, mid_pts, cen_pts = self._extract_edge_snap_points(edge_poly)
+            end_pts = self._unique_points(end_pts, decimals=6)
+            mid_pts = self._unique_points(mid_pts, decimals=6)
+            cen_pts = self._unique_points(cen_pts, decimals=6)
+
+            cache = {"edge_poly": edge_poly, "end": None, "mid": None, "cen": None, "cell_locator": None}
+
+            if len(end_pts) > 0:
+                _, end_loc = self._build_point_locator(end_pts)
+                cache["end"] = {"points": end_pts, "locator": end_loc}
+
+            if len(mid_pts) > 0:
+                _, mid_loc = self._build_point_locator(mid_pts)
+                cache["mid"] = {"points": mid_pts, "locator": mid_loc}
+
+            if len(cen_pts) > 0:
+                _, cen_loc = self._build_point_locator(cen_pts)
+                cache["cen"] = {"points": cen_pts, "locator": cen_loc}
+
+            cell_locator = vtk.vtkCellLocator()
+            cell_locator.SetDataSet(edge_poly)
+            cell_locator.BuildLocator()
+            cache["cell_locator"] = cell_locator
+
+            self._snap_edge_cache = cache
+
+            print(
+                f"스냅 캐시 준비 완료: End={len(end_pts)}, Mid={len(mid_pts)}, Cen={len(cen_pts)}, Lines={edge_poly.GetNumberOfLines()}"
+            )
         except Exception as e:
-            print(f"스냅 메시 준비 오류: {e}")
-            self.measure_meshes = []
+            print(f"스냅 캐시 준비 오류: {e}")
+            import traceback
+
+            traceback.print_exc()
+            self._snap_edge_cache = None
 
     def _find_nearest_snap_point(self, point):
         """
-        클릭한 위치에서 가장 가까운 스냅 포인트를 실시간으로 찾습니다.
-        성능 최적화: 미리 계산하지 않고 필요 시에만 계산.
+        클릭한 위치에서 가장 가까운 스냅 포인트를 찾습니다.
+        (feature edges 기반 규칙 적용)
         
         Args:
             point: 클릭한 3D 좌표 (numpy array)
@@ -3583,109 +3989,29 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             가장 가까운 스냅 포인트의 좌표 (numpy array)
         """
         import numpy as np
-        import pyvista as pv
-        
-        if not hasattr(self, 'measure_meshes') or len(self.measure_meshes) == 0:
-            return point
-        
-        # 활성화된 스냅 옵션 확인
-        snap_endpoint = hasattr(self, 'snap_endpoint_cb') and self.snap_endpoint_cb.isChecked()
-        snap_midpoint = hasattr(self, 'snap_midpoint_cb') and self.snap_midpoint_cb.isChecked()
-        snap_center = hasattr(self, 'snap_center_cb') and self.snap_center_cb.isChecked()
-        snap_near = hasattr(self, 'snap_near_cb') and self.snap_near_cb.isChecked()
-        
-        if not (snap_endpoint or snap_midpoint or snap_center or snap_near):
-            return point
-        
-        min_distance = float('inf')
-        nearest_point = point
-        
-        # 각 메시에서 가장 가까운 점 찾기
-        for mesh in self.measure_meshes:
-            try:
-                # Near 옵션이 활성화된 경우, 메시 표면에서 가장 가까운 점 찾기
-                if snap_near:
-                    closest_point_id = mesh.find_closest_point(point)
-                    if closest_point_id >= 0:
-                        closest_vertex = mesh.points[closest_point_id]
-                        distance = np.linalg.norm(point - closest_vertex)
-                        
-                        if distance < min_distance and distance <= self.measure_snap_distance:
-                            min_distance = distance
-                            nearest_point = closest_vertex
-                
-                # End 옵션이 활성화된 경우, 엔드포인트 찾기 (현재는 Near와 동일하게 처리)
-                if snap_endpoint:
-                    closest_point_id = mesh.find_closest_point(point)
-                    if closest_point_id >= 0:
-                        closest_vertex = mesh.points[closest_point_id]
-                        distance = np.linalg.norm(point - closest_vertex)
-                        
-                        if distance < min_distance and distance <= self.measure_snap_distance:
-                            min_distance = distance
-                            nearest_point = closest_vertex
-                
-                # 중간점 스냅이 활성화된 경우, 가장 가까운 엣지의 중간점도 확인
-                if snap_midpoint and mesh.n_cells > 0:
-                    # 가장 가까운 셀 찾기
-                    closest_cell_id = mesh.find_closest_cell(point)
-                    if closest_cell_id >= 0:
-                        try:
-                            cell = mesh.get_cell(closest_cell_id)
-                            point_ids = cell.point_ids
-                            if len(point_ids) >= 2:
-                                # 가장 가까운 두 점 찾기
-                                vertices = mesh.points[point_ids]
-                                distances = [np.linalg.norm(point - v) for v in vertices]
-                                sorted_indices = np.argsort(distances)
-                                
-                                # 가장 가까운 두 점의 중간점
-                                p1 = vertices[sorted_indices[0]]
-                                p2 = vertices[sorted_indices[1]]
-                                midpoint = (p1 + p2) / 2
-                                mid_distance = np.linalg.norm(point - midpoint)
-                                
-                                if mid_distance < min_distance and mid_distance <= self.measure_snap_distance:
-                                    min_distance = mid_distance
-                                    nearest_point = midpoint
-                        except:
-                            pass
-                
-                # 중심점 스냅이 활성화된 경우, 가장 가까운 면의 중심점도 확인
-                if snap_center and mesh.n_cells > 0:
-                    closest_cell_id = mesh.find_closest_cell(point)
-                    if closest_cell_id >= 0:
-                        try:
-                            cell = mesh.get_cell(closest_cell_id)
-                            point_ids = cell.point_ids
-                            if len(point_ids) > 0:
-                                vertices = mesh.points[point_ids]
-                                center = np.mean(vertices, axis=0)
-                                center_distance = np.linalg.norm(point - center)
-                                
-                                if center_distance < min_distance and center_distance <= self.measure_snap_distance:
-                                    min_distance = center_distance
-                                    nearest_point = center
-                        except:
-                            pass
-            
-            except Exception as e:
-                # 개별 메시 처리 오류는 무시하고 계속
-                continue
-        
-        return nearest_point
+
+        try:
+            snapped, _, _ = self._select_snap_point_on_edges(point)
+            if snapped is None:
+                return np.asarray(point, dtype=float)
+            return np.asarray(snapped, dtype=float)
+        except Exception:
+            return np.asarray(point, dtype=float)
 
     def _on_snap_option_changed(self):
         """
         스냅 옵션이 변경되었을 때 호출되는 함수.
-        스냅 포인트를 다시 계산합니다. (측정 모드가 활성화된 경우에만)
+        스냅 옵션은 "선택 로직"에만 영향을 주므로, 캐시를 매번 재계산하지 않습니다.
+        (대형 모델에서 옵션 토글이 느려지는 문제 방지)
         """
         try:
-            # 측정 모드가 활성화된 경우에만 스냅 포인트 재계산
-            if hasattr(self, 'measure_mode_active') and self.measure_mode_active:
-                if hasattr(self, 'plotter') and self.plotter is not None:
-                    # 백그라운드에서 계산 (UI 블로킹 방지)
-                    QtCore.QTimer.singleShot(100, lambda: self._calculate_snap_points(self.plotter))
+            # 캐시가 아직 없으면(처음 진입 등) 한 번만 준비
+            if hasattr(self, "measure_mode_active") and self.measure_mode_active:
+                if getattr(self, "_snap_edge_cache", None) is None:
+                    QtCore.QTimer.singleShot(50, lambda: self._calculate_snap_points(self.plotter))
+
+            # 옵션이 바뀌면 현재 미리보기는 제거
+            self._clear_snap_preview()
         except Exception as e:
             print(f"스냅 옵션 변경 처리 오류: {e}")
             import traceback

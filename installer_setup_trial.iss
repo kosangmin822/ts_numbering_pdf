@@ -1,8 +1,8 @@
 ; Inno Setup 설치 스크립트 (트라이얼 버전)
-; TS Numbering for PDF v7.00_trial 설치 프로그램
+; TS Numbering for PDF v1.2_trial 설치 프로그램
 
 #define MyAppName "TS Numbering for PDF"
-#define MyAppVersion "7.00"
+#define MyAppVersion "1.2"
 #define MyAppPublisher "Taesung Engineering"
 #define MyAppURL "https://www.taesung.co.kr"
 #define MyAppExeName "TS_Numbering_PDF_Trial.exe"
@@ -24,7 +24,7 @@ AllowNoIcons=yes
 LicenseFile=LICENSE
 InfoBeforeFile=README
 OutputDir=installer
-OutputBaseFilename=TS_Numbering_PDF_Trial_Setup_v7.00
+OutputBaseFilename=TS_Numbering_PDF_Trial_Setup_v1.2
 SetupIconFile=resources\icons\icon.ico
 Compression=lzma2
 SolidCompression=yes
