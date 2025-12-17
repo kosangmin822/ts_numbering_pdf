@@ -954,6 +954,116 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             projection_button_group.addButton(self.perspective_btn, 1)
             projection_button_group.setExclusive(True)
 
+            # === 치수 측정 섹션 ===
+            measure_frame = QtWidgets.QFrame()
+            measure_frame.setStyleSheet("""
+                QFrame {
+                    background-color: rgba(60, 60, 60, 150);
+                    border: 1px solid rgba(100, 100, 100, 150);
+                    border-radius: 4px;
+                }
+            """)
+            measure_layout = QtWidgets.QHBoxLayout(measure_frame)
+            measure_layout.setContentsMargins(8, 8, 8, 8)  # 뷰모드와 동일
+            measure_layout.setSpacing(8)
+
+            # 치수 측정 라벨 (뷰모드와 동일한 스타일)
+            measure_label = QtWidgets.QLabel("치수측정")
+            measure_label.setStyleSheet("""
+                QLabel {
+                    color: white;
+                    font-weight: bold;
+                    font-size: 10px;
+                    border: 2px solid rgba(255, 255, 255, 200);
+                    border-radius: 3px;
+                    padding: 2px 4px;
+                }
+            """)
+            measure_layout.addWidget(measure_label)
+
+            # 자 아이콘 버튼 (뷰모드 버튼과 동일한 크기)
+            self.measure_btn = QtWidgets.QPushButton()
+            self.measure_btn.setCheckable(True)
+            self.measure_btn.setFixedSize(32, 32)  # 뷰모드 버튼과 동일한 크기
+            self.measure_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            self.measure_btn.setToolTip("치수 측정 모드 (두 점 클릭)")
+            self.measure_btn.clicked.connect(self.toggle_measure_mode)
+            # 자 아이콘 설정
+            try:
+                from utils.helpers import icon_if
+                ruler_icon = icon_if("resources/icons/ruler.png")
+                if ruler_icon and not ruler_icon.isNull():
+                    self.measure_btn.setIcon(ruler_icon)
+                    self.measure_btn.setIconSize(QtCore.QSize(28, 28))  # 뷰모드 아이콘과 동일한 크기
+            except:
+                pass
+            self.measure_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(60, 60, 60, 150);
+                    border: none;
+                    border-radius: 4px;
+                }
+                QPushButton:checked {
+                    background-color: rgba(200, 150, 100, 220);
+                    border: 2px solid rgba(255, 200, 150, 255);
+                }
+                QPushButton:hover {
+                    background-color: rgba(80, 80, 80, 180);
+                }
+            """)
+            measure_layout.addWidget(self.measure_btn)
+
+            # 스냅 옵션을 오른쪽으로 최대한 보내기
+            measure_layout.addStretch()
+
+            # 스냅 옵션 레이아웃 (2x2 그리드)
+            snap_grid_layout = QtWidgets.QGridLayout()
+            snap_grid_layout.setSpacing(4)
+
+            # 공통 스타일 정의
+            snap_checkbox_style = """
+                QCheckBox {
+                    color: white;
+                    font-size: 8px;
+                }
+                QCheckBox::indicator {
+                    width: 10px;
+                    height: 10px;
+                }
+            """
+
+            # 스냅 옵션 체크박스들 (2x2 그리드)
+            self.snap_endpoint_cb = QtWidgets.QCheckBox("End")
+            self.snap_endpoint_cb.setChecked(True)  # 기본값: 활성화
+            self.snap_endpoint_cb.setToolTip("엔드포인트 스냅")
+            self.snap_endpoint_cb.setStyleSheet(snap_checkbox_style)
+            self.snap_endpoint_cb.toggled.connect(self._on_snap_option_changed)
+            snap_grid_layout.addWidget(self.snap_endpoint_cb, 0, 0)
+
+            self.snap_midpoint_cb = QtWidgets.QCheckBox("Mid")
+            self.snap_midpoint_cb.setChecked(True)  # 기본값: 활성화
+            self.snap_midpoint_cb.setToolTip("중간점 스냅")
+            self.snap_midpoint_cb.setStyleSheet(snap_checkbox_style)
+            self.snap_midpoint_cb.toggled.connect(self._on_snap_option_changed)
+            snap_grid_layout.addWidget(self.snap_midpoint_cb, 0, 1)
+
+            self.snap_center_cb = QtWidgets.QCheckBox("Cen")
+            self.snap_center_cb.setChecked(True)  # 기본값: 활성화
+            self.snap_center_cb.setToolTip("중심점 스냅")
+            self.snap_center_cb.setStyleSheet(snap_checkbox_style)
+            self.snap_center_cb.toggled.connect(self._on_snap_option_changed)
+            snap_grid_layout.addWidget(self.snap_center_cb, 1, 0)
+
+            # Near 옵션 추가 (가장 가까운 점)
+            self.snap_near_cb = QtWidgets.QCheckBox("Near")
+            self.snap_near_cb.setChecked(True)  # 기본값: 활성화
+            self.snap_near_cb.setToolTip("가장 가까운 점 스냅")
+            self.snap_near_cb.setStyleSheet(snap_checkbox_style)
+            self.snap_near_cb.toggled.connect(self._on_snap_option_changed)
+            snap_grid_layout.addWidget(self.snap_near_cb, 1, 1)
+
+            measure_layout.addLayout(snap_grid_layout)
+
             # === 컬러 컨트롤 섹션 ===
             color_control_frame = QtWidgets.QFrame()
             color_control_frame.setStyleSheet("""
@@ -1037,6 +1147,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 메인 레이아웃에 섹션들 추가
             main_layout.addWidget(view_mode_frame)
             main_layout.addWidget(projection_frame)
+            main_layout.addWidget(measure_frame)
             main_layout.addWidget(color_control_frame)
             main_layout.addStretch()
             # ��Ʈ�� �г��� 3D ����� ��Ȯ�� ���� ��� ���� ��ġ
@@ -2109,6 +2220,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.model_path = None
         self.doc = None
         self.cur_page_index = 0
+        # === 치수 측정 관련 변수 초기화 ===
+        self.measure_mode_active = False
+        self.measure_points = []
+        self.measure_actors = []
+        self.measure_meshes = []  # 스냅 계산을 위한 메시 객체들 (실시간 계산)
+        self.measure_snap_distance = 5.0  # 스냅 거리 (mm 단위, 기본값 5mm)
+        # 스냅 포인트 미리보기 관련 변수
+        self.measure_snap_preview_actor = None  # 미리보기 마커 액터
+        self.measure_hover_timer = None  # 호버 타이머
+        self.measure_last_mouse_pos = None  # 마지막 마우스 위치
+        self.measure_hover_delay = 1000  # 호버 감지 지연 시간 (ms)
         self.numbering_mode = "global"  # <--- 이 줄을 추가해주세요
         self.flow_items = []  # <--- 이 줄을 추가해주세요
         # ===== ▼▼▼ [추가] 페이지 연결점 색상표 ▼▼▼ =====
@@ -2968,6 +3090,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         plotter.interactor.setAttribute(QtCore.Qt.WA_OpaquePaintEvent, True)
         plotter.interactor.setAttribute(QtCore.Qt.WA_NoSystemBackground, True)
         # ▲▲▲ 여기까지 추가 ▲▲▲
+        # 5-4. 치수 측정 모드 초기화
+        self.measure_mode_active = False
+        self.measure_points = []
+        self.measure_actors = []
+        if hasattr(self, 'measure_btn'):
+            self.measure_btn.setChecked(False)
+        # 5-5. 스냅 포인트 계산은 측정 모드가 활성화될 때만 수행하도록 변경
+        # (파일 로드 시 자동 계산 제거 - 크래시 방지)
         # 6. 화면을 3D 탭으로 전환합니다.
         # self.tab_widget.setCurrentWidget(self.widget_3d)
         # ▼▼▼ [수정 3] 대신 상태 표시줄에 완료 메시지를 표시 ▼▼▼
@@ -2991,6 +3121,598 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.progress_dialog.close()
         _log_error(self, "3D 모델 로딩 오류", Exception(error_message))
         self.statusBar().showMessage("3D 모델을 불러오는 데 실패했습니다.", 5000)
+
+    def toggle_measure_mode(self, checked):
+        """
+        치수 측정 모드를 토글합니다.
+        
+        Args:
+            checked: 버튼이 체크되었는지 여부
+        """
+        if not hasattr(self, 'plotter') or self.plotter is None:
+            return
+        
+        # 버튼의 체크 상태 설정
+        if hasattr(self, 'measure_btn'):
+            self.measure_btn.setChecked(checked)
+        
+        if checked:
+            # 측정 모드 활성화
+            self.measure_mode_active = True
+            self.measure_points = []  # 선택된 점들을 저장할 리스트
+            self._clear_measurements()  # 기존 측정 결과 제거
+            
+            # 스냅 포인트 계산 (측정 모드 활성화 시에만 수행)
+            try:
+                if hasattr(self, 'plotter') and self.plotter is not None:
+                    # 백그라운드에서 스냅 포인트 계산 (UI 블로킹 방지)
+                    QtCore.QTimer.singleShot(100, lambda: self._calculate_snap_points(self.plotter))
+            except Exception as e:
+                print(f"스냅 포인트 계산 시작 오류: {e}")
+            
+            # PyVista의 enable_point_picking 사용 (스냅 기능 적용)
+            try:
+                # 기존 피커 비활성화
+                if hasattr(self, '_measure_mouse_observer'):
+                    try:
+                        self.plotter.iren.RemoveObserver(self._measure_mouse_observer)
+                    except:
+                        pass
+                
+                # 마우스 이동 이벤트 핸들러 추가 (스냅 포인트 미리보기용)
+                # PySide6의 이벤트 필터 사용 (QtInteractor는 QWidget이므로)
+                try:
+                    if hasattr(self.plotter, 'interactor') and self.plotter.interactor is not None:
+                        # 이벤트 필터 설치
+                        self.plotter.interactor.installEventFilter(self)
+                        self._measure_event_filter_installed = True
+                        print("마우스 이동 이벤트 필터 설치 완료")
+                except Exception as e:
+                    print(f"마우스 이동 이벤트 핸들러 추가 실패 (미리보기 기능 비활성화): {e}")
+                    # 미리보기 기능 없이도 작동하도록 계속 진행
+                
+                # PyVista의 enable_point_picking 사용 (스냅 기능 포함)
+                self.plotter.enable_point_picking(
+                    callback=self._on_measure_point_picked_with_snap,
+                    show_message=False
+                )
+                self.statusBar().showMessage("치수 측정 모드: 모델 위의 두 점을 클릭하세요 (스냅 활성화)", 3000)
+            except Exception as e:
+                print(f"치수 측정 모드 활성화 오류: {e}")
+                import traceback
+                traceback.print_exc()
+                self.measure_btn.setChecked(False)
+                self.measure_mode_active = False
+        else:
+            # 측정 모드 비활성화
+            self.measure_mode_active = False
+            try:
+                self.plotter.disable_picking()
+                if hasattr(self, '_measure_mouse_observer'):
+                    try:
+                        self.plotter.iren.RemoveObserver(self._measure_mouse_observer)
+                    except:
+                        pass
+                    del self._measure_mouse_observer
+                # 이벤트 필터 제거
+                if hasattr(self, '_measure_event_filter_installed') and self._measure_event_filter_installed:
+                    try:
+                        if hasattr(self.plotter, 'interactor') and self.plotter.interactor is not None:
+                            self.plotter.interactor.removeEventFilter(self)
+                    except:
+                        pass
+                    self._measure_event_filter_installed = False
+            except:
+                pass
+            
+            # 호버 타이머 정리
+            if hasattr(self, 'measure_hover_timer') and self.measure_hover_timer is not None:
+                self.measure_hover_timer.stop()
+                self.measure_hover_timer = None
+            
+            # 미리보기 제거
+            self._clear_snap_preview()
+            
+            # 기존 측정 결과 제거
+            self._clear_measurements()
+            self.statusBar().showMessage("치수 측정 모드 종료", 2000)
+
+    def _on_measure_mouse_click(self, obj, event):
+        """
+        치수 측정 모드에서 마우스 클릭 이벤트를 처리하는 함수.
+        스냅 기능을 포함하여 가장 가까운 특정 지점을 선택합니다.
+        
+        Args:
+            obj: VTK 이벤트 객체
+            event: VTK 이벤트
+        """
+        if not self.measure_mode_active:
+            return
+        
+        import numpy as np
+        import pyvista as pv
+        import vtk
+        
+        try:
+            # 마우스 클릭 위치를 3D 좌표로 변환
+            click_pos = self.plotter.iren.GetEventPosition()
+            
+            # 피커 생성 및 설정
+            picker = vtk.vtkCellPicker()
+            picker.SetTolerance(0.001)
+            
+            # 화면 좌표를 월드 좌표로 변환
+            renderer = self.plotter.renderer
+            picker.Pick(click_pos[0], click_pos[1], 0, renderer)
+            
+            # 선택된 점의 3D 좌표 가져오기
+            picked_point = picker.GetPickPosition()
+            if picked_point is None or len(picked_point) != 3:
+                # 피커가 실패한 경우, enable_point_picking을 사용
+                try:
+                    # PyVista의 enable_point_picking을 일시적으로 사용
+                    self.plotter.enable_point_picking(
+                        callback=lambda point: self._on_measure_point_picked_with_snap(point),
+                        show_message=False,
+                        left_clicking=True
+                    )
+                    # 한 번만 사용하고 비활성화
+                    QtCore.QTimer.singleShot(100, lambda: self.plotter.disable_picking())
+                except:
+                    pass
+                return
+            
+            point = np.array(picked_point)
+            
+            # 스냅 기능 적용: 가장 가까운 스냅 포인트 찾기
+            snapped_point = self._find_nearest_snap_point(point)
+            
+            # 점을 리스트에 추가
+            self.measure_points.append(snapped_point.copy())
+            
+            # 두 점이 선택되면 거리 계산 및 표시
+            if len(self.measure_points) == 2:
+                p1, p2 = self.measure_points[0], self.measure_points[1]
+                
+                # 거리 계산 (유클리드 거리)
+                distance = np.linalg.norm(p2 - p1)
+                
+                # STEP/STP 파일은 일반적으로 meter 단위로 저장되므로 mm로 변환
+                # 1m = 1000mm
+                distance_mm = distance * 1000.0
+                
+                # 두 점 사이의 선 그리기
+                try:
+                    line = pv.Line(p1, p2)
+                    line_actor = self.plotter.add_mesh(
+                        line,
+                        color="red",
+                        line_width=3,
+                        name=f"measure_line_{len(self.measure_actors)}"
+                    )
+                    self.measure_actors.append(line_actor)
+                    
+                    # 중간 지점에 거리 텍스트 표시
+                    mid_point = (p1 + p2) / 2
+                    text_actor = self.plotter.add_point_labels(
+                        [mid_point],
+                        [f"{distance_mm:.2f} mm"],
+                        font_size=12,
+                        text_color="red",
+                        point_color="red",
+                        point_size=5,
+                        name=f"measure_text_{len(self.measure_actors)}"
+                    )
+                    self.measure_actors.append(text_actor)
+                    
+                    # 상태바에 거리 표시
+                    self.statusBar().showMessage(
+                        f"측정 완료: {distance_mm:.2f} mm", 
+                        5000
+                    )
+                    
+                    # 다음 측정을 위해 점 리스트 초기화
+                    self.measure_points = []
+                    
+                    # 렌더링 업데이트
+                    self.plotter.render()
+                except Exception as e:
+                    print(f"측정 결과 표시 오류: {e}")
+                    self.measure_points = []
+            elif len(self.measure_points) == 1:
+                self.statusBar().showMessage("두 번째 점을 클릭하세요", 2000)
+        except Exception as e:
+            print(f"마우스 클릭 처리 오류: {e}")
+
+
+    def _on_measure_mouse_move_qt(self, event):
+        """
+        측정 모드에서 마우스 이동 이벤트를 처리하는 함수 (PySide6 이벤트).
+        마우스가 특정 위치에 1초 이상 머물면 스냅 포인트를 미리보기로 표시합니다.
+        
+        Args:
+            event: PySide6 QMouseEvent
+        """
+        if not self.measure_mode_active:
+            return
+        
+        try:
+            # 마우스 위치 가져오기 (위젯 좌표)
+            mouse_pos = event.position().toPoint()
+            
+            # 마지막 마우스 위치와 비교하여 같은 위치인지 확인
+            if self.measure_last_mouse_pos is not None:
+                if (abs(mouse_pos.x() - self.measure_last_mouse_pos.x()) < 3 and 
+                    abs(mouse_pos.y() - self.measure_last_mouse_pos.y()) < 3):
+                    # 같은 위치에 있으면 타이머가 이미 시작되었을 수 있음
+                    return
+            
+            # 마우스 위치 업데이트
+            self.measure_last_mouse_pos = mouse_pos
+            
+            # 기존 타이머 취소
+            if self.measure_hover_timer is not None:
+                self.measure_hover_timer.stop()
+            
+            # 미리보기 제거
+            self._clear_snap_preview()
+            
+            # 새로운 타이머 시작
+            self.measure_hover_timer = QtCore.QTimer()
+            self.measure_hover_timer.setSingleShot(True)
+            self.measure_hover_timer.timeout.connect(
+                lambda: self._show_snap_preview_qt(mouse_pos)
+            )
+            self.measure_hover_timer.start(self.measure_hover_delay)
+        
+        except Exception as e:
+            print(f"마우스 이동 처리 오류: {e}")
+
+    def _show_snap_preview_qt(self, widget_pos):
+        """
+        스냅 포인트 미리보기를 표시합니다 (PySide6 좌표 사용).
+        
+        Args:
+            widget_pos: 위젯 좌표 (QPoint)
+        """
+        if not self.measure_mode_active:
+            return
+        
+        import numpy as np
+        import pyvista as pv
+        import vtk
+        
+        try:
+            # 위젯 좌표를 화면 좌표로 변환
+            global_pos = self.plotter.interactor.mapToGlobal(widget_pos)
+            screen_pos = [global_pos.x(), global_pos.y()]
+            
+            # 화면 좌표를 3D 좌표로 변환
+            picker = vtk.vtkCellPicker()
+            picker.SetTolerance(0.001)
+            
+            renderer = self.plotter.renderer
+            # 위젯 좌표를 직접 사용
+            picker.Pick(widget_pos.x(), widget_pos.y(), 0, renderer)
+            
+            picked_point = picker.GetPickPosition()
+            if picked_point is None or len(picked_point) != 3:
+                return
+            
+            point = np.array(picked_point)
+            
+            # 가장 가까운 스냅 포인트 찾기
+            snapped_point = self._find_nearest_snap_point(point)
+            
+            # 스냅 포인트가 원래 점과 다른 경우에만 미리보기 표시
+            distance = np.linalg.norm(point - snapped_point)
+            if distance > 0.001:  # 1mm 이상 차이가 나는 경우
+                # 미리보기 마커 표시 (작은 구체)
+                # 반경을 모델 스케일에 맞게 조정 (0.5m = 500mm)
+                sphere = pv.Sphere(radius=0.0005, center=snapped_point)  # 반경 0.5mm (meter 단위)
+                self.measure_snap_preview_actor = self.plotter.add_mesh(
+                    sphere,
+                    color="yellow",
+                    opacity=0.7,
+                    name="snap_preview"
+                )
+                self.plotter.render()
+        
+        except Exception as e:
+            print(f"스냅 포인트 미리보기 표시 오류: {e}")
+
+    def _clear_snap_preview(self):
+        """
+        스냅 포인트 미리보기를 제거합니다.
+        """
+        try:
+            if hasattr(self, 'measure_snap_preview_actor') and self.measure_snap_preview_actor is not None:
+                try:
+                    self.plotter.remove_actor(self.measure_snap_preview_actor)
+                except:
+                    pass
+                self.measure_snap_preview_actor = None
+                self.plotter.render()
+        except Exception as e:
+            print(f"스냅 포인트 미리보기 제거 오류: {e}")
+
+    def _on_measure_point_picked_with_snap(self, point):
+        """
+        PyVista의 enable_point_picking에서 호출되는 콜백 함수.
+        스냅 기능을 적용합니다.
+        
+        Args:
+            point: 선택된 3D 좌표
+        """
+        import numpy as np
+        
+        if not self.measure_mode_active:
+            return
+        
+        # 점을 numpy array로 변환
+        if not isinstance(point, np.ndarray):
+            point = np.array(point)
+        
+        # 미리보기 제거
+        self._clear_snap_preview()
+        
+        # 호버 타이머 취소
+        if self.measure_hover_timer is not None:
+            self.measure_hover_timer.stop()
+            self.measure_hover_timer = None
+        
+        # 스냅 기능 적용: 가장 가까운 스냅 포인트 찾기
+        snapped_point = self._find_nearest_snap_point(point)
+        
+        # 점을 리스트에 추가
+        self.measure_points.append(snapped_point.copy())
+        
+        # 두 점이 선택되면 거리 계산 및 표시
+        if len(self.measure_points) == 2:
+            p1, p2 = self.measure_points[0], self.measure_points[1]
+            
+            # 거리 계산 (유클리드 거리)
+            distance = np.linalg.norm(p2 - p1)
+            
+            # STEP/STP 파일은 일반적으로 meter 단위로 저장되므로 mm로 변환
+            # 1m = 1000mm
+            distance_mm = distance * 1000.0
+            
+            # 두 점 사이의 선 그리기
+            try:
+                import pyvista as pv
+                line = pv.Line(p1, p2)
+                line_actor = self.plotter.add_mesh(
+                    line,
+                    color="red",
+                    line_width=3,
+                    name=f"measure_line_{len(self.measure_actors)}"
+                )
+                self.measure_actors.append(line_actor)
+                
+                # 중간 지점에 거리 텍스트 표시
+                mid_point = (p1 + p2) / 2
+                text_actor = self.plotter.add_point_labels(
+                    [mid_point],
+                    [f"{distance_mm:.2f} mm"],
+                    font_size=12,
+                    text_color="red",
+                    point_color="red",
+                    point_size=5,
+                    name=f"measure_text_{len(self.measure_actors)}"
+                )
+                self.measure_actors.append(text_actor)
+                
+                # 상태바에 거리 표시
+                self.statusBar().showMessage(
+                    f"측정 완료: {distance_mm:.2f} mm", 
+                    5000
+                )
+                
+                # 다음 측정을 위해 점 리스트 초기화
+                self.measure_points = []
+                
+                # 렌더링 업데이트
+                self.plotter.render()
+            except Exception as e:
+                print(f"측정 결과 표시 오류: {e}")
+                self.measure_points = []
+        elif len(self.measure_points) == 1:
+            self.statusBar().showMessage("두 번째 점을 클릭하세요", 2000)
+
+    def _calculate_snap_points(self, plotter):
+        """
+        메시에서 스냅 가능한 점들을 계산합니다.
+        성능 최적화: 메시의 꼭짓점만 저장하고, 엣지/면 정보는 필요 시 실시간 계산.
+        
+        Args:
+            plotter: PyVista plotter 객체
+        """
+        import numpy as np
+        import pyvista as pv
+        
+        try:
+            if plotter is None or not hasattr(plotter, 'renderer') or plotter.renderer is None:
+                self.measure_meshes = []
+                return
+            
+            # 메시 객체들을 저장 (실시간 스냅 계산을 위해)
+            self.measure_meshes = []
+            
+            # plotter에 추가된 모든 메시 가져오기
+            actors = plotter.renderer.GetActors()
+            if actors is None:
+                self.measure_meshes = []
+                return
+            
+            for actor in actors:
+                try:
+                    if actor is None or actor.GetMapper() is None:
+                        continue
+                    
+                    mapper = actor.GetMapper()
+                    if mapper.GetInput() is None:
+                        continue
+                    
+                    # 메시 래핑 시도
+                    try:
+                        mesh = pv.wrap(mapper.GetInput())
+                        if mesh is not None and mesh.n_points > 0:
+                            self.measure_meshes.append(mesh)
+                    except Exception as e:
+                        print(f"메시 래핑 오류: {e}")
+                        continue
+                
+                except Exception as e:
+                    continue
+            
+            print(f"스냅 메시 준비 완료: {len(self.measure_meshes)}개 메시")
+        except Exception as e:
+            print(f"스냅 메시 준비 오류: {e}")
+            self.measure_meshes = []
+
+    def _find_nearest_snap_point(self, point):
+        """
+        클릭한 위치에서 가장 가까운 스냅 포인트를 실시간으로 찾습니다.
+        성능 최적화: 미리 계산하지 않고 필요 시에만 계산.
+        
+        Args:
+            point: 클릭한 3D 좌표 (numpy array)
+            
+        Returns:
+            가장 가까운 스냅 포인트의 좌표 (numpy array)
+        """
+        import numpy as np
+        import pyvista as pv
+        
+        if not hasattr(self, 'measure_meshes') or len(self.measure_meshes) == 0:
+            return point
+        
+        # 활성화된 스냅 옵션 확인
+        snap_endpoint = hasattr(self, 'snap_endpoint_cb') and self.snap_endpoint_cb.isChecked()
+        snap_midpoint = hasattr(self, 'snap_midpoint_cb') and self.snap_midpoint_cb.isChecked()
+        snap_center = hasattr(self, 'snap_center_cb') and self.snap_center_cb.isChecked()
+        snap_near = hasattr(self, 'snap_near_cb') and self.snap_near_cb.isChecked()
+        
+        if not (snap_endpoint or snap_midpoint or snap_center or snap_near):
+            return point
+        
+        min_distance = float('inf')
+        nearest_point = point
+        
+        # 각 메시에서 가장 가까운 점 찾기
+        for mesh in self.measure_meshes:
+            try:
+                # Near 옵션이 활성화된 경우, 메시 표면에서 가장 가까운 점 찾기
+                if snap_near:
+                    closest_point_id = mesh.find_closest_point(point)
+                    if closest_point_id >= 0:
+                        closest_vertex = mesh.points[closest_point_id]
+                        distance = np.linalg.norm(point - closest_vertex)
+                        
+                        if distance < min_distance and distance <= self.measure_snap_distance:
+                            min_distance = distance
+                            nearest_point = closest_vertex
+                
+                # End 옵션이 활성화된 경우, 엔드포인트 찾기 (현재는 Near와 동일하게 처리)
+                if snap_endpoint:
+                    closest_point_id = mesh.find_closest_point(point)
+                    if closest_point_id >= 0:
+                        closest_vertex = mesh.points[closest_point_id]
+                        distance = np.linalg.norm(point - closest_vertex)
+                        
+                        if distance < min_distance and distance <= self.measure_snap_distance:
+                            min_distance = distance
+                            nearest_point = closest_vertex
+                
+                # 중간점 스냅이 활성화된 경우, 가장 가까운 엣지의 중간점도 확인
+                if snap_midpoint and mesh.n_cells > 0:
+                    # 가장 가까운 셀 찾기
+                    closest_cell_id = mesh.find_closest_cell(point)
+                    if closest_cell_id >= 0:
+                        try:
+                            cell = mesh.get_cell(closest_cell_id)
+                            point_ids = cell.point_ids
+                            if len(point_ids) >= 2:
+                                # 가장 가까운 두 점 찾기
+                                vertices = mesh.points[point_ids]
+                                distances = [np.linalg.norm(point - v) for v in vertices]
+                                sorted_indices = np.argsort(distances)
+                                
+                                # 가장 가까운 두 점의 중간점
+                                p1 = vertices[sorted_indices[0]]
+                                p2 = vertices[sorted_indices[1]]
+                                midpoint = (p1 + p2) / 2
+                                mid_distance = np.linalg.norm(point - midpoint)
+                                
+                                if mid_distance < min_distance and mid_distance <= self.measure_snap_distance:
+                                    min_distance = mid_distance
+                                    nearest_point = midpoint
+                        except:
+                            pass
+                
+                # 중심점 스냅이 활성화된 경우, 가장 가까운 면의 중심점도 확인
+                if snap_center and mesh.n_cells > 0:
+                    closest_cell_id = mesh.find_closest_cell(point)
+                    if closest_cell_id >= 0:
+                        try:
+                            cell = mesh.get_cell(closest_cell_id)
+                            point_ids = cell.point_ids
+                            if len(point_ids) > 0:
+                                vertices = mesh.points[point_ids]
+                                center = np.mean(vertices, axis=0)
+                                center_distance = np.linalg.norm(point - center)
+                                
+                                if center_distance < min_distance and center_distance <= self.measure_snap_distance:
+                                    min_distance = center_distance
+                                    nearest_point = center
+                        except:
+                            pass
+            
+            except Exception as e:
+                # 개별 메시 처리 오류는 무시하고 계속
+                continue
+        
+        return nearest_point
+
+    def _on_snap_option_changed(self):
+        """
+        스냅 옵션이 변경되었을 때 호출되는 함수.
+        스냅 포인트를 다시 계산합니다. (측정 모드가 활성화된 경우에만)
+        """
+        try:
+            # 측정 모드가 활성화된 경우에만 스냅 포인트 재계산
+            if hasattr(self, 'measure_mode_active') and self.measure_mode_active:
+                if hasattr(self, 'plotter') and self.plotter is not None:
+                    # 백그라운드에서 계산 (UI 블로킹 방지)
+                    QtCore.QTimer.singleShot(100, lambda: self._calculate_snap_points(self.plotter))
+        except Exception as e:
+            print(f"스냅 옵션 변경 처리 오류: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _clear_measurements(self):
+        """
+        모든 측정 결과를 제거합니다.
+        """
+        if not hasattr(self, 'plotter') or self.plotter is None:
+            return
+        
+        if hasattr(self, 'measure_actors'):
+            for actor in self.measure_actors:
+                try:
+                    self.plotter.remove_actor(actor)
+                except:
+                    pass
+            self.measure_actors = []
+        
+        if hasattr(self, 'measure_points'):
+            self.measure_points = []
+        
+        try:
+            self.plotter.render()
+        except:
+            pass
 
     def _apply_initial_layout(self):
         try:
@@ -3058,6 +3780,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         widget_3d = getattr(self, "widget_3d", None)
         if watched is widget_3d and event.type() == QtCore.QEvent.Resize:
             self._position_integrated_control_panel()
+        
+        # 측정 모드에서 3D 뷰어의 마우스 이동 이벤트 처리
+        if (self.measure_mode_active and 
+            hasattr(self, 'plotter') and 
+            self.plotter is not None and
+            hasattr(self.plotter, 'interactor') and
+            watched == self.plotter.interactor):
+            
+            if event.type() == QtCore.QEvent.MouseMove:
+                self._on_measure_mouse_move_qt(event)
+        
         return super().eventFilter(watched, event)
 
     def new_project(self):
