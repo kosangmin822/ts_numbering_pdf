@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-TS Numbering Tool (v6.01) - Refactored Version
+TS Numbering Tool (v1.2_stable) - Refactored Version
 """
 from __future__ import annotations
 import copy
@@ -57,8 +57,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v7.00_stable"
-TSN_VERSION = "7.00"
+APP_VER = "v1.2_stable"
+TSN_VERSION = "1.2"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -1803,6 +1803,45 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         main_layout.addSpacing(18)
         main_layout.addWidget(self._create_toolbar_group(group4_actions, "라벨 및 흐름도 서식"))
         main_layout.addStretch(1)
+        # ▼▼▼ [추가] 뷰어 레이아웃 선택 버튼 3개 추가 ▼▼▼
+        # 레이아웃 아이콘 로드
+        icon_tab = icon_if("resources/icons/tab_windows.png")
+        icon_horizontal = icon_if("resources/icons/horizontal_windows.png")
+        icon_vertical = icon_if("resources/icons/vertical_windows.png")
+        
+        # 레이아웃 액션 생성 (QAction 생성자 올바른 사용법)
+        self.action_layout_tab = QtGui.QAction(self)
+        self.action_layout_tab.setIcon(icon_tab)
+        self.action_layout_tab.setText("탭")
+        self.action_layout_tab.setToolTip("탭 모드")
+        self.action_layout_tab.setCheckable(True)
+        self.action_layout_tab.setChecked(True)  # 기본값
+        self.action_layout_tab.triggered.connect(lambda: self._set_viewer_layout("tab"))
+        
+        self.action_layout_horizontal = QtGui.QAction(self)
+        self.action_layout_horizontal.setIcon(icon_horizontal)
+        self.action_layout_horizontal.setText("가로")
+        self.action_layout_horizontal.setToolTip("가로 2분할")
+        self.action_layout_horizontal.setCheckable(True)
+        self.action_layout_horizontal.triggered.connect(lambda: self._set_viewer_layout("horizontal_split"))
+        
+        self.action_layout_vertical = QtGui.QAction(self)
+        self.action_layout_vertical.setIcon(icon_vertical)
+        self.action_layout_vertical.setText("세로")
+        self.action_layout_vertical.setToolTip("세로 2분할")
+        self.action_layout_vertical.setCheckable(True)
+        self.action_layout_vertical.triggered.connect(lambda: self._set_viewer_layout("vertical_split"))
+        
+        # 배타적 버튼 그룹으로 묶기
+        layout_action_group = QtGui.QActionGroup(self)
+        layout_action_group.setExclusive(True)
+        layout_action_group.addAction(self.action_layout_tab)
+        layout_action_group.addAction(self.action_layout_horizontal)
+        layout_action_group.addAction(self.action_layout_vertical)
+        
+        layout_actions = [self.action_layout_tab, self.action_layout_horizontal, self.action_layout_vertical]
+        main_layout.addWidget(self._create_toolbar_group(layout_actions, "뷰어 레이아웃"))
+        # ▲▲▲ 여기까지 추가 ▲▲▲
         self.main_toolbar.addWidget(custom_toolbar_widget)
 
     # ===== ▼▼▼ 모드 전환 및 시각적 업데이트 함수 (새로 추가) ▼▼▼ =====
@@ -2030,14 +2069,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.setWindowTitle(f"{APP_NAME} ({APP_VER}){trial_message}")
         self.resize(1400, 800)  # 윈도우 크기를 줄여서 테이블에 맞춤
         # ▼▼▼ 탭 위젯 설정 코드 (삽입) ▼▼▼
-        # 1. 탭 위젯을 생성하고 중앙에 배치합니다.
-        self.tab_widget = QtWidgets.QTabWidget()
-        self.setCentralWidget(self.tab_widget)
-        # 2. 기존의 PDF 뷰어를 첫 번째 탭에 추가합니다.
+        # 1. 2D 뷰어 생성
         self.scene = PdfScene(self)
         self.view = PdfView(self.scene, self)
-        self.tab_widget.addTab(self.view, "2D View")
-        # 3. 3D 뷰어를 위한 두 번째 탭을 만듭니다. (지금은 빈 공간)
+        # 2. 3D 뷰어 위젯 생성
         self.vlayout_3d = QtWidgets.QVBoxLayout()
         self.vlayout_3d.setContentsMargins(0, 0, 0, 0)
         self.vlayout_3d.setSpacing(0)
@@ -2049,10 +2084,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.widget_3d.setAttribute(QtCore.Qt.WA_OpaquePaintEvent, True)
         # ▲▲▲ 여기까지 추가 ▲▲▲
         self.widget_3d.setLayout(self.vlayout_3d)
-        self.tab_widget.addTab(self.widget_3d, "3D View")
-        # ▼▼▼ [수정] 탭 전환 시 2D 뷰어가 확실히 숨겨지도록 설정 ▼▼▼
-        self.tab_widget.currentChanged.connect(self._on_tab_changed)
-        # ▲▲▲ 여기까지 추가 ▲▲▲
+        # 3. 중앙 뷰어 컨테이너 생성 (도크 위젯들은 유지하고 뷰어 영역만 변경)
+        self.viewer_container = QtWidgets.QWidget()
+        self.viewer_container_layout = QtWidgets.QVBoxLayout(self.viewer_container)
+        self.viewer_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.viewer_container_layout.setSpacing(0)
+        self.setCentralWidget(self.viewer_container)
+        # 4. 초기 레이아웃 설정 (기본값: 탭 모드)
+        self._set_viewer_layout("tab")
         # 신호/슬롯 연결
         self.scene.clicked.connect(self.on_clicked)
         self.scene.moved.connect(self.on_scene_moved)
@@ -2091,6 +2130,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
         self.is_dirty = False  # ===== ▼▼▼ 이 줄을 추가해주세요 ▼▼▼ =====
         self.style_clipboard = None  # ===== ▼▼▼ 이 줄을 추가해주세요 ▼▼▼ =====
+        # ▼▼▼ [추가] 뷰어 레이아웃 모드 설정 (tab, horizontal_split, vertical_split) ▼▼▼
+        self.viewer_layout_mode = "tab"  # 기본값: 탭 모드
+        # ▲▲▲ 여기까지 추가 ▲▲▲
         self.render_scale = 2
         self.auto_highres = True
         # ===== ▼▼▼ 보기/숨기기 상태 변수 추가/수정 ▼▼▼ =====
@@ -3775,6 +3817,141 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 self.view.show()
             if hasattr(self, 'widget_3d'):
                 self.widget_3d.hide()
+    # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
+    
+    # ===== ▼▼▼ 뷰어 레이아웃 전환 함수 추가 ▼▼▼ =====
+    def _set_viewer_layout(self, mode: str):
+        """
+        뷰어 레이아웃 모드를 설정합니다. (중앙 뷰어 영역만 변경, 도크 위젯은 유지)
+        
+        Args:
+            mode: "tab" (탭 모드), "horizontal_split" (가로 2분할), "vertical_split" (세로 2분할)
+        """
+        if not hasattr(self, 'view') or not hasattr(self, 'widget_3d'):
+            return
+        
+        # 위젯이 유효한지 확인
+        try:
+            if not self.view or not self.widget_3d:
+                return
+        except RuntimeError:
+            return  # 위젯이 이미 삭제된 경우
+        
+        # 현재 모드와 동일하면 아무것도 하지 않음
+        if hasattr(self, 'viewer_layout_mode') and self.viewer_layout_mode == mode:
+            return
+        
+        self.viewer_layout_mode = mode
+        
+        # 기존 위젯들을 부모에서 안전하게 분리
+        view_widget = self.view
+        widget_3d = self.widget_3d
+        
+        # viewer_container_layout의 기존 위젯 제거 (위젯은 삭제하지 않음)
+        # 먼저 레이아웃에서 모든 아이템을 제거
+        while self.viewer_container_layout.count() > 0:
+            item = self.viewer_container_layout.takeAt(0)
+            if item and item.widget():
+                container_widget = item.widget()
+                # 컨테이너 위젯(탭 위젯이나 스플리터) 안의 위젯들을 먼저 제거
+                if isinstance(container_widget, QtWidgets.QTabWidget):
+                    # 탭 위젯에서 모든 탭 제거
+                    while container_widget.count() > 0:
+                        container_widget.removeTab(0)
+                elif isinstance(container_widget, QtWidgets.QSplitter):
+                    # 스플리터에서 모든 위젯 제거 (QSplitter에는 removeWidget이 없으므로 setParent 사용)
+                    while container_widget.count() > 0:
+                        child = container_widget.widget(0)
+                        if child:
+                            child.setParent(None)  # 부모를 None으로 설정하면 자동으로 splitter에서 제거됨
+                # 컨테이너 위젯을 레이아웃에서 제거
+                container_widget.setParent(None)
+        
+        # 위젯이 이미 다른 부모에 있으면 제거 (안전하게)
+        def safe_remove_from_parent(widget):
+            """위젯을 부모에서 안전하게 제거"""
+            if not widget:
+                return
+            try:
+                parent = widget.parent()
+                if not parent:
+                    return
+                if isinstance(parent, QtWidgets.QTabWidget):
+                    # 탭에서 제거
+                    for i in range(parent.count()):
+                        if parent.widget(i) == widget:
+                            parent.removeTab(i)
+                            break
+                elif isinstance(parent, QtWidgets.QSplitter):
+                    # 스플리터에서 제거 (QSplitter에는 removeWidget이 없으므로 setParent 사용)
+                    widget.setParent(None)  # 부모를 None으로 설정하면 자동으로 splitter에서 제거됨
+                elif isinstance(parent, QtWidgets.QWidget):
+                    # 일반 위젯의 레이아웃에서 제거
+                    layout = parent.layout()
+                    if layout:
+                        layout.removeWidget(widget)
+            except (RuntimeError, AttributeError):
+                pass  # 이미 삭제되었거나 접근 불가
+        
+        # 위젯들을 부모에서 제거
+        safe_remove_from_parent(view_widget)
+        safe_remove_from_parent(widget_3d)
+        
+        if mode == "tab":
+            # 탭 모드: QTabWidget 사용
+            if not hasattr(self, 'tab_widget') or self.tab_widget is None:
+                self.tab_widget = QtWidgets.QTabWidget()
+            # 기존 탭 제거 (혹시 모를 경우를 대비)
+            while self.tab_widget.count() > 0:
+                self.tab_widget.removeTab(0)
+            # 위젯이 유효한지 다시 확인 후 추가
+            try:
+                self.tab_widget.addTab(view_widget, "2D View")
+                self.tab_widget.addTab(widget_3d, "3D View")
+            except RuntimeError:
+                return  # 위젯이 삭제된 경우
+            # 시그널 연결 (중복 방지)
+            try:
+                self.tab_widget.currentChanged.disconnect(self._on_tab_changed)
+            except:
+                pass
+            self.tab_widget.currentChanged.connect(self._on_tab_changed)
+            self.viewer_container_layout.addWidget(self.tab_widget)
+            
+        elif mode == "horizontal_split":
+            # 가로 2분할: 좌우로 나눔
+            splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+            try:
+                splitter.addWidget(view_widget)
+                splitter.addWidget(widget_3d)
+            except RuntimeError:
+                return  # 위젯이 삭제된 경우
+            splitter.setSizes([500, 500])  # 50:50 비율
+            self.viewer_container_layout.addWidget(splitter)
+            # 두 뷰어 모두 표시
+            view_widget.show()
+            widget_3d.show()
+            
+        elif mode == "vertical_split":
+            # 세로 2분할: 상하로 나눔
+            splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+            try:
+                splitter.addWidget(view_widget)
+                splitter.addWidget(widget_3d)
+            except RuntimeError:
+                return  # 위젯이 삭제된 경우
+            splitter.setSizes([400, 400])  # 50:50 비율
+            self.viewer_container_layout.addWidget(splitter)
+            # 두 뷰어 모두 표시
+            view_widget.show()
+            widget_3d.show()
+        
+        # 3D 뷰어가 보일 때 렌더링
+        if mode != "tab" and hasattr(self, 'plotter') and self.plotter:
+            try:
+                self.plotter.render()
+            except:
+                pass
     # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
     
     # ===== ▼▼▼ 아래 4개 함수를 여기에 새로 추가해주세요 ▼▼▼ =====
