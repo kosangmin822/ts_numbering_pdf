@@ -767,7 +767,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 뷰 모드 버튼들 생성 (크기 절반으로 조정)
             self.shading_btn = QtWidgets.QPushButton()
             self.shading_btn.setCheckable(True)
-            self.shading_btn.setChecked(True)
+            self.shading_btn.setChecked(False)
             self.shading_btn.setFixedSize(32, 32)  # 버튼 크기 절반으로 조정
             self.shading_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)  # 크기 고정
             self.shading_btn.setToolTip("음영처리")
@@ -789,6 +789,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
             self.edges_btn = QtWidgets.QPushButton()
             self.edges_btn.setCheckable(True)
+            self.edges_btn.setChecked(True)  # 기본값: 모서리 표시 음영
             self.edges_btn.setFixedSize(32, 32)  # 버튼 크기 절반으로 조정
             self.edges_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)  # 크기 고정
             self.edges_btn.setToolTip("모서리 표시 음영")
@@ -884,7 +885,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 일반 뷰 버튼 (크기 절반으로 조정)
             self.normal_view_btn = QtWidgets.QPushButton()
             self.normal_view_btn.setCheckable(True)
-            self.normal_view_btn.setChecked(False)  # 기본값은 투시도
+            self.normal_view_btn.setChecked(True)  # 기본값: 일반 뷰 (Orthographic)
             self.normal_view_btn.setFixedSize(32, 32)  # 버튼 크기 절반으로 조정
             self.normal_view_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)  # 크기 고정
             self.normal_view_btn.setToolTip("일반 뷰 (Orthographic): 원근감 없음, 정확한 치수 표시")
@@ -917,7 +918,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 투시도 버튼 (크기 절반으로 조정)
             self.perspective_btn = QtWidgets.QPushButton()
             self.perspective_btn.setCheckable(True)
-            self.perspective_btn.setChecked(True)  # 기본값은 투시도
+            self.perspective_btn.setChecked(False)  # 기본값은 일반 뷰
             self.perspective_btn.setFixedSize(32, 32)  # 버튼 크기 절반으로 조정
             self.perspective_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)  # 크기 고정
             self.perspective_btn.setToolTip("투시도 (Perspective): 원근감 있음, 현실적인 시각화")
@@ -2136,7 +2137,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.render_scale = 2
         self.auto_highres = True
         # ===== ▼▼▼ 보기/숨기기 상태 변수 추가/수정 ▼▼▼ =====
-        self.flow_view_enabled = True  # 흐름도 (디폴트 ON)
+        self.flow_view_enabled = False  # 흐름도 (디폴트 OFF)
         self.view_show_numbering = True  # 넘버링 (디폴트 ON)
         self.view_show_stamps = True  # 스탬프 (디폴트 ON)
         # ===== ▲▲▲ 여기까지 추가/수정 ▲▲▲ =====
@@ -2957,9 +2958,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # plotter.interactor가 제대로 렌더링되도록 강제 업데이트
         plotter.interactor.update()
         # ▲▲▲ 여기까지 추가 ▲▲▲
-        # 5-1. 기본 뷰 모드를 "음영 처리"로 설정 (엣지 없음)
-        self.set_view_mode("shading")
-        # 5-2. 초기 뷰 정보 표시
+        # 5-1. 기본 투영 모드를 "일반 뷰 (Orthographic)"로 설정
+        self.set_projection_mode("orthographic")
+        # 5-2. 기본 뷰 모드를 "모서리 표시 음영"으로 설정
+        self.set_view_mode("edges")
+        # 5-3. 초기 뷰 정보 표시
         self.update_view_info()
         # ▼▼▼ [수정] plotter.interactor를 완전히 불투명하게 만들기 ▼▼▼
         plotter.interactor.setAttribute(QtCore.Qt.WA_OpaquePaintEvent, True)

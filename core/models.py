@@ -44,7 +44,7 @@ class LabelStyle:
         self.flow_line_opacity = 0.5
         self.flow_line_color = QtGui.QColor("#555555")
         self.flow_line_style = "solid"
-        self.flow_show_start_end = True
+        self.flow_show_start_end = False
         self.flow_arrow_style = "arrow"
 
     def to_dict(self):
