@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-TS Numbering Tool (v1.28_stable) - Refactored Version
+TS Numbering Tool (v1.29_stable) - Refactored Version
 """
 from __future__ import annotations
 import copy
@@ -57,8 +57,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.28_stable"
-TSN_VERSION = "1.28"
+APP_VER = "v1.29_stable"
+TSN_VERSION = "1.29"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -2311,6 +2311,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.measure_hover_delay = 1000  # 호버 감지 지연 시간 (ms)
         # 스냅 캐시(모서리 표시 음영의 feature edges 라인 기반)
         self._snap_edge_cache = None
+        # 표면(메시) 기반 반경 추정(필렛/코너 라운드)용 캐시
+        # - key: id(vtkPolyData), value: {"mtime": int, "points_np": np.ndarray, "locator": vtkPointLocator}
+        self._surface_point_locator_cache = {}
         self._measure_hover_seen = False  # 호버 이벤트가 실제로 들어오는지 확인용
         # 치수 측정 서브모드:
         # - distance: Shift+좌클릭 2점 거리(기존 기능)
@@ -3743,6 +3746,62 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         except Exception:
             return None
 
+    def _pick_world_point_generic_with_polydata(self, widget_pos):
+        """
+        일반(surface 포함) 픽킹으로 월드 좌표와 대상 vtkPolyData를 얻습니다.
+
+        Why:
+            - 코너 라운드(필렛)는 feature_edges에 잡히지 않는 경우가 많습니다.
+            - 이 경우 "표면 포인트 기반 반경 추정"이 필요하므로, 클릭된 표면 메시(vtkPolyData)를 함께 가져옵니다.
+
+        Returns:
+            tuple[np.ndarray | None, object | None]:
+                (picked_point_np, vtkPolyData or None)
+        """
+        import numpy as np
+        import vtk
+
+        try:
+            if not hasattr(self, "plotter") or self.plotter is None:
+                return None, None
+            picker = vtk.vtkCellPicker()
+            picker.SetTolerance(0.01)
+            renderer = self.plotter.renderer
+
+            interactor_h = 0
+            try:
+                interactor_h = int(self.plotter.interactor.height())
+            except Exception:
+                interactor_h = 0
+            x = int(widget_pos.x())
+            y = int(widget_pos.y())
+            y_vtk = int(interactor_h - y - 1)
+            if interactor_h > 0:
+                y_vtk = max(0, min(interactor_h - 1, y_vtk))
+            else:
+                y_vtk = max(0, y_vtk)
+
+            picker.Pick(x, y_vtk, 0, renderer)
+            if picker.GetCellId() < 0:
+                return None, None
+            picked = picker.GetPickPosition()
+            if picked is None or len(picked) != 3:
+                return None, None
+
+            poly = None
+            try:
+                actor = picker.GetActor()
+                if actor is not None:
+                    mapper = actor.GetMapper()
+                    if mapper is not None:
+                        poly = mapper.GetInput()
+            except Exception:
+                poly = None
+
+            return np.array(picked, dtype=float), poly
+        except Exception:
+            return None, None
+
     # =====================================================================
     # 3D 스냅(모서리 표시 음영의 feature edges 기반)
     # =====================================================================
@@ -3789,6 +3848,86 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             return poly
         except Exception:
             return None
+
+    def _compute_visible_bounds_diag_m(self) -> float:
+        """
+        현재 3D 렌더러의 가시 객체 bounds로부터 대각선 길이를 계산합니다(단위: meter 가정).
+
+        Why:
+            - 라벨 오프셋/표면 반경 추정의 탐색 반경을 "모델 크기"에 비례하여 자동 조절하기 위함입니다.
+
+        Returns:
+            float: 대각선 길이(m). 계산 실패 시 1.0을 반환합니다.
+        """
+        import numpy as np
+
+        try:
+            if not hasattr(self, "plotter") or self.plotter is None or self.plotter.renderer is None:
+                return 1.0
+            b = self.plotter.renderer.ComputeVisiblePropBounds()
+            if not b or len(b) != 6:
+                return 1.0
+            dx = float(b[1] - b[0])
+            dy = float(b[3] - b[2])
+            dz = float(b[5] - b[4])
+            diag = float(np.sqrt(dx * dx + dy * dy + dz * dz))
+            if not np.isfinite(diag) or diag <= 0:
+                return 1.0
+            return diag
+        except Exception:
+            return 1.0
+
+    def _offset_point_toward_camera(self, point_np, offset_m: float):
+        """
+        라벨/텍스트 앵커가 물체 내부로 들어가 가려지는 현상을 줄이기 위해,
+        카메라 방향으로 포인트를 살짝 당깁니다.
+
+        Args:
+            point_np: (3,) 월드 좌표
+            offset_m: meter 단위 오프셋
+
+        Returns:
+            np.ndarray: 오프셋된 월드 좌표
+        """
+        import numpy as np
+
+        if not hasattr(self, "plotter") or self.plotter is None:
+            return np.asarray(point_np, dtype=float)
+        try:
+            cam_pos = np.asarray(self.plotter.camera.position, dtype=float).reshape(3)
+            p = np.asarray(point_np, dtype=float).reshape(3)
+            v = p - cam_pos
+            n = float(np.linalg.norm(v))
+            if n <= 1e-9:
+                return p
+            # NOTE:
+            #   카메라가 매우 가까운 상황에서 offset을 크게 주면 포인트가 카메라 뒤/near clip으로 넘어가
+            #   라벨이 아예 렌더링되지 않는 문제가 발생할 수 있습니다.
+            #   따라서 offset은 "카메라-포인트 거리"의 일부(20%)를 상한으로 제한합니다.
+            offset_m = float(min(float(offset_m), 0.2 * n))
+            v_hat = v / n
+            return p - v_hat * float(offset_m)  # 카메라 쪽으로 이동
+        except Exception:
+            return np.asarray(point_np, dtype=float)
+
+    def _label_anchor_for_measurement(self, point_np):
+        """
+        측정 라벨이 항상 잘 보이도록, 모델 크기에 비례한 오프셋을 적용한 앵커 포인트를 반환합니다.
+
+        Args:
+            point_np: (3,) 월드 좌표
+
+        Returns:
+            np.ndarray: 라벨 앵커 포인트
+        """
+        import numpy as np
+
+        diag = self._compute_visible_bounds_diag_m()
+        # 3D 모델 단위가 meter인 경우를 가정하고, 2%를 기본으로 사용하되 상/하한을 둡니다.
+        LABEL_OFFSET_MIN_M = 0.002  # 2mm
+        LABEL_OFFSET_MAX_M = 0.02   # 20mm
+        offset_m = float(max(LABEL_OFFSET_MIN_M, min(LABEL_OFFSET_MAX_M, 0.02 * diag)))
+        return np.asarray(self._offset_point_toward_camera(point_np, offset_m), dtype=float)
 
     def _unique_points(self, pts, decimals: int = 6):
         """부동소수점 좌표를 반올림하여 중복 점을 제거합니다."""
@@ -4046,10 +4185,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 
                 # 중간 지점에 거리 텍스트 표시
                 mid_point = (p1 + p2) / 2
+                label_anchor = self._label_anchor_for_measurement(mid_point)
                 text_actor = self.plotter.add_point_labels(
-                    [mid_point],
+                    [label_anchor],
                     [f"{distance_mm:.2f} mm"],
                     font_size=12,
+                    always_visible=True,
                     text_color="red",
                     point_color="red",
                     point_size=5,
@@ -4211,10 +4352,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.measure_actors.append(line_actor)
 
             mid_point = (p1 + p2) / 2
+            label_anchor = self._label_anchor_for_measurement(mid_point)
             text_actor = self.plotter.add_point_labels(
-                [mid_point],
+                [label_anchor],
                 [f"{distance_mm:.2f} mm"],
                 font_size=12,
+                    always_visible=True,
                 text_color="red",
                 point_color="red",
                 point_size=5,
@@ -4243,7 +4386,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         구현 의도:
             - 본 툴은 넘버링 작업을 위한 "간단 확인" 용도이므로, 3점/다점 피팅보다 UX가 빠른
               "원/홀을 한 번 클릭하면 R 표시"를 우선 제공합니다.
-            - 스냅 후보는 '모서리 표시(Edges)'에서 보이는 feature_edges로 제한합니다.
+            - 1차: feature_edges(모서리 표시) 기반 원형 루프 피팅(홀/원형 엣지에 강함)
+            - 2차: 표면(메시) 기반 로컬 반경 추정(코너 라운드/필렛에 강함)
 
         Args:
             event: PySide6 QMouseEvent
@@ -4254,14 +4398,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if not getattr(self, "measure_mode_active", False):
             return
         if not hasattr(self, "plotter") or self.plotter is None:
-            return
-
-        # R 측정은 feature_edges 기반이므로 Edges가 보이는 상태에서만 동작
-        if not self._is_feature_edges_visible():
-            try:
-                self.statusBar().showMessage("R 측정은 '모서리 표시(Edges)' 상태에서만 가능합니다.", 2500)
-            except Exception:
-                pass
             return
 
         try:
@@ -4284,14 +4420,77 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             widget_pos = event.position().toPoint()
 
             # 클릭 지점 월드 좌표(엣지 우선 픽킹)
-            raw_point = self._pick_world_point_from_feature_edges(widget_pos)
-            if raw_point is None:
-                raw_point = self._pick_world_point_generic(widget_pos)
+            raw_point = None
+            picked_from_edges = False
+            if self._is_feature_edges_visible():
+                raw_point = self._pick_world_point_from_feature_edges(widget_pos)
+                picked_from_edges = raw_point is not None
+
+            # IMPORTANT:
+            #   Edges 모드에서는 클릭이 feature_edges에 "먼저" 걸리는 경우가 많습니다.
+            #   하지만 코너 라운드/필렛은 feature_edges로 인식이 잘 안 되므로,
+            #   표면 기반 폴백을 위해 surface polydata를 항상 함께 시도해둡니다.
+            surface_poly = None
+            surface_point = None
+            try:
+                surface_point, surface_poly = self._pick_world_point_generic_with_polydata(widget_pos)
+            except Exception:
+                surface_point, surface_poly = None, None
+
+            if raw_point is None and surface_point is not None:
+                raw_point = surface_point
+
             if raw_point is None:
                 return
 
             seed = np.asarray(raw_point, dtype=float)
-            fit = self._fit_circle_from_feature_edges(seed)
+
+            # 1) 엣지/표면 두 경로를 모두 시도한 뒤, 더 신뢰도 높은 결과를 선택합니다.
+            # Why:
+            #   - 코너 라운드에서 feature_edges(local) 피팅이 잘못된 작은 원을 "성공"으로 잡는 케이스가 있어
+            #     값이 들쭉날쭉해질 수 있습니다.
+            #   - 반대로 홀은 feature_edges(loop)가 가장 안정적입니다.
+
+            # (A) edge fit: seed가 edge에서 왔을 때만 시도
+            edge_fit = None
+            if picked_from_edges:
+                edge_fit = self._fit_circle_from_feature_edges(seed)
+
+            # (B) surface fit: 표면 점이 있으면 표면 점을 seed로 사용 (필렛에서 안정적)
+            surf_fit = None
+            surf_seed = seed
+            if surface_point is not None:
+                try:
+                    surf_seed = np.asarray(surface_point, dtype=float).reshape(3)
+                except Exception:
+                    surf_seed = seed
+            surf_fit = self._fit_radius_from_surface_neighborhood(surf_seed, surface_poly)
+
+            # (C) fallback edge fit (surface seed 주변에 원형 엣지가 있으면 잡힐 수 있음)
+            edge_fit2 = None
+            try:
+                edge_fit2 = self._fit_circle_from_feature_edges(surf_seed)
+            except Exception:
+                edge_fit2 = None
+
+            # 선택 규칙:
+            # - edge_fit가 src="loop"이면(=홀 루프) 최우선
+            # - 그 외에는 surf_fit가 있으면 surf 우선(=필렛/라운드)
+            # - 마지막으로 edge_fit / edge_fit2
+            fit = None
+            if edge_fit is not None:
+                try:
+                    if len(edge_fit) >= 5 and edge_fit[4] == "loop":
+                        fit = edge_fit
+                except Exception:
+                    pass
+            if fit is None and surf_fit is not None:
+                fit = surf_fit
+            if fit is None and edge_fit is not None:
+                fit = edge_fit
+            if fit is None and edge_fit2 is not None:
+                fit = edge_fit2
+
             if fit is None:
                 try:
                     self.statusBar().showMessage("R 측정 실패: 원형 엣지를 인식하지 못했습니다.", 2500)
@@ -4318,15 +4517,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
             # 라벨은 너무 전문적으로 보이지 않게 R/Φ만 표시
             mid = (np.asarray(center3, float) + np.asarray(point_on_edge, float)) / 2.0
+            label_anchor = self._label_anchor_for_measurement(mid)
             submode = getattr(self, "measure_submode", "radius")
             if submode == "diameter":
                 label = f"Φ {dia_mm:.2f} mm (R {radius_mm:.2f} mm)"
             else:
                 label = f"R {radius_mm:.2f} mm (Φ {dia_mm:.2f} mm)"
             text_actor = self.plotter.add_point_labels(
-                [mid],
+                [label_anchor],
                 [label],
                 font_size=12,
+                always_visible=True,
                 text_color="cyan",
                 point_color="cyan",
                 point_size=5,
@@ -4580,6 +4781,345 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 break
 
         return (*best, "local") if best is not None else None
+
+    def _fit_radius_from_surface_neighborhood(self, seed_point_np, surface_polydata):
+        """
+        표면(메시) 포인트의 로컬 이웃을 이용해 원통(필렛/홀) 반경을 추정합니다.
+
+        핵심 아이디어:
+            - CAD 필렛/코너 라운드는 "날카로운 모서리"가 아니라서 feature_edges로 잡히지 않는 경우가 많습니다.
+            - 이런 경우 사용자가 클릭한 표면 주변 점들을 모아,
+              1) (개선) 표면 법선(normal) 분포로 원통 축(axis)을 추정하고
+              2) 축에 수직인 평면에서 원(단면)을 피팅하여 반경을 얻습니다.
+
+        Args:
+            seed_point_np: 클릭한 월드 좌표 (3,)
+            surface_polydata: 클릭된 표면의 vtkPolyData
+
+        Returns:
+            (center3, radius_m, point_on_surface, rms_m, src) 또는 None
+            - src: "surf"
+        """
+        import numpy as np
+        import vtk
+
+        if surface_polydata is None:
+            return None
+
+        try:
+            # 0) 캐시/로케이터 준비
+            key = id(surface_polydata)
+            mtime = int(surface_polydata.GetMTime())
+            cache = getattr(self, "_surface_point_locator_cache", {})
+            entry = cache.get(key)
+
+            from vtkmodules.util.numpy_support import vtk_to_numpy
+
+            if entry is None or int(entry.get("mtime", -1)) != mtime:
+                pts_vtk = surface_polydata.GetPoints()
+                if pts_vtk is None or pts_vtk.GetNumberOfPoints() < 20:
+                    return None
+                pts_np = vtk_to_numpy(pts_vtk.GetData())
+                if pts_np is None or len(pts_np) < 20:
+                    return None
+
+                # 표면 법선 계산(필렛/원통 축 추정용)
+                try:
+                    normals_f = vtk.vtkPolyDataNormals()
+                    normals_f.SetInputData(surface_polydata)
+                    normals_f.ComputePointNormalsOn()
+                    normals_f.ComputeCellNormalsOff()
+                    normals_f.SplittingOff()  # 불필요한 노멀 분할로 노이즈가 커지는 것을 방지
+                    normals_f.ConsistencyOn()
+                    normals_f.AutoOrientNormalsOn()
+                    normals_f.Update()
+                    poly_n = normals_f.GetOutput()
+                    n_vtk = poly_n.GetPointData().GetNormals() if poly_n is not None else None
+                    normals_np = vtk_to_numpy(n_vtk) if n_vtk is not None else None
+                except Exception:
+                    poly_n = surface_polydata
+                    normals_np = None
+
+                try:
+                    locator = vtk.vtkStaticPointLocator()
+                except Exception:
+                    locator = vtk.vtkPointLocator()
+                locator.SetDataSet(surface_polydata)
+                locator.BuildLocator()
+
+                entry = {
+                    "mtime": mtime,
+                    "points_np": np.asarray(pts_np, dtype=float),
+                    "locator": locator,
+                    "normals_np": np.asarray(normals_np, dtype=float) if normals_np is not None else None,
+                }
+                cache[key] = entry
+                self._surface_point_locator_cache = cache
+
+            pts_all = entry["points_np"]
+            locator = entry["locator"]
+            normals_all = entry.get("normals_np")
+
+            seed = np.asarray(seed_point_np, dtype=float).reshape(3)
+
+            # 1) 탐색 반경(모델 크기 기반)
+            diag = self._compute_visible_bounds_diag_m()
+            # NOTE:
+            #   기존 반경이 커서(3mm~) 주변 평면까지 섞이는 경우가 많았습니다.
+            #   필렛은 국소 곡면이므로 더 작은 반경부터 시작해 단계적으로 확장합니다.
+            start_r = max(0.0015, 0.002 * diag)  # 1.5mm 또는 diag의 0.2%
+            radii = [start_r, start_r * 1.8, start_r * 3.0, start_r * 4.8]
+
+            def _fit_tol_m(radius_m: float) -> float:
+                # 표면 기반은 노이즈가 더 있으므로 edges보다 약간 관대하되,
+                # 작은 홀은 여전히 타이트하게 유지합니다.
+                r = float(radius_m)
+                return max(0.0002, min(0.0012, 0.015 * r))  # 0.2mm~1.2mm, 또는 반경의 1.5%
+
+            def _circle_from_3pts(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray):
+                """
+                2D에서 3점으로 원을 계산합니다.
+                Returns: (cx, cy, r) 또는 None
+                """
+                import numpy as np
+
+                x1, y1 = float(p1[0]), float(p1[1])
+                x2, y2 = float(p2[0]), float(p2[1])
+                x3, y3 = float(p3[0]), float(p3[1])
+                a = x1 - x2
+                b = y1 - y2
+                c = x1 - x3
+                d = y1 - y3
+                e = (x1 * x1 - x2 * x2 + y1 * y1 - y2 * y2) / 2.0
+                f = (x1 * x1 - x3 * x3 + y1 * y1 - y3 * y3) / 2.0
+                det = a * d - b * c
+                if abs(det) < 1e-12:
+                    return None
+                cx = (d * e - b * f) / det
+                cy = (-c * e + a * f) / det
+                r = float(np.sqrt((x1 - cx) ** 2 + (y1 - cy) ** 2))
+                if not np.isfinite(r) or r <= 0:
+                    return None
+                return float(cx), float(cy), float(r)
+
+            def _circle_fit_lsq(x: np.ndarray, y: np.ndarray):
+                """LSQ circle fit. Returns (cx, cy, r, rms, coverage) or None."""
+                import numpy as np
+
+                x = np.asarray(x, dtype=float)
+                y = np.asarray(y, dtype=float)
+                if x.size < 8:
+                    return None
+                A_mat = np.c_[x, y, np.ones_like(x)]
+                b_vec = -(x * x + y * y)
+                sol, *_ = np.linalg.lstsq(A_mat, b_vec, rcond=None)
+                A_c, B_c, C_c = sol
+                cx = -0.5 * A_c
+                cy = -0.5 * B_c
+                r2 = cx * cx + cy * cy - C_c
+                if r2 <= 0:
+                    return None
+                r = float(np.sqrt(r2))
+                d = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+                rms = float(np.sqrt(np.mean((d - r) ** 2)))
+                twopi = float(2.0 * np.pi)
+                ang = np.arctan2(y - cy, x - cx)
+                ang = np.sort((ang + twopi) % twopi)
+                gaps = np.diff(np.r_[ang, ang[0] + twopi])
+                coverage = twopi - float(np.max(gaps)) if ang.size >= 3 else 0.0
+                return float(cx), float(cy), float(r), float(rms), float(coverage)
+
+            def _circle_fit_ransac(x: np.ndarray, y: np.ndarray, search_r: float):
+                """
+                RANSAC로 원 후보를 찾고, inlier로 LSQ 재피팅합니다.
+
+                Returns:
+                    (cx, cy, r, rms, coverage, n_inliers) 또는 None
+                """
+                import numpy as np
+
+                x0 = np.asarray(x, dtype=float)
+                y0 = np.asarray(y, dtype=float)
+                n = int(x0.size)
+                if n < 12:
+                    return None
+
+                pts2 = np.c_[x0, y0]
+
+                # inlier threshold: 0.25mm 또는 search_r의 3% (meter)
+                inlier_tol = float(max(0.00025, 0.03 * float(search_r)))
+
+                # iterations: 점이 적을수록 적게, 많을수록 조금 늘림(최대 220)
+                iters = int(min(220, max(80, 10 * int(np.sqrt(n)))))
+
+                best = None  # (n_in, rms, cx, cy, r, mask)
+                rng = np.random.default_rng()
+                for _ in range(iters):
+                    i1, i2, i3 = rng.choice(n, size=3, replace=False)
+                    c = _circle_from_3pts(pts2[i1], pts2[i2], pts2[i3])
+                    if c is None:
+                        continue
+                    cx, cy, r = c
+
+                    # 반경이 너무 작게 튀는 것을 방지(필렛은 이웃 반경보다 너무 작지 않음)
+                    if r < 0.12 * float(search_r):
+                        continue
+
+                    d = np.sqrt((x0 - cx) ** 2 + (y0 - cy) ** 2)
+                    resid = np.abs(d - r)
+                    mask = resid <= inlier_tol
+                    n_in = int(np.sum(mask))
+                    if n_in < 12:
+                        continue
+
+                    # 빠른 score: inlier 수 우선, rms는 대략치(인라이어만)
+                    rms = float(np.sqrt(np.mean((d[mask] - r) ** 2)))
+                    if best is None or n_in > best[0] or (n_in == best[0] and rms < best[1]):
+                        best = (n_in, rms, cx, cy, r, mask)
+
+                if best is None:
+                    return None
+
+                mask = best[5]
+                fit = _circle_fit_lsq(x0[mask], y0[mask])
+                if fit is None:
+                    return None
+                cx, cy, r, rms, coverage = fit
+
+                # 한 번 더 trimming (0.2mm 또는 반경의 2%)
+                d = np.sqrt((x0[mask] - cx) ** 2 + (y0[mask] - cy) ** 2)
+                resid = np.abs(d - r)
+                trim_tol = float(max(0.0002, 0.02 * r))
+                keep = resid <= trim_tol
+                if int(np.sum(keep)) >= 12 and int(np.sum(keep)) < int(np.sum(mask)):
+                    fit2 = _circle_fit_lsq(x0[mask][keep], y0[mask][keep])
+                    if fit2 is not None:
+                        cx, cy, r, rms, coverage = fit2
+                        mask2 = np.zeros_like(mask, dtype=bool)
+                        idx = np.flatnonzero(mask)
+                        mask2[idx[keep]] = True
+                        mask = mask2
+
+                return float(cx), float(cy), float(r), float(rms), float(coverage), int(np.sum(mask))
+
+            best = None
+            for search_r in radii:
+                id_list = vtk.vtkIdList()
+                locator.FindPointsWithinRadius(float(search_r), seed, id_list)
+                n = int(id_list.GetNumberOfIds())
+                if n < 12:
+                    continue
+
+                ids = [id_list.GetId(i) for i in range(n)]
+                pts = np.asarray(pts_all[ids], dtype=float)
+                if len(pts) > 8000:
+                    step = max(1, len(pts) // 3000)
+                    pts = pts[::step]
+
+                # 2) (개선) 법선 기반으로 축(axis) 추정
+                # Why:
+                #   원통 표면의 법선들은 '축에 수직인 평면' 위에 분포하므로,
+                #   법선 분포의 최소 분산 방향이 축(axis)에 해당합니다.
+                axis = None
+                if normals_all is not None and len(normals_all) == len(pts_all):
+                    nrm = np.asarray(normals_all[ids], dtype=float)
+                    # 너무 평면(법선 변화 거의 없음)인 경우는 제외
+                    try:
+                        nrm = nrm / np.maximum(1e-9, np.linalg.norm(nrm, axis=1, keepdims=True))
+                        # seed 주변의 법선과 너무 다른 점(다른 면) 제거: 85도 이내만 유지
+                        nearest_id = int(locator.FindClosestPoint(seed))
+                        seed_n = np.asarray(normals_all[nearest_id], dtype=float).reshape(3)
+                        seed_n = seed_n / max(1e-9, float(np.linalg.norm(seed_n)))
+                        dots = np.clip(nrm @ seed_n, -1.0, 1.0)
+                        keep = dots >= float(np.cos(np.deg2rad(85.0)))
+                        if int(np.sum(keep)) >= 12:
+                            nrm = nrm[keep]
+                            pts = pts[keep]
+                        # 법선 분포 SVD: 최소 singular 방향이 축 후보
+                        n_mean = nrm.mean(axis=0)
+                        Y = nrm - n_mean.reshape(1, 3)
+                        _, s, vh_n = np.linalg.svd(Y, full_matrices=False)
+                        # 평면성이 충분해야 축이 의미 있음: s[-1]가 s[-2]보다 충분히 작아야 함
+                        if len(s) >= 3 and float(s[-1]) < 0.35 * float(s[-2]) and float(s[0]) > 0.02:
+                            axis = np.asarray(vh_n[-1], dtype=float).reshape(3)
+                    except Exception:
+                        axis = None
+
+                # 법선 기반이 안 되면 최후 폴백: 점 PCA(기존 방식)
+                if axis is None:
+                    mean = pts.mean(axis=0)
+                    X = pts - mean
+                    try:
+                        _, _, vh = np.linalg.svd(X, full_matrices=False)
+                    except Exception:
+                        continue
+                    axis = np.asarray(vh[0], dtype=float).reshape(3)
+
+                axis_n = float(np.linalg.norm(axis))
+                if axis_n <= 1e-9:
+                    continue
+                axis = axis / axis_n
+
+                # 3) axis에 수직인 평면 basis(u,v) 구성
+                ref = np.array([1.0, 0.0, 0.0], dtype=float)
+                if abs(float(np.dot(axis, ref))) > 0.9:
+                    ref = np.array([0.0, 1.0, 0.0], dtype=float)
+                u = np.cross(axis, ref)
+                u_n = float(np.linalg.norm(u))
+                if u_n <= 1e-9:
+                    continue
+                u = u / u_n
+                v = np.cross(axis, u)
+
+                # 4) seed 기준으로 투영하여 2D circle fit
+                W = pts - seed.reshape(1, 3)
+                x = W @ u
+                y = W @ v
+                fit2d = _circle_fit_ransac(x, y, search_r=float(search_r))
+                if fit2d is None:
+                    continue
+                cx, cy, r, rms, coverage, n_in = fit2d
+                if not np.isfinite(r) or r <= 0:
+                    continue
+                # 표면 기반은 짧은 아크만 보이는 경우가 많아(필렛),
+                # edge 기반보다 조금 더 낮은 임계값을 사용합니다.
+                if coverage < float(np.deg2rad(15.0)):
+                    continue
+                if rms > _fit_tol_m(r):
+                    continue
+
+                # 너무 작은 값 튐 방지(완화된 기준): 탐색 반경 대비 지나치게 작은 반경은 보통 오검출입니다.
+                if float(r) < 0.12 * float(search_r):
+                    continue
+
+                center3 = seed + cx * u + cy * v
+                # 후보 선택: inlier 수/coverage를 우선하고, rms는 보조
+                cand = (
+                    np.asarray(center3, dtype=float),
+                    float(r),
+                    seed,
+                    float(rms),
+                    "surf",
+                    int(n_in),
+                    float(coverage),
+                )
+                if best is None:
+                    best = cand
+                else:
+                    # (1) inlier 수 큰 것, (2) coverage 큰 것, (3) rms 작은 것
+                    if cand[5] > best[5]:
+                        best = cand
+                    elif cand[5] == best[5] and cand[6] > best[6]:
+                        best = cand
+                    elif cand[5] == best[5] and cand[6] == best[6] and cand[3] < best[3]:
+                        best = cand
+
+            if best is None:
+                return None
+            # return signature: (center3, radius_m, point_on_surface, rms_m, src)
+            return best[0], best[1], best[2], best[3], best[4]
+        except Exception:
+            return None
 
     def _fit_circle_3d(self, points_np):
         """
