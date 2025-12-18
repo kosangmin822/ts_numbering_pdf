@@ -12,6 +12,10 @@ build/
 dist/
 *.spec
 
+# Installer artifacts (keep generated installers out of git)
+installer/*.exe
+installer/**/*.exe
+
 # Log files
 *.log
 
