@@ -132,6 +132,63 @@ def _pil_image_to_pdf_page(pil_image, width_points, height_points):
     return None
 
 
+class AxisNavigatorWidget(QtWidgets.QWidget):
+    def __init__(self, parent=None, size=140, margin=12):
+        super().__init__(parent)
+        self._margin = margin
+        self._size = size
+        self.setFixedSize(size, size)
+        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+
+        origin = QtCore.QPointF(self._margin, self.height() - self._margin)
+        length = min(self.width(), self.height()) - self._margin * 2
+
+        x_end = QtCore.QPointF(origin.x() + length, origin.y())
+        y_end = QtCore.QPointF(origin.x(), origin.y() - length)
+        z_end = QtCore.QPointF(origin.x() + length * 0.7, origin.y() - length * 0.7)
+
+        axis_color = "#1e88e5"
+        self._draw_axis(painter, origin, x_end, axis_color, "X")
+        self._draw_axis(painter, origin, y_end, axis_color, "Y")
+        self._draw_axis(painter, origin, z_end, axis_color, "Z")
+
+    def _draw_axis(self, painter, origin, end_pt, color, label):
+        pen = QtGui.QPen(QtGui.QColor(color))
+        pen.setWidth(2)
+        painter.setPen(pen)
+        painter.setBrush(QtGui.QColor(color))
+        painter.drawLine(origin, end_pt)
+        self._draw_arrowhead(painter, origin, end_pt, color)
+        self._draw_label(painter, end_pt, label, color)
+
+    def _draw_arrowhead(self, painter, start, end, color):
+        import math
+        angle = math.atan2(start.y() - end.y(), start.x() - end.x())
+        size = 8
+        p1 = QtCore.QPointF(
+            end.x() + size * math.cos(angle + math.pi / 6),
+            end.y() + size * math.sin(angle + math.pi / 6),
+        )
+        p2 = QtCore.QPointF(
+            end.x() + size * math.cos(angle - math.pi / 6),
+            end.y() + size * math.sin(angle - math.pi / 6),
+        )
+        painter.setBrush(QtGui.QColor(color))
+        painter.drawPolygon(QtGui.QPolygonF([end, p1, p2]))
+
+    def _draw_label(self, painter, pos, label, color):
+        font = QtGui.QFont("Segoe UI", 9, QtGui.QFont.Bold)
+        painter.setFont(font)
+        painter.setPen(QtGui.QPen(QtGui.QColor(color)))
+        offset = QtCore.QPointF(6, -6)
+        painter.drawText(pos + offset, label)
+
+
 # =====================================================================
 #  메인 윈도우 클래스
 # =====================================================================
@@ -1230,6 +1287,101 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             import traceback
 
             traceback.print_exc()
+
+    def _setup_3d_axis_navigator(self):
+        """
+        3D 뷰어 좌측 하단에 XYZ 축 네비게이터를 표시합니다.
+        """
+        if not hasattr(self, "plotter") or self.plotter is None:
+            return
+        axis_widget_ready = False
+        try:
+            if hasattr(self, "_axis_widget") and self._axis_widget is not None:
+                try:
+                    self._axis_widget.EnabledOff()
+                except Exception:
+                    try:
+                        self._axis_widget.SetEnabled(0)
+                    except Exception:
+                        pass
+                self._axis_widget = None
+
+            try:
+                # Prefer VTK orientation marker for a stable in-render navigator.
+                from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
+                from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
+
+                axes = vtkAxesActor()
+                axes.AxisLabelsOn()
+                axes.SetTotalLength(0.8, 0.8, 0.8)
+
+                marker = vtkOrientationMarkerWidget()
+                marker.SetOrientationMarker(axes)
+                marker.SetInteractor(self.plotter.interactor)
+                marker.SetViewport(0.0, 0.0, 0.2, 0.2)
+                marker.SetEnabled(1)
+                marker.InteractiveOff()
+
+                self._axis_widget = marker
+                axis_widget_ready = True
+            except Exception:
+                pass
+
+            if not axis_widget_ready:
+                # Fallback to PyVista axes if the VTK marker is unavailable.
+                try:
+                    self._axis_widget = self.plotter.add_axes(
+                        interactive=False,
+                        line_width=2,
+                        labels=True,
+                        x_color="red",
+                        y_color="green",
+                        z_color="blue",
+                        viewport=(0.0, 0.0, 0.2, 0.2),
+                    )
+                    axis_widget_ready = True
+                except TypeError:
+                    self._axis_widget = self.plotter.add_axes(
+                        interactive=False,
+                        line_width=2,
+                        labels=True,
+                        x_color="red",
+                        y_color="green",
+                        z_color="blue",
+                    )
+                    axis_widget_ready = True
+        except Exception as e:
+            print(f"axis navigator setup failed: {e}")
+
+        if axis_widget_ready:
+            try:
+                self.plotter.render()
+            except Exception:
+                pass
+
+        try:
+            if hasattr(self, "_axis_nav_widget") and self._axis_nav_widget is not None:
+                self._axis_nav_widget.deleteLater()
+                self._axis_nav_widget = None
+            if not axis_widget_ready:
+                # Final fallback: a lightweight Qt overlay widget.
+                self._axis_nav_widget = AxisNavigatorWidget(self.widget_3d)
+                self._axis_nav_widget.show()
+                self._position_axis_navigator()
+                QtCore.QTimer.singleShot(0, self._position_axis_navigator)
+        except Exception as e:
+            print(f"axis overlay setup failed: {e}")
+
+    def _position_axis_navigator(self):
+        widget_3d = getattr(self, "widget_3d", None)
+        axis_widget = getattr(self, "_axis_nav_widget", None)
+        if widget_3d is None or axis_widget is None:
+            return
+        margin = 16
+        x = margin
+        y = max(margin, widget_3d.height() - axis_widget.height() - margin)
+        axis_widget.move(x, y)
+        axis_widget.raise_()
 
     def _create_color_palette(self):
         """
@@ -3124,6 +3276,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.vlayout_3d.addWidget(plotter.interactor)
         # 3-1. 3D 뷰어에 컬러 컨트롤 패널 추가
         self._setup_3d_viewer_color_controls()
+        # 3-2. 3D 뷰어 좌측 하단에 XYZ 축 네비게이터 표시
+        self._setup_3d_axis_navigator()
 
         # 4. 3D 모델을 뷰어에 추가하는 내부 함수 정의
         def render_solid_mesh(geom):
@@ -5720,11 +5874,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._position_integrated_control_panel()
+        self._position_axis_navigator()
 
     def eventFilter(self, watched, event):
         widget_3d = getattr(self, "widget_3d", None)
         if watched is widget_3d and event.type() == QtCore.QEvent.Resize:
             self._position_integrated_control_panel()
+            self._position_axis_navigator()
         
         # 측정 모드에서 3D 뷰어의 마우스 이동 이벤트 처리
         if (self.measure_mode_active and 
