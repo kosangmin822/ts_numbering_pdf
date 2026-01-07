@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-TS Numbering Tool (v6.01) - Refactored Version
+TS Numbering Tool (v1.29_trial) - Refactored Version
 """
 from __future__ import annotations
 import copy
@@ -55,8 +55,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.2_trial"
-TSN_VERSION = "1.2"
+APP_VER = "v1.29_trial"
+TSN_VERSION = "1.29"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]

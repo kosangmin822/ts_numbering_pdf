@@ -1057,13 +1057,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             )
             self.measure_radius_btn.setToolTip("반경 측정(R): Shift+좌클릭으로 원/홀(엣지) 클릭")
 
-            # - 보라(지름)
-            self.measure_diameter_btn = _mk_tool_btn(
-                checked_bg_rgba="rgba(150, 100, 200, 220)",
-                checked_border_rgba="rgba(220, 170, 255, 255)",
-            )
-            self.measure_diameter_btn.setToolTip("지름 측정(Φ): Shift+좌클릭으로 원/홀(엣지) 클릭")
-
             # 아이콘 설정 (없어도 동작)
             try:
                 from utils.helpers import icon_if
@@ -1077,22 +1070,15 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 if r_icon and not r_icon.isNull():
                     self.measure_radius_btn.setIcon(r_icon)
                     self.measure_radius_btn.setIconSize(QtCore.QSize(28, 28))
-
-                d_icon = icon_if("resources/icons/diameter_measure.png")
-                if d_icon and not d_icon.isNull():
-                    self.measure_diameter_btn.setIcon(d_icon)
-                    self.measure_diameter_btn.setIconSize(QtCore.QSize(28, 28))
             except Exception:
                 pass
 
             measure_layout.addWidget(self.measure_btn)
             measure_layout.addWidget(self.measure_radius_btn)
-            measure_layout.addWidget(self.measure_diameter_btn)
 
             # 버튼 클릭 연결 (독점 토글 + 재클릭 시 종료 동작은 슬롯에서 처리)
             self.measure_btn.clicked.connect(lambda: self._on_measure_tool_clicked("distance"))
             self.measure_radius_btn.clicked.connect(lambda: self._on_measure_tool_clicked("radius"))
-            self.measure_diameter_btn.clicked.connect(lambda: self._on_measure_tool_clicked("diameter"))
 
             # 스냅 옵션을 오른쪽으로 최대한 보내기
             measure_layout.addStretch()
@@ -3208,8 +3194,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.measure_btn.setChecked(False)
         if hasattr(self, "measure_radius_btn"):
             self.measure_radius_btn.setChecked(False)
-        if hasattr(self, "measure_diameter_btn"):
-            self.measure_diameter_btn.setChecked(False)
         # 5-5. 스냅 포인트 계산은 측정 모드가 활성화될 때만 수행하도록 변경
         # (파일 로드 시 자동 계산 제거 - 크래시 방지)
         # 6. 화면을 3D 탭으로 전환합니다.
@@ -3298,9 +3282,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 # 서브모드에 따라 안내 메시지를 다르게 표시
                 submode = getattr(self, "measure_submode", "distance")
                 if submode == "radius":
-                    self.statusBar().showMessage("치수 측정(R): Shift+좌클릭으로 원/홀(모서리) 클릭", 3000)
-                elif submode == "diameter":
-                    self.statusBar().showMessage("치수 측정(Φ): Shift+좌클릭으로 원/홀(모서리) 클릭", 3000)
+                    self.statusBar().showMessage("치수 측정(R): Shift+좌클릭으로 3점을 선택하여 원 측정", 3000)
                 else:
                     self.statusBar().showMessage("치수 측정(D): Shift+좌클릭으로 두 점을 선택", 3000)
             except Exception as e:
@@ -3360,7 +3342,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         buttons = {
             "distance": getattr(self, "measure_btn", None),
             "radius": getattr(self, "measure_radius_btn", None),
-            "diameter": getattr(self, "measure_diameter_btn", None),
         }
         clicked_btn = buttons.get(tool)
         if clicked_btn is None:
@@ -3473,32 +3454,46 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             if len(self.measure_points) == 2:
                 p1, p2 = self.measure_points[0], self.measure_points[1]
                 
-                # 거리 계산 (유클리드 거리)
-                distance = np.linalg.norm(p2 - p1)
+                # 축 거리 계산
+                delta = p2 - p1
+                delta_x_mm = delta[0] * 1000.0
+                delta_y_mm = delta[1] * 1000.0
+                delta_z_mm = delta[2] * 1000.0
                 
-                # STEP/STP 파일은 일반적으로 meter 단위로 저장되므로 mm로 변환
-                # 1m = 1000mm
+                # 전체 거리 계산 (유클리드 거리)
+                distance = np.linalg.norm(delta)
                 distance_mm = distance * 1000.0
                 
-                # 두 점 사이의 선 그리기
+                # 두 점 사이의 선 그리기 (항상 위에 표시되도록)
                 try:
                     line = pv.Line(p1, p2)
                     line_actor = self.plotter.add_mesh(
                         line,
                         color="red",
                         line_width=3,
-                        name=f"measure_line_{len(self.measure_actors)}"
+                        name=f"measure_line_{len(self.measure_actors)}",
+                        render_lines_as_tubes=True,  # 튜브로 렌더링하여 더 잘 보이게
                     )
+                    # 선이 항상 위에 표시되도록 Z-order 조정
+                    if hasattr(line_actor, 'GetProperty'):
+                        line_actor.GetProperty().SetRenderLinesAsTubes(True)
+                        # Depth peeling 비활성화하여 선이 항상 위에 표시되도록
+                        line_actor.GetProperty().SetDepthTest(False)
                     self.measure_actors.append(line_actor)
                     
-                    # 중간 지점에 거리 텍스트 표시
+                    # 중간 지점에 거리 텍스트 표시 (축 거리 + 전체 거리)
                     mid_point = (p1 + p2) / 2
+                    label_anchor = self._label_anchor_for_measurement(mid_point)
+                    label_text = f"Δx: {delta_x_mm:.2f}mm\nΔy: {delta_y_mm:.2f}mm\nΔz: {delta_z_mm:.2f}mm\nTotal: {distance_mm:.2f}mm"
+                    
+                    # 텍스트 표시 (R값과 동일한 스타일: cyan, font_size=12)
                     text_actor = self.plotter.add_point_labels(
-                        [mid_point],
-                        [f"{distance_mm:.2f} mm"],
+                        [label_anchor],
+                        [label_text],
                         font_size=12,
-                        text_color="red",
-                        point_color="red",
+                        always_visible=True,
+                        text_color="cyan",
+                        point_color="cyan",
                         point_size=5,
                         name=f"measure_text_{len(self.measure_actors)}"
                     )
@@ -3506,7 +3501,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     
                     # 상태바에 거리 표시
                     self.statusBar().showMessage(
-                        f"측정 완료: {distance_mm:.2f} mm", 
+                        f"측정 완료: {distance_mm:.2f} mm (Δx: {delta_x_mm:.2f}, Δy: {delta_y_mm:.2f}, Δz: {delta_z_mm:.2f} mm)", 
                         5000
                     )
                     
@@ -3727,7 +3722,18 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             picked = picker.GetPickPosition()
             if picked is None or len(picked) != 3:
                 return None
-            return np.array(picked, dtype=float)
+            
+            # 픽된 위치가 카메라에서 너무 멀리 떨어져 있지 않은지 확인
+            camera = self.plotter.camera
+            camera_pos = np.array(camera.position)
+            picked_np = np.array(picked, dtype=float)
+            dist_to_camera = np.linalg.norm(picked_np - camera_pos)
+            
+            # 카메라에서 10m 이상 떨어진 경우는 무효로 간주
+            if dist_to_camera > 10.0:
+                return None
+            
+            return picked_np
         except Exception:
             return None
 
@@ -3759,10 +3765,24 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             picker.Pick(x, y_vtk, 0, renderer)
             if picker.GetCellId() < 0:
                 return None
+            
+            # 실제로 셀이 픽되었는지 확인 (GetPickPosition이 유효한 위치를 반환하는지)
             picked = picker.GetPickPosition()
             if picked is None or len(picked) != 3:
                 return None
-            return np.array(picked, dtype=float)
+            
+            # 픽된 위치가 카메라에서 너무 멀리 떨어져 있지 않은지 확인
+            # (vtkCellPicker가 셀을 픽하지 못한 경우 카메라 방향으로 멀리 떨어진 위치를 반환할 수 있음)
+            camera = self.plotter.camera
+            camera_pos = np.array(camera.position)
+            picked_np = np.array(picked, dtype=float)
+            dist_to_camera = np.linalg.norm(picked_np - camera_pos)
+            
+            # 카메라에서 10m 이상 떨어진 경우는 무효로 간주
+            if dist_to_camera > 10.0:
+                return None
+            
+            return picked_np
         except Exception:
             return None
 
@@ -4184,14 +4204,17 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if len(self.measure_points) == 2:
             p1, p2 = self.measure_points[0], self.measure_points[1]
             
-            # 거리 계산 (유클리드 거리)
-            distance = np.linalg.norm(p2 - p1)
+            # 축 거리 계산
+            delta = p2 - p1
+            delta_x_mm = delta[0] * 1000.0
+            delta_y_mm = delta[1] * 1000.0
+            delta_z_mm = delta[2] * 1000.0
             
-            # STEP/STP 파일은 일반적으로 meter 단위로 저장되므로 mm로 변환
-            # 1m = 1000mm
+            # 전체 거리 계산 (유클리드 거리)
+            distance = np.linalg.norm(delta)
             distance_mm = distance * 1000.0
             
-            # 두 점 사이의 선 그리기
+            # 두 점 사이의 선 그리기 (항상 위에 표시되도록)
             try:
                 import pyvista as pv
                 line = pv.Line(p1, p2)
@@ -4199,20 +4222,29 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     line,
                     color="red",
                     line_width=3,
-                    name=f"measure_line_{len(self.measure_actors)}"
+                    name=f"measure_line_{len(self.measure_actors)}",
+                    render_lines_as_tubes=True,  # 튜브로 렌더링하여 더 잘 보이게
                 )
+                # 선이 항상 위에 표시되도록 Z-order 조정
+                if hasattr(line_actor, 'GetProperty'):
+                    line_actor.GetProperty().SetRenderLinesAsTubes(True)
+                    # Depth test 비활성화하여 선이 항상 위에 표시되도록
+                    line_actor.GetProperty().SetDepthTest(False)
                 self.measure_actors.append(line_actor)
                 
-                # 중간 지점에 거리 텍스트 표시
+                # 중간 지점에 거리 텍스트 표시 (축 거리 + 전체 거리)
                 mid_point = (p1 + p2) / 2
                 label_anchor = self._label_anchor_for_measurement(mid_point)
+                label_text = f"Δx: {delta_x_mm:.2f}mm\nΔy: {delta_y_mm:.2f}mm\nΔz: {delta_z_mm:.2f}mm\nTotal: {distance_mm:.2f}mm"
+                
+                # 텍스트 표시 (R값과 동일한 스타일: cyan, font_size=12)
                 text_actor = self.plotter.add_point_labels(
                     [label_anchor],
-                    [f"{distance_mm:.2f} mm"],
+                    [label_text],
                     font_size=12,
                     always_visible=True,
-                    text_color="red",
-                    point_color="red",
+                    text_color="cyan",
+                    point_color="cyan",
                     point_size=5,
                     name=f"measure_text_{len(self.measure_actors)}"
                 )
@@ -4220,7 +4252,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 
                 # 상태바에 거리 표시
                 self.statusBar().showMessage(
-                    f"측정 완료: {distance_mm:.2f} mm", 
+                    f"측정 완료: {distance_mm:.2f} mm (Δx: {delta_x_mm:.2f}, Δy: {delta_y_mm:.2f}, Δz: {delta_z_mm:.2f} mm)", 
                     5000
                 )
                 
@@ -4333,19 +4365,53 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             if raw_point is None:
                 raw_point = self._pick_world_point_generic(widget_pos)
             if raw_point is None:
+                self.statusBar().showMessage("표면을 선택할 수 없습니다. 다시 시도하세요.", 2000)
                 return
 
             raw_np = np.asarray(raw_point, dtype=float)
+            
+            # raw_point가 유효한지 확인 (카메라에서 너무 멀리 떨어진 경우 필터링)
+            camera = self.plotter.camera
+            camera_pos = np.array(camera.position)
+            dist_to_camera = np.linalg.norm(raw_np - camera_pos)
+            # 카메라에서 10m 이상 떨어진 경우는 무효로 간주 (일반적인 CAD 모델 크기 고려)
+            if dist_to_camera > 10.0:
+                self.statusBar().showMessage("표면을 선택할 수 없습니다. 다시 시도하세요.", 2000)
+                return
 
             # 스냅 포인트 선택(반경 내에 없으면 raw 좌표를 사용)
             snapped_point, kind, _dist = self._select_snap_point_on_edges(raw_np)
-            final_point = raw_np if snapped_point is None else np.asarray(snapped_point, dtype=float)
-            final_kind = kind if snapped_point is not None else None
+            if snapped_point is not None:
+                final_point = np.asarray(snapped_point, dtype=float)
+                final_kind = kind
+            else:
+                # 스냅 포인트가 없으면 raw_point 사용 (하지만 raw_point가 유효한지 이미 확인함)
+                final_point = raw_np
+                final_kind = None
+            
+            # 디버깅: 최종 포인트 위치 확인
+            print(f"[DEBUG] 측정 포인트: raw={raw_np}, final={final_point}, snapped={snapped_point is not None}, kind={final_kind}")
 
+            # measure_actors 초기화 확인
+            if not hasattr(self, "measure_actors"):
+                self.measure_actors = []
+            
             # 확정된 좌표(스냅 좌표)에 측정 포인트 마커 표시
-            self._add_measure_point_marker(final_point, final_kind)
+            try:
+                self._add_measure_point_marker(final_point, final_kind)
+            except Exception as marker_err:
+                print(f"[DEBUG] 마커 추가 오류: {marker_err}")
+                import traceback
+                traceback.print_exc()
 
             # 내부 측정 포인트 리스트에 추가
+            if not hasattr(self, "measure_points"):
+                self.measure_points = []
+            
+            # 이미 두 점이 선택된 경우, 이전 측정을 초기화하고 새로 시작
+            if len(self.measure_points) >= 2:
+                self.measure_points = []
+            
             self.measure_points.append(final_point.copy())
 
             if len(self.measure_points) == 1:
@@ -4356,38 +4422,75 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     pass
                 return
 
+            # 두 점이 선택된 경우에만 측정 수행
             if len(self.measure_points) != 2:
-                # 방어 로직: 2개 초과로 누적되는 경우를 방지
-                self.measure_points = self.measure_points[-2:]
+                print(f"[DEBUG] 측정 포인트 수가 2가 아님: {len(self.measure_points)}")
+                return
 
             p1, p2 = self.measure_points[0], self.measure_points[1]
-            distance_m = float(np.linalg.norm(p2 - p1))
+            print(f"[DEBUG] 두 점 선택됨: p1={p1}, p2={p2}")
+            
+            # 축 거리 계산
+            delta = p2 - p1
+            delta_x_mm = delta[0] * 1000.0
+            delta_y_mm = delta[1] * 1000.0
+            delta_z_mm = delta[2] * 1000.0
+            
+            # 전체 거리 계산 (유클리드 거리)
+            distance_m = float(np.linalg.norm(delta))
             distance_mm = distance_m * 1000.0  # 1m = 1000mm
 
-            # 선 + 텍스트 표시
-            line = pv.Line(p1, p2)
-            line_actor = self.plotter.add_mesh(
-                line, color="red", line_width=3, name=f"measure_line_{len(self.measure_actors)}"
-            )
-            self.measure_actors.append(line_actor)
+            # measure_actors 초기화 확인 (중복 체크)
+            if not hasattr(self, "measure_actors"):
+                self.measure_actors = []
+            
+            # 선 + 텍스트 표시 (선이 항상 위에 표시되도록)
+            try:
+                import pyvista as pv
+                line = pv.Line(p1, p2)
+                line_actor = self.plotter.add_mesh(
+                    line, 
+                    color="red", 
+                    line_width=3, 
+                    name=f"measure_line_{len(self.measure_actors)}",
+                    render_lines_as_tubes=True,  # 튜브로 렌더링하여 더 잘 보이게
+                )
+                # 선이 항상 위에 표시되도록 Z-order 조정
+                if hasattr(line_actor, 'GetProperty'):
+                    line_actor.GetProperty().SetRenderLinesAsTubes(True)
+                    # Depth test 비활성화하여 선이 항상 위에 표시되도록
+                    line_actor.GetProperty().SetDepthTest(False)
+                self.measure_actors.append(line_actor)
+            except Exception as line_err:
+                print(f"선 그리기 오류: {line_err}")
+                import traceback
+                traceback.print_exc()
 
             mid_point = (p1 + p2) / 2
             label_anchor = self._label_anchor_for_measurement(mid_point)
-            text_actor = self.plotter.add_point_labels(
-                [label_anchor],
-                [f"{distance_mm:.2f} mm"],
-                font_size=12,
+            label_text = f"Δx: {delta_x_mm:.2f}mm\nΔy: {delta_y_mm:.2f}mm\nΔz: {delta_z_mm:.2f}mm\nTotal: {distance_mm:.2f}mm"
+            
+            # 텍스트 표시 (R값과 동일한 스타일: cyan, font_size=12)
+            try:
+                text_actor = self.plotter.add_point_labels(
+                    [label_anchor],
+                    [label_text],
+                    font_size=12,
                     always_visible=True,
-                text_color="red",
-                point_color="red",
-                point_size=5,
-                name=f"measure_text_{len(self.measure_actors)}",
-            )
-            self.measure_actors.append(text_actor)
+                    text_color="cyan",
+                    point_color="cyan",
+                    point_size=5,
+                    name=f"measure_text_{len(self.measure_actors)}",
+                )
+                self.measure_actors.append(text_actor)
+            except Exception as text_err:
+                print(f"텍스트 표시 오류: {text_err}")
+                import traceback
+                traceback.print_exc()
 
             # 상태바 메시지(픽 소스도 함께 표시하면 사용자가 디버깅에 도움)
             src = "EDGE" if picked_from_edges else "SURF"
-            self.statusBar().showMessage(f"측정 완료: {distance_mm:.2f} mm (픽={src})", 5000)
+            self.statusBar().showMessage(f"측정 완료: {distance_mm:.2f} mm (Δx: {delta_x_mm:.2f}, Δy: {delta_y_mm:.2f}, Δz: {delta_z_mm:.2f} mm, 픽={src})", 5000)
 
             # 다음 측정을 위해 내부 점 리스트만 초기화 (마커/선/텍스트는 유지)
             self.measure_points = []
@@ -4396,6 +4499,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 self.plotter.render()
             except Exception:
                 pass
+            
+            # 측정 완료 후 즉시 리턴 (다음 클릭이 새로운 측정 시작)
+            return
         except Exception as e:
             print(f"측정 클릭 처리 오류: {e}")
 
@@ -4663,11 +4769,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 self._add_measure_point_marker(center_3d, "cen")
                 
                 # 라벨 표시 (Rx(Ø2x) 형식)
-                submode = getattr(self, "measure_submode", "radius")
-                if submode == "diameter":
-                    label = f"Ø{dia_mm:.2f}mm (R{radius_mm:.2f}mm)"
-                else:
-                    label = f"R{radius_mm:.2f}mm (Ø{dia_mm:.2f}mm)"
+                label = f"R{radius_mm:.2f}mm (Ø{dia_mm:.2f}mm)"
                 
                 # 라벨 위치 (중심에서 약간 위로)
                 label_offset = normal * (radius_m * 0.3)  # 평면 위로 약간
@@ -4688,10 +4790,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 
                 # 측정 완료 메시지
                 try:
-                    if submode == "diameter":
-                        self.statusBar().showMessage(f"Ø 측정 완료: {dia_mm:.2f} mm (R {radius_mm:.2f} mm)", 5000)
-                    else:
-                        self.statusBar().showMessage(f"R 측정 완료: {radius_mm:.2f} mm (Ø {dia_mm:.2f} mm)", 5000)
+                    self.statusBar().showMessage(f"R 측정 완료: {radius_mm:.2f} mm (Ø {dia_mm:.2f} mm)", 5000)
                 except Exception:
                     pass
                 
@@ -5645,9 +5744,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     is_left = event.button() == QtCore.Qt.LeftButton
                     is_shift = bool(event.modifiers() & QtCore.Qt.ShiftModifier)
                     if is_left and is_shift:
-                        # 서브모드에 따라 거리(D) 또는 원형(R/Φ)을 수행
+                        # 서브모드에 따라 거리(D) 또는 원형(R)을 수행
                         submode = getattr(self, "measure_submode", "distance")
-                        if submode in ("radius", "diameter"):
+                        if submode == "radius":
                             self._on_measure_radius_click_qt(event)
                         else:
                             self._on_measure_mouse_click_qt(event)
