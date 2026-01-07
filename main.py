@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-TS Numbering Tool (v1.29_stable) - Refactored Version
+TS Numbering Tool (v1.30_stable) - Refactored Version
 """
 from __future__ import annotations
 import copy
@@ -57,8 +57,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.29_stable"
-TSN_VERSION = "1.29"
+APP_VER = "v1.30_stable"
+TSN_VERSION = "1.30"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -311,7 +311,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def _append_pdf(self, path_to_append: str):
         """선택한 PDF 파일을 원본 그대로 현재 문서 뒤에 이어붙입니다."""
         try:
-            new_doc = pdfium.PdfDocument(path_to_append)
+            # 파일명 인코딩 문제를 방지하기 위해 파일을 바이너리로 읽어서 전달
+            try:
+                with open(path_to_append, 'rb') as f:
+                    pdf_bytes = f.read()
+                new_doc = pdfium.PdfDocument(pdf_bytes)
+            except (UnicodeEncodeError, OSError):
+                # 바이너리 읽기 실패 시 경로 문자열로 직접 시도
+                new_doc = pdfium.PdfDocument(path_to_append)
             # ▼▼▼ [핵심] 이어붙이기 전의 상태를 기록합니다. ▼▼▼
             original_page_count = len(self.doc)
             num_new_pages = len(new_doc)
@@ -5999,7 +6006,15 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         
         try:
             print(f"[DEBUG] import_pdf_from_path: pdfium.PdfDocument 호출 전")
-            self.doc = pdfium.PdfDocument(path)
+            # 파일명 인코딩 문제를 방지하기 위해 파일을 바이너리로 읽어서 전달
+            try:
+                with open(path, 'rb') as f:
+                    pdf_bytes = f.read()
+                self.doc = pdfium.PdfDocument(pdf_bytes)
+            except (UnicodeEncodeError, OSError) as encoding_error:
+                # 바이너리 읽기 실패 시 경로 문자열로 직접 시도
+                print(f"[DEBUG] 바이너리 읽기 실패, 경로로 직접 시도: {encoding_error}")
+                self.doc = pdfium.PdfDocument(path)
             print(f"[DEBUG] import_pdf_from_path: PDF 열기 성공, 페이지 수={len(self.doc)}")
         except Exception as e:
             import traceback
@@ -6053,16 +6068,24 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             return
         
         try:
+            print(f"[DEBUG] import_pdf_from_path: _populate_thumbnails 호출 전")
             self._populate_thumbnails()
+            print(f"[DEBUG] import_pdf_from_path: _populate_thumbnails 완료")
         except Exception as e:
+            import traceback
             print(f"[DEBUG] 썸네일 생성 오류: {e}")
+            traceback.print_exc()
             _log_error(self, "썸네일 생성 오류", e)
             # 썸네일 오류는 치명적이지 않으므로 계속 진행
         
         try:
+            print(f"[DEBUG] import_pdf_from_path: _update_window_title 호출 전")
             self._update_window_title()
+            print(f"[DEBUG] import_pdf_from_path: _update_window_title 완료")
         except Exception as e:
+            import traceback
             print(f"[DEBUG] 윈도우 제목 업데이트 오류: {e}")
+            traceback.print_exc()
     
         print(f"[DEBUG] import_pdf_from_path: 모든 작업 완료")
    
@@ -6452,38 +6475,85 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.thumbnail_widgets = []
 
     def _populate_thumbnails(self):
-        # 기존 썸네일 싹 정리
-        self._clear_thumbnails()
-        if not getattr(self, "doc", None):
-            return
-        # 방어: 누락 필드가 있어도 죽지 않도록
-        if not hasattr(self, "thumbnail_widgets"):
-            self.thumbnail_widgets = []
-        page_count = 0
+        print(f"[DEBUG] _populate_thumbnails 시작")
         try:
-            page_count = len(self.doc)
-        except Exception:
-            # 페이지 수 조회 실패 시 조용히 중단
-            return
-        for i in range(page_count):
+            # 기존 썸네일 싹 정리
+            self._clear_thumbnails()
+            if not getattr(self, "doc", None):
+                print(f"[DEBUG] _populate_thumbnails: doc이 None이므로 종료")
+                return
+            # 방어: 누락 필드가 있어도 죽지 않도록
+            if not hasattr(self, "thumbnail_widgets"):
+                self.thumbnail_widgets = []
+            if not hasattr(self, "thumbnail_layout"):
+                print(f"[DEBUG] _populate_thumbnails: thumbnail_layout이 없으므로 종료")
+                return
+            page_count = 0
             try:
-                page = self.doc.get_page(i)
-                # 썸네일은 너무 무겁지 않게 기본 DPI 또는 작은 사이즈로 생성
-                # pypdfium2의 render()는 scale 파라미터를 사용 (72 DPI ≈ scale 1.0)
-                pil_img = page.render(scale=1.0)
-                qimg = _pil_to_qimage(pil_img)
-                q_pixmap = QtGui.QPixmap.fromImage(qimg)
-                thumbnail = ThumbnailLabel(i, q_pixmap)
-                thumbnail.clicked.connect(self.load_page)
-                self.thumbnail_layout.addWidget(thumbnail)
-                self.thumbnail_widgets.append(thumbnail)
-            except Exception:
-                # 개별 페이지 렌더 실패는 건너뜁니다. (한 장 때문에 전체가 멈추지 않게)
-                continue
-        # 스페이서(스트레치) 추가 — 이제 _clear_thumbnails가 안전하게 처리합니다.
-        self.thumbnail_layout.addStretch(1)
-        # 현재 페이지 하이라이트 및 가시화
-        self._update_thumbnail_selection()
+                page_count = len(self.doc)
+                print(f"[DEBUG] _populate_thumbnails: 페이지 수={page_count}")
+            except Exception as e:
+                print(f"[DEBUG] _populate_thumbnails: 페이지 수 조회 실패: {e}")
+                # 페이지 수 조회 실패 시 조용히 중단
+                return
+            for i in range(page_count):
+                try:
+                    print(f"[DEBUG] _populate_thumbnails: 페이지 {i} 처리 시작")
+                    page = self.doc.get_page(i)
+                    # 썸네일은 처음부터 작은 스케일로 렌더링 (메모리 문제 방지)
+                    # scale=0.3 정도면 썸네일로 충분하며, 메모리 사용량도 크게 줄어듭니다
+                    thumb_scale = 0.3
+                    print(f"[DEBUG] _populate_thumbnails: 페이지 {i} render 시작 (scale={thumb_scale})")
+                    pil_img = page.render(scale=thumb_scale)
+                    print(f"[DEBUG] _populate_thumbnails: 페이지 {i} render 완료")
+                    qimg = _pil_to_qimage(pil_img)
+                    print(f"[DEBUG] _populate_thumbnails: 페이지 {i} QImage 변환 완료, size={qimg.width()}x{qimg.height()}")
+                    # QImage가 유효한지 확인
+                    if qimg.isNull():
+                        print(f"[DEBUG] _populate_thumbnails: 페이지 {i} QImage가 null")
+                        continue
+                    
+                    # QPixmap 생성 시 예외 처리 강화
+                    q_pixmap = None
+                    try:
+                        print(f"[DEBUG] _populate_thumbnails: 페이지 {i} QPixmap.fromImage 호출 전")
+                        q_pixmap = QtGui.QPixmap.fromImage(qimg)
+                        print(f"[DEBUG] _populate_thumbnails: 페이지 {i} QPixmap.fromImage 호출 완료")
+                        if q_pixmap.isNull():
+                            print(f"[DEBUG] _populate_thumbnails: 페이지 {i} QPixmap이 null")
+                            continue
+                        print(f"[DEBUG] _populate_thumbnails: 페이지 {i} QPixmap 생성 완료, size={q_pixmap.width()}x{q_pixmap.height()}")
+                    except Exception as pixmap_error:
+                        import traceback
+                        print(f"[DEBUG] _populate_thumbnails: 페이지 {i} QPixmap 생성 실패: {pixmap_error}")
+                        traceback.print_exc()
+                        continue
+                    
+                    # QPixmap이 None이면 건너뛰기
+                    if q_pixmap is None:
+                        print(f"[DEBUG] _populate_thumbnails: 페이지 {i} QPixmap이 None")
+                        continue
+                    thumbnail = ThumbnailLabel(i, q_pixmap)
+                    thumbnail.clicked.connect(self.load_page)
+                    self.thumbnail_layout.addWidget(thumbnail)
+                    self.thumbnail_widgets.append(thumbnail)
+                    print(f"[DEBUG] _populate_thumbnails: 페이지 {i} 썸네일 추가 완료")
+                except Exception as e:
+                    import traceback
+                    print(f"[DEBUG] _populate_thumbnails: 페이지 {i} 처리 오류: {e}")
+                    traceback.print_exc()
+                    # 개별 페이지 렌더 실패는 건너뜁니다. (한 장 때문에 전체가 멈추지 않게)
+                    continue
+            # 스페이서(스트레치) 추가 — 이제 _clear_thumbnails가 안전하게 처리합니다.
+            self.thumbnail_layout.addStretch(1)
+            # 현재 페이지 하이라이트 및 가시화
+            self._update_thumbnail_selection()
+            print(f"[DEBUG] _populate_thumbnails: 모든 작업 완료")
+        except Exception as e:
+            import traceback
+            print(f"[DEBUG] _populate_thumbnails: 치명적 오류: {e}")
+            traceback.print_exc()
+            # 썸네일 생성 실패는 치명적이지 않으므로 조용히 종료
 
     def _update_thumbnail_selection(self):
         if not getattr(self, "thumbnail_widgets", None):
@@ -8203,14 +8273,23 @@ def main():
             sys.__excepthook__(exc_type, exc_value, exc_traceback)
             return
         error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-        print(f"Uncaught exception:\n{error_msg}", file=sys.stderr)
+        print(f"[FATAL] Uncaught exception:\n{error_msg}", file=sys.stderr)
+        # 에러 로그 파일에 기록
+        try:
+            with open("tsn_error.log", "a", encoding="utf-8") as f:
+                f.write(f"[FATAL] Uncaught exception:\n{error_msg}\n" + ("-"*60) + "\n")
+        except:
+            pass
         # Qt 메시지 박스로도 표시
         app = QtWidgets.QApplication.instance()
         if app:
-            QtWidgets.QMessageBox.critical(
-                None, "치명적 오류", 
-                f"예기치 않은 오류가 발생했습니다:\n\n{exc_type.__name__}: {exc_value}\n\n자세한 내용은 콘솔을 확인하세요."
-            )
+            try:
+                QtWidgets.QMessageBox.critical(
+                    None, "치명적 오류", 
+                    f"예기치 않은 오류가 발생했습니다:\n\n{exc_type.__name__}: {exc_value}\n\n자세한 내용은 콘솔과 tsn_error.log를 확인하세요."
+                )
+            except:
+                pass
     
     sys.excepthook = exception_hook
     
