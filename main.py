@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-TS Numbering Tool (v1.31_stable) - Refactored Version
+TS Numbering Tool (v1.32_stable) - Refactored Version
 """
 from __future__ import annotations
 import copy
@@ -57,8 +57,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.31_stable"
-TSN_VERSION = "1.31"
+APP_VER = "v1.32_stable"
+TSN_VERSION = "1.32"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -4399,16 +4399,133 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         except Exception as e:
             print(f"측정 클릭 처리 오류: {e}")
 
+    def _fit_circle_from_3_points(self, p1, p2, p3):
+        """
+        3개의 3D 점으로부터 원을 계산합니다.
+        
+        방법:
+        1. 3점으로 평면 결정
+        2. 평면에 2D 좌표계 설정
+        3. 3점을 2D로 투영
+        4. 2D에서 원 계산
+        5. 원을 3D 좌표로 변환
+        
+        Args:
+            p1, p2, p3: 3D 점 (numpy array shape=(3,))
+            
+        Returns:
+            (center_3d, radius_m, normal, plane_origin) 또는 None
+        """
+        import numpy as np
+        
+        p1 = np.asarray(p1, dtype=float).reshape(3)
+        p2 = np.asarray(p2, dtype=float).reshape(3)
+        p3 = np.asarray(p3, dtype=float).reshape(3)
+        
+        # 일직선상에 있는지 확인 (각도 기준으로 판단)
+        v1 = p2 - p1
+        v2 = p3 - p1
+        v1_norm = np.linalg.norm(v1)
+        v2_norm = np.linalg.norm(v2)
+        
+        # 두 벡터의 크기가 0이면 오류
+        if v1_norm < 1e-10 or v2_norm < 1e-10:
+            return None
+        
+        # 정규화된 벡터로 각도 계산
+        v1_unit = v1 / v1_norm
+        v2_unit = v2 / v2_norm
+        
+        # 내적을 이용한 각도 계산 (cos(angle) = dot(v1_unit, v2_unit))
+        dot_product = np.clip(np.dot(v1_unit, v2_unit), -1.0, 1.0)
+        angle_rad = np.arccos(dot_product)
+        angle_deg = np.degrees(angle_rad)
+        
+        # 일직선 검사: 외적 크기가 상대적으로 매우 작은 경우만 일직선으로 판단
+        cross = np.cross(v1, v2)
+        cross_norm = np.linalg.norm(cross)
+        
+        # 외적 크기를 두 벡터의 평균 길이로 나눈 값 (sin(angle)에 비례)
+        avg_length = (v1_norm + v2_norm) / 2.0
+        relative_cross = cross_norm / avg_length if avg_length > 1e-10 else 0.0
+        
+        # 상대 외적이 매우 작으면 일직선 (약 0.1도 미만, sin(0.1°) ≈ 0.0017)
+        # 기준을 매우 엄격하게 설정하여 실제 일직선인 경우만 걸러냄
+        if relative_cross < 0.001:
+            return None
+        
+        # 3. 평면의 법선 벡터 계산 (일직선이 아니므로 cross는 0이 아님)
+        normal = cross / cross_norm
+        
+        # 4. 평면의 원점 (p1 사용)
+        plane_origin = p1.copy()
+        
+        # 5. 평면에 2D 좌표계 설정
+        # u: p1 -> p2 방향
+        u = v1 / np.linalg.norm(v1)
+        # v: normal과 u의 외적 (평면 내 수직 벡터)
+        v = np.cross(normal, u)
+        v = v / np.linalg.norm(v)
+        
+        # 6. 3점을 2D로 투영
+        def to_2d(p3d):
+            rel = p3d - plane_origin
+            return np.array([np.dot(rel, u), np.dot(rel, v)])
+        
+        q1 = to_2d(p1)
+        q2 = to_2d(p2)
+        q3 = to_2d(p3)
+        
+        # 7. 2D에서 원 계산 (3점으로 원의 중심과 반경 계산)
+        # 3점이 만드는 원의 중심은 두 수직 이등분선의 교점
+        mid12 = (q1 + q2) / 2.0
+        mid23 = (q2 + q3) / 2.0
+        dir12 = q2 - q1
+        dir23 = q3 - q2
+        
+        # 수직 벡터
+        perp12 = np.array([-dir12[1], dir12[0]])
+        perp23 = np.array([-dir23[1], dir23[0]])
+        
+        # 두 수직 이등분선의 교점 계산
+        # mid12 + t * perp12 = mid23 + s * perp23
+        # t * perp12 - s * perp23 = mid23 - mid12
+        A = np.column_stack([perp12, -perp23])
+        b = mid23 - mid12
+        
+        try:
+            ts = np.linalg.solve(A, b)
+            t = ts[0]
+            center_2d = mid12 + t * perp12
+        except np.linalg.LinAlgError:
+            # 수치 오류 시 대체 방법: 외심 계산
+            # 외심은 세 변의 수직 이등분선의 교점
+            # 더 안정적인 방법 사용
+            a = np.linalg.norm(q2 - q3)
+            b = np.linalg.norm(q3 - q1)
+            c = np.linalg.norm(q1 - q2)
+            s = (a + b + c) / 2.0
+            area = np.sqrt(s * (s - a) * (s - b) * (s - c))
+            if area < 1e-10:
+                return None
+            
+            # 외심 좌표
+            center_2d = (a * q1 + b * q2 + c * q3) / (a + b + c)
+        
+        # 8. 반경 계산
+        radius_2d = np.linalg.norm(q1 - center_2d)
+        
+        # 9. 2D 중심을 3D로 변환
+        center_3d = plane_origin + center_2d[0] * u + center_2d[1] * v
+        
+        return (center_3d, radius_2d, normal, plane_origin)
+    
     def _on_measure_radius_click_qt(self, event) -> None:
         """
-        Shift+좌클릭 1회로 원/홀의 R(반경)을 간단히 측정합니다.
-
-        구현 의도:
-            - 본 툴은 넘버링 작업을 위한 "간단 확인" 용도이므로, 3점/다점 피팅보다 UX가 빠른
-              "원/홀을 한 번 클릭하면 R 표시"를 우선 제공합니다.
-            - 1차: feature_edges(모서리 표시) 기반 원형 루프 피팅(홀/원형 엣지에 강함)
-            - 2차: 표면(메시) 기반 로컬 반경 추정(코너 라운드/필렛에 강함)
-
+        3포인트 원 측정 방식으로 R(반경) 또는 Ø(지름)을 측정합니다.
+        
+        P1, P2, P3를 순서대로 클릭하여 원을 결정합니다.
+        
         Args:
             event: PySide6 QMouseEvent
         """
@@ -4441,136 +4558,155 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
             # 클릭 지점 월드 좌표(엣지 우선 픽킹)
             raw_point = None
-            picked_from_edges = False
             if self._is_feature_edges_visible():
                 raw_point = self._pick_world_point_from_feature_edges(widget_pos)
-                picked_from_edges = raw_point is not None
 
-            # IMPORTANT:
-            #   Edges 모드에서는 클릭이 feature_edges에 "먼저" 걸리는 경우가 많습니다.
-            #   하지만 코너 라운드/필렛은 feature_edges로 인식이 잘 안 되므로,
-            #   표면 기반 폴백을 위해 surface polydata를 항상 함께 시도해둡니다.
-            surface_poly = None
-            surface_point = None
-            try:
-                surface_point, surface_poly = self._pick_world_point_generic_with_polydata(widget_pos)
-            except Exception:
-                surface_point, surface_poly = None, None
-
-            if raw_point is None and surface_point is not None:
-                raw_point = surface_point
+            # 표면 기반 폴백
+            if raw_point is None:
+                try:
+                    surface_point, _ = self._pick_world_point_generic_with_polydata(widget_pos)
+                    if surface_point is not None:
+                        raw_point = surface_point
+                except Exception:
+                    pass
 
             if raw_point is None:
                 return
 
-            seed = np.asarray(raw_point, dtype=float)
-
-            # 1) 엣지/표면 두 경로를 모두 시도한 뒤, 더 신뢰도 높은 결과를 선택합니다.
-            # Why:
-            #   - 코너 라운드에서 feature_edges(local) 피팅이 잘못된 작은 원을 "성공"으로 잡는 케이스가 있어
-            #     값이 들쭉날쭉해질 수 있습니다.
-            #   - 반대로 홀은 feature_edges(loop)가 가장 안정적입니다.
-
-            # (A) edge fit: seed가 edge에서 왔을 때만 시도
-            edge_fit = None
-            if picked_from_edges:
-                edge_fit = self._fit_circle_from_feature_edges(seed)
-
-            # (B) surface fit: 표면 점이 있으면 표면 점을 seed로 사용 (필렛에서 안정적)
-            surf_fit = None
-            surf_seed = seed
-            if surface_point is not None:
+            # 스냅 포인트 찾기
+            snapped_point = self._find_nearest_snap_point(raw_point)
+            if snapped_point is None:
+                snapped_point = raw_point.copy()
+            
+            clicked_point = np.asarray(snapped_point, dtype=float).reshape(3)
+            
+            # measure_points 리스트 초기화 (없으면)
+            if not hasattr(self, "measure_points"):
+                self.measure_points = []
+            
+            # 포인트 추가
+            self.measure_points.append(clicked_point.copy())
+            
+            # P1, P2, P3 표시
+            point_num = len(self.measure_points)
+            if point_num == 1:
+                # P1 표시
+                self._add_measure_point_marker(clicked_point, "end")
                 try:
-                    surf_seed = np.asarray(surface_point, dtype=float).reshape(3)
-                except Exception:
-                    surf_seed = seed
-            surf_fit = self._fit_radius_from_surface_neighborhood(surf_seed, surface_poly)
-
-            # (C) fallback edge fit (surface seed 주변에 원형 엣지가 있으면 잡힐 수 있음)
-            edge_fit2 = None
-            try:
-                edge_fit2 = self._fit_circle_from_feature_edges(surf_seed)
-            except Exception:
-                edge_fit2 = None
-
-            # 선택 규칙:
-            # - edge_fit가 src="loop"이면(=홀 루프) 최우선
-            # - 그 외에는 surf_fit가 있으면 surf 우선(=필렛/라운드)
-            # - 마지막으로 edge_fit / edge_fit2
-            fit = None
-            if edge_fit is not None:
-                try:
-                    if len(edge_fit) >= 5 and edge_fit[4] == "loop":
-                        fit = edge_fit
+                    self.statusBar().showMessage("P1 선택됨. P2를 선택하세요.", 2000)
                 except Exception:
                     pass
-            if fit is None and surf_fit is not None:
-                fit = surf_fit
-            if fit is None and edge_fit is not None:
-                fit = edge_fit
-            if fit is None and edge_fit2 is not None:
-                fit = edge_fit2
-
-            if fit is None:
+            elif point_num == 2:
+                # P2 표시
+                self._add_measure_point_marker(clicked_point, "mid")
                 try:
-                    self.statusBar().showMessage("R 측정 실패: 원형 엣지를 인식하지 못했습니다.", 2500)
+                    self.statusBar().showMessage("P2 선택됨. P3를 선택하세요.", 2000)
+                except Exception:
+                    pass
+            elif point_num == 3:
+                # P3 표시
+                self._add_measure_point_marker(clicked_point, "cen")
+                
+                # 3점으로 원 계산
+                p1, p2, p3 = self.measure_points[0], self.measure_points[1], self.measure_points[2]
+                result = self._fit_circle_from_3_points(p1, p2, p3)
+                
+                if result is None:
+                    # 오류: 너무 가깝거나 일직선
+                    self.measure_points = []  # 리셋
+                    self._clear_measurements()  # 기존 마커 제거
+                    try:
+                        # 팝업 창으로 오류 메시지 표시
+                        msg_box = QtWidgets.QMessageBox(self)
+                        msg_box.setIcon(QtWidgets.QMessageBox.Warning)
+                        msg_box.setWindowTitle("측정 오류")
+                        msg_box.setText("3점이 일직선상에 있습니다.")
+                        msg_box.setInformativeText("원을 결정할 수 없습니다. 다시 선택해주세요.")
+                        msg_box.setStandardButtons(QtWidgets.QMessageBox.Ok)
+                        msg_box.exec()
+                    except Exception:
+                        pass
+                    return
+                
+                center_3d, radius_m, normal, plane_origin = result
+                radius_mm = float(radius_m) * 1000.0
+                dia_mm = radius_mm * 2.0
+                
+                # 원 그리기 (평면에 원 생성)
+                # 평면의 u, v 벡터 계산
+                v1 = p2 - p1
+                u = v1 / np.linalg.norm(v1)
+                v = np.cross(normal, u)
+                v = v / np.linalg.norm(v)
+                
+                # 원을 3D로 그리기 (원주를 여러 점으로 표현)
+                num_points = 64
+                circle_points = []
+                for i in range(num_points + 1):
+                    angle = 2.0 * np.pi * i / num_points
+                    offset_2d = radius_m * np.array([np.cos(angle), np.sin(angle)])
+                    point_3d = center_3d + offset_2d[0] * u + offset_2d[1] * v
+                    circle_points.append(point_3d)
+                
+                # 원을 폴리라인으로 그리기
+                circle_poly = pv.PolyData(circle_points)
+                circle_poly.lines = [num_points + 1] + list(range(num_points + 1))
+                circle_actor = self.plotter.add_mesh(
+                    circle_poly,
+                    color="cyan",
+                    line_width=3,
+                    name=f"measure_circle_{len(self.measure_actors)}",
+                )
+                self.measure_actors.append(circle_actor)
+                
+                # 중심 마커
+                self._add_measure_point_marker(center_3d, "cen")
+                
+                # 라벨 표시 (Rx(Ø2x) 형식)
+                submode = getattr(self, "measure_submode", "radius")
+                if submode == "diameter":
+                    label = f"Ø{dia_mm:.2f}mm (R{radius_mm:.2f}mm)"
+                else:
+                    label = f"R{radius_mm:.2f}mm (Ø{dia_mm:.2f}mm)"
+                
+                # 라벨 위치 (중심에서 약간 위로)
+                label_offset = normal * (radius_m * 0.3)  # 평면 위로 약간
+                label_pos = center_3d + label_offset
+                label_anchor = self._label_anchor_for_measurement(label_pos)
+                
+                text_actor = self.plotter.add_point_labels(
+                    [label_anchor],
+                    [label],
+                    font_size=12,
+                    always_visible=True,
+                    text_color="cyan",
+                    point_color="cyan",
+                    point_size=5,
+                    name=f"measure_r_text_{len(self.measure_actors)}",
+                )
+                self.measure_actors.append(text_actor)
+                
+                # 측정 완료 메시지
+                try:
+                    if submode == "diameter":
+                        self.statusBar().showMessage(f"Ø 측정 완료: {dia_mm:.2f} mm (R {radius_mm:.2f} mm)", 5000)
+                    else:
+                        self.statusBar().showMessage(f"R 측정 완료: {radius_mm:.2f} mm (Ø {dia_mm:.2f} mm)", 5000)
+                except Exception:
+                    pass
+                
+                # 포인트 리스트 초기화 (다음 측정을 위해)
+                self.measure_points = []
+                
+            elif point_num > 3:
+                # 3개 초과 시 리셋
+                self.measure_points = []
+                self._clear_measurements()
+                try:
+                    self.statusBar().showMessage("3포인트 측정을 다시 시작합니다.", 2000)
                 except Exception:
                     pass
                 return
-
-            center3, radius_m, point_on_edge, rms_m, src = fit
-            radius_mm = float(radius_m) * 1000.0
-            dia_mm = radius_mm * 2.0
-
-            # 표시: 중심 마커 + 반경 라인 + 라벨(R, Φ)
-            self._add_measure_point_marker(center3, "cen")
-
-            # 반경 라인(중심 -> 루프 위 한 점)
-            line = pv.Line(center3, point_on_edge)
-            line_actor = self.plotter.add_mesh(
-                line,
-                color="cyan",
-                line_width=3,
-                name=f"measure_r_line_{len(self.measure_actors)}",
-            )
-            self.measure_actors.append(line_actor)
-
-            # 라벨은 너무 전문적으로 보이지 않게 R/Φ만 표시
-            mid = (np.asarray(center3, float) + np.asarray(point_on_edge, float)) / 2.0
-            label_anchor = self._label_anchor_for_measurement(mid)
-            submode = getattr(self, "measure_submode", "radius")
-            if submode == "diameter":
-                label = f"Φ {dia_mm:.2f} mm (R {radius_mm:.2f} mm)"
-            else:
-                label = f"R {radius_mm:.2f} mm (Φ {dia_mm:.2f} mm)"
-            text_actor = self.plotter.add_point_labels(
-                [label_anchor],
-                [label],
-                font_size=12,
-                always_visible=True,
-                text_color="cyan",
-                point_color="cyan",
-                point_size=5,
-                name=f"measure_r_text_{len(self.measure_actors)}",
-            )
-            self.measure_actors.append(text_actor)
-
-            # 거리 측정용 2점 버퍼는 비움(모드 혼선 방지)
-            self.measure_points = []
-
-            # 사용자에게 간단한 신뢰 지표(피팅 오차)를 mm로 표시
-            rms_mm = float(rms_m) * 1000.0
-            try:
-                if submode == "diameter":
-                    self.statusBar().showMessage(
-                        f"Φ 측정 완료: {dia_mm:.2f} mm (fit err ~{rms_mm:.2f} mm, {src})", 5000
-                    )
-                else:
-                    self.statusBar().showMessage(
-                        f"R 측정 완료: {radius_mm:.2f} mm (fit err ~{rms_mm:.2f} mm, {src})", 5000
-                    )
-            except Exception:
-                pass
 
             try:
                 self.plotter.render()
@@ -4578,6 +4714,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 pass
         except Exception as e:
             print(f"R 측정 처리 오류: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _fit_circle_from_feature_edges(self, seed_point_np):
         """
