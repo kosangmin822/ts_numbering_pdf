@@ -188,10 +188,19 @@ class TableManager:
         if hasattr(self.main_window, 'highlight_label'):
             # 메인 윈도우의 items에서 해당 번호의 아이템 찾기
             target_item = None
-            for item in self.main_window.items:
-                if abs(item.no - no) < 1e-9:
-                    target_item = item
-                    break
+            # 페이지별 개별 넘버링 모드 확인
+            if hasattr(self.main_window, "cb_separate_numbering") and self.main_window.numbering_mode == "page_specific":
+                # 현재 페이지의 아이템만 검색
+                for item in self.main_window.items:
+                    if item.page_index == self.main_window.cur_page_index and abs(item.no - no) < 1e-9:
+                        target_item = item
+                        break
+            else:
+                # 전체 아이템에서 검색
+                for item in self.main_window.items:
+                    if abs(item.no - no) < 1e-9:
+                        target_item = item
+                        break
             if target_item:
                 self.main_window.highlight_label(target_item)
 

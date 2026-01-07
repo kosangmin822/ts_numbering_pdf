@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-TS Numbering Tool (v1.30_stable) - Refactored Version
+TS Numbering Tool (v1.31_stable) - Refactored Version
 """
 from __future__ import annotations
 import copy
@@ -57,8 +57,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.30_stable"
-TSN_VERSION = "1.30"
+APP_VER = "v1.31_stable"
+TSN_VERSION = "1.31"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -2355,6 +2355,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # ▲▲▲ 여기까지 추가 ▲▲▲
         self.render_scale = 2
         self.auto_highres = True
+        # 확대/축소 시 중복 렌더링 방지를 위한 변수
+        self._zoom_rerender_timer = None
+        self._is_rerendering = False
+        self._last_zoom_time = 0  # 마지막 줌 이벤트 시간
+        self._zoom_call_count = 0  # 짧은 시간 내 줌 호출 횟수
+        self._last_zoom_time = 0  # 마지막 줌 이벤트 시간
+        self._zoom_call_count = 0  # 짧은 시간 내 줌 호출 횟수
         # ===== ▼▼▼ 보기/숨기기 상태 변수 추가/수정 ▼▼▼ =====
         self.flow_view_enabled = False  # 흐름도 (디폴트 OFF)
         self.view_show_numbering = True  # 넘버링 (디폴트 ON)
@@ -2470,6 +2477,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # ===== ▲▲▲ 여기까지 수정 (상태 표시줄 추가 부분 삭제) ▲▲▲ =====
         # --- 표 도크 ---
         self.table = QtWidgets.QTableWidget(0, 6, self)
+        # 테이블이 가능한 모든 공간을 차지하도록 크기 정책 설정
+        self.table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.table.setHorizontalHeaderLabels(
             ["No", "Type", "Dim", "Max", "Min", "3D Parameter"]
         )
@@ -2710,10 +2719,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         )
         dock_layout.addWidget(help_label)
         dock_layout.addWidget(self.dock_stack)  # 스택 위젯을 도크에 추가
+        # dock_stack이 가능한 모든 공간을 차지하도록 스트레치 설정
+        dock_layout.setStretchFactor(self.dock_stack, 1)
         self.dock.setWidget(dock_container)
         # 도크 위젯 크기 제한 설정 (3D Parameter 컬럼을 위해 더 넓게)
         self.dock.setMinimumSize(400, 250)
-        self.dock.setMaximumSize(600, 500)
+        # 최대 높이 제한 제거 (테이블이 전체 높이를 차지하도록)
+        # Qt의 최대값인 16777215을 사용하여 높이 제한을 사실상 제거
+        self.dock.setMaximumSize(600, 16777215)
         # 테이블 컬럼 크기 설정
         self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)  # No
         self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)  # Type
@@ -6096,8 +6109,86 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def _maybe_rerender_for_zoom(self, s: float):
         if not self.auto_highres or not self.doc:
             return
+        # 렌더링 중이면 완전히 무시 (중복 호출 방지)
+        if self._is_rerendering:
+            return
+        
+        # 빠른 스크롤 감지 (0.5초 내 3회 이상 호출 시 재렌더링 건너뛰기)
+        import time
+        current_time = time.time()
+        if current_time - self._last_zoom_time < 0.5:
+            self._zoom_call_count += 1
+            if self._zoom_call_count >= 3:
+                # 빠른 스크롤 중이므로 재렌더링 완전히 건너뛰기
+                if self._zoom_rerender_timer:
+                    self._zoom_rerender_timer.stop()
+                    self._zoom_rerender_timer.deleteLater()
+                    self._zoom_rerender_timer = None
+                return
+        else:
+            # 0.5초 이상 경과했으면 카운터 리셋
+            self._zoom_call_count = 0
+        
+        self._last_zoom_time = current_time
+        
         desired = self._render_factor_for_scale(s)
         if desired != self.render_scale:
+            # 디바운싱: 짧은 시간 내 여러 번 호출되는 것을 방지
+            # 빠른 스크롤 시 메모리 과다 사용 방지를 위해 시간을 더 늘림
+            if self._zoom_rerender_timer:
+                self._zoom_rerender_timer.stop()
+                self._zoom_rerender_timer.deleteLater()
+            
+            self._zoom_rerender_timer = QtCore.QTimer()
+            self._zoom_rerender_timer.setSingleShot(True)
+            # 최신 desired 값을 캡처하기 위해 클로저 사용
+            current_desired = desired
+            self._zoom_rerender_timer.timeout.connect(
+                lambda: self._do_rerender_for_zoom(s, current_desired)
+            )
+            # 디바운싱 시간을 2000ms로 증가 (빠른 스크롤 대응)
+            self._zoom_rerender_timer.start(2000)
+    
+    def _do_rerender_for_zoom(self, s: float, desired: int):
+        """실제 재렌더링을 수행합니다."""
+        # 다시 한번 체크 (타이머가 실행되는 동안 상태가 변경되었을 수 있음)
+        if self._is_rerendering or not self.auto_highres or not self.doc:
+            return
+        
+        # 빠른 스크롤 중인지 다시 확인
+        import time
+        current_time = time.time()
+        if current_time - self._last_zoom_time < 0.5 and self._zoom_call_count >= 3:
+            # 여전히 빠른 스크롤 중이면 건너뛰기
+            return
+        
+        # 현재 render_scale과 desired가 여전히 다른지 확인
+        # (타이머 대기 중에 이미 변경되었을 수 있음)
+        current_desired = self._render_factor_for_scale(s)
+        if current_desired == self.render_scale:
+            return  # 이미 올바른 스케일이면 렌더링 불필요
+        
+        # 큰 이미지의 경우 재렌더링을 더 보수적으로 처리
+        if hasattr(self, '_page_pix') and self._page_pix:
+            try:
+                pixmap = self._page_pix.pixmap()
+                if not pixmap.isNull():
+                    # 이미지가 큰 경우 (예: 4000x4000 이상) 재렌더링 제한
+                    if pixmap.width() > 4000 or pixmap.height() > 4000:
+                        # 큰 이미지는 스케일 변경이 2배 이상일 때만 재렌더링
+                        scale_ratio = current_desired / self.render_scale
+                        if abs(scale_ratio - 1.0) < 1.0:  # 2배 미만 변경은 건너뛰기
+                            return
+                        # 또는 매우 큰 이미지(6000x6000 이상)는 완전히 건너뛰기
+                        if pixmap.width() > 6000 or pixmap.height() > 6000:
+                            return
+            except Exception:
+                pass
+        
+        # 렌더링 중 플래그 설정
+        self._is_rerendering = True
+        
+        try:
             # --- 수정 시작: 화면 점프 방지 로직 ---
             # 1. 이미지를 교체하기 전, 현재 화면의 중심 좌표를 기억합니다.
             # 뷰포트(보이는 영역)의 중심점을 씬(전체 도면)의 좌표로 변환합니다.
@@ -6105,15 +6196,44 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 현재 배율 기준으로 '정규화된' 좌표를 계산해 둡니다. (비율 좌표)
             normalized_x = center_point_before.x() / self.render_scale
             normalized_y = center_point_before.y() / self.render_scale
-            # 2. 새로운 해상도로 이미지를 다시 렌더링합니다.
-            self.render_scale = desired
+            
+            # 2. 이전 QPixmap 명시적 삭제 (메모리 해제)
+            if self._page_pix:
+                try:
+                    # QGraphicsPixmapItem의 pixmap을 명시적으로 삭제
+                    old_pixmap = self._page_pix.pixmap()
+                    if not old_pixmap.isNull():
+                        # QPixmap의 내부 데이터를 명시적으로 해제
+                        old_pixmap.detach()
+                    # scene에서 제거
+                    if self.scene:
+                        self.scene.removeItem(self._page_pix)
+                    self._page_pix = None
+                except Exception:
+                    pass
+            
+            # 3. 가비지 컬렉션 강제 실행 (메모리 해제 촉진)
+            import gc
+            gc.collect()
+            
+            # 4. 새로운 해상도로 이미지를 다시 렌더링합니다.
+            self.render_scale = current_desired
             self.load_page(self.cur_page_index)
-            # 3. 새 이미지에 맞게 기억해 둔 중심점의 좌표를 다시 계산합니다.
+            
+            # 5. 새 이미지에 맞게 기억해 둔 중심점의 좌표를 다시 계산합니다.
             new_center_x = normalized_x * self.render_scale
             new_center_y = normalized_y * self.render_scale
-            # 4. 뷰를 새로운 중심점으로 즉시 이동시킵니다.
+            # 6. 뷰를 새로운 중심점으로 즉시 이동시킵니다.
             self.view.centerOn(QtCore.QPointF(new_center_x, new_center_y))
             # --- 수정 끝 ---
+        except Exception as e:
+            import traceback
+            print(f"[DEBUG] _do_rerender_for_zoom 오류: {e}")
+            traceback.print_exc()
+            _log_error(self, "줌 재렌더링 오류", e)
+        finally:
+            # 렌더링 완료 플래그 해제
+            self._is_rerendering = False
             
     def load_page(self, index: int):
         print(f"[DEBUG] load_page 시작: index={index}, doc 존재={self.doc is not None}")
@@ -6140,12 +6260,20 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             page = self.doc.get_page(index)
             print(f"[DEBUG] load_page: get_page 완료, render 호출 전, scale={self.render_scale}")
             # pypdfium2의 render()는 PdfBitmap을 반환합니다
-            bitmap = page.render(scale=self.render_scale)
-            print(f"[DEBUG] load_page: render 완료, PIL Image 변환 시작")
+            bitmap = None
+            try:
+                bitmap = page.render(scale=self.render_scale)
+                print(f"[DEBUG] load_page: render 완료, PIL Image 변환 시작")
+            except Exception as render_error:
+                print(f"[DEBUG] load_page: render 오류: {render_error}")
+                _log_error(self, "페이지 렌더링 오류", render_error)
+                return
             
             # QImage를 완전히 우회하고 PIL Image를 직접 임시 파일로 저장
             pm = None
+            pil_image = None  # 메모리 해제를 위해 참조 유지
             try:
+                # bitmap 메모리 해제는 finally 블록에서 처리
                 import tempfile
                 import os
                 from PIL import Image
@@ -6157,19 +6285,31 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 
                 print(f"[DEBUG] load_page: PIL Image 생성 완료, 임시 파일 저장 시작")
                 # 임시 파일에 PIL Image를 직접 저장
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
-                    tmp_path = tmp_file.name
-                pil_image.save(tmp_path, 'PNG')
-                print(f"[DEBUG] load_page: 임시 파일 저장 완료, QPixmap 로드 시작")
-                
-                # QPixmap으로 직접 로드 (QImage 완전히 우회)
-                pm = QtGui.QPixmap(tmp_path)
-                os.unlink(tmp_path)
-                
-                if not pm.isNull():
-                    print(f"[DEBUG] load_page: QPixmap 로드 성공, size={pm.width()}x{pm.height()}")
-                else:
-                    raise ValueError("QPixmap is null")
+                tmp_path = None
+                try:
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                        tmp_path = tmp_file.name
+                    pil_image.save(tmp_path, 'PNG')
+                    print(f"[DEBUG] load_page: 임시 파일 저장 완료, QPixmap 로드 시작")
+                    
+                    # QPixmap으로 직접 로드 (QImage 완전히 우회)
+                    pm = QtGui.QPixmap(tmp_path)
+                    
+                    # 임시 파일 즉시 삭제
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
+                    
+                    if not pm.isNull():
+                        print(f"[DEBUG] load_page: QPixmap 로드 성공, size={pm.width()}x{pm.height()}")
+                    else:
+                        raise ValueError("QPixmap is null")
+                finally:
+                    # PIL Image 메모리 해제
+                    if pil_image:
+                        pil_image.close()
+                        del pil_image
             except Exception as e:
                 import traceback
                 print(f"[DEBUG] load_page: PIL Image 임시 파일 방법 실패: {e}")
@@ -6193,6 +6333,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     traceback.print_exc()
                     _log_error(self, "페이지 이미지 변환 실패", e2)
                     return
+            finally:
+                # bitmap 메모리 해제
+                if bitmap:
+                    try:
+                        bitmap.close()
+                        del bitmap
+                    except Exception:
+                        pass
             
             # 최종 검증
             if pm is None or pm.isNull():
@@ -6215,6 +6363,22 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         print(f"[DEBUG] load_page: 이미지 생성 완료, scene 업데이트 시작")
         
         try:
+            # 이전 QPixmap 명시적 삭제 (메모리 해제)
+            if self._page_pix:
+                try:
+                    old_pixmap = self._page_pix.pixmap()
+                    if not old_pixmap.isNull():
+                        old_pixmap.detach()
+                    if self.scene:
+                        self.scene.removeItem(self._page_pix)
+                    self._page_pix = None
+                except Exception:
+                    pass
+            
+            # scene.clear() 전에 가비지 컬렉션 실행
+            import gc
+            gc.collect()
+            
             self.scene.clear()
             # ▼▼▼ [결정적 수정] 파괴된 객체에 대한 참조를 여기서 모두 초기화합니다. ▼▼▼
             self._preview_ellipse = None
@@ -7123,35 +7287,26 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def highlight_label(self, it: MarkItem):
         if not it:
             return
-            if it.page_index != self.cur_page_index:
-                self.load_page(it.page_index)
-            self.clear_highlight()
-            # ===== ▼▼▼ 수정 시작: 개별 서식을 정확히 반영하도록 변경 ▼▼▼ =====
-            # 1. 하이라이트를 그릴 때 사용할 스타일을 먼저 결정합니다 (개별 스타일 우선).
-            style_to_use = it.custom_style if it.custom_style else self.style
-            # 2. 결정된 스타일을 기준으로 모든 값을 계산합니다.
-            pt = self.pdf_to_view(*it.pdf_point)
-            r = style_to_use.radius_view_px + 5
-            pen = QtGui.QPen(self.highlight_color)
-            pen.setWidth(style_to_use.stroke_width + 8)
-            # ===== ▲▲▲ 수정 끝 ▲▲▲ =====
-            pen.setCosmetic(True)
-            ell = self.scene.addEllipse(
+        if it.page_index != self.cur_page_index:
+            self.load_page(it.page_index)
+        self.clear_highlight()
+        # ===== ▼▼▼ 수정 시작: 개별 서식을 정확히 반영하도록 변경 ▼▼▼ =====
+        # 1. 하이라이트를 그릴 때 사용할 스타일을 먼저 결정합니다 (개별 스타일 우선).
+        style_to_use = it.custom_style if it.custom_style else self.style
+        # 2. 결정된 스타일을 기준으로 모든 값을 계산합니다.
+        pt = self.pdf_to_view(*it.pdf_point)
+        r = style_to_use.radius_view_px + 5
+        pen = QtGui.QPen(self.highlight_color)
+        pen.setWidth(style_to_use.stroke_width + 8)
+        # ===== ▲▲▲ 수정 끝 ▲▲▲ =====
+        pen.setCosmetic(True)
+        ell = self.scene.addEllipse(
             pt.x() - r, pt.y() - r, 2 * r, 2 * r, pen=pen, brush=QtCore.Qt.NoBrush
-            )
-            ell.setZValue(9999)
-            self._highlight_ellipse = ell
-            self._highlight_item_no = it.no
+        )
+        ell.setZValue(9999)
+        self._highlight_ellipse = ell
+        self._highlight_item_no = it.no
     
-    def clear_highlight(self):
-        if self._highlight_ellipse:
-            try:
-                self.scene.removeItem(self._highlight_ellipse)
-            except Exception:
-                pass
-            self._highlight_ellipse = None
-        self._highlight_item_no = None
-        
     def clear_highlight(self):
         if self._highlight_ellipse:
             try:
@@ -7556,6 +7711,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def toggle_highlighting(self, checked):
         """하이라이트 활성화 상태를 토글합니다."""
         self.highlight_enabled = checked
+        # TableManager의 highlight_enabled도 동기화
+        if hasattr(self, 'table_manager'):
+            self.table_manager.highlight_enabled = checked
         # ===== ▼▼▼ 추가된 부분 시작 ▼▼▼ =====
         # 메뉴와 툴바의 체크 상태를 동기화합니다.
         if hasattr(self, "a_highlight"):
