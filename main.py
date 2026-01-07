@@ -1720,6 +1720,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     # 이스터에크... 사격모드 함수!! v3.30에서..
     def toggle_shooting_mode(self, enable: bool):
         """이스터에그인 사격 모드를 켜거나 끄고, 다른 UI를 잠금/해제합니다."""
+        if not enable and not getattr(self, "shooting_mode", False):
+            return
         self.shooting_mode = enable
         # 잠금/해제할 UI 요소들을 리스트로 관리
         ui_elements = [self.menuBar(), self.main_toolbar, self.page_dock, self.dock]
