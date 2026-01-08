@@ -58,8 +58,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.37"
-TSN_VERSION = "1.37"
+APP_VER = "v1.38"
+TSN_VERSION = "1.38"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -7748,6 +7748,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.cb_inspection_values.setEnabled(self._detail_view_active())
         if not self._detail_view_active():
             self._clear_detail_box()
+        elif self._detail_box_item is not None:
+            self._show_detail_box(self._detail_box_item)
 
     def _clear_detail_box(self):
         for item in getattr(self, "_detail_box_items", []):
@@ -7877,6 +7879,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def _show_detail_box(self, it: MarkItem):
         show_x = self._detail_show_x_values()
         if self._detail_box_item is it and self._detail_box_show_x == show_x:
+            if self._detail_box_text is not None:
+                self._detail_box_text.setHtml(self._build_detail_html(it))
             self._position_detail_box(it)
             return
         self._clear_detail_box()
@@ -7901,13 +7905,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             if self._detail_box_item is not None:
                 self._clear_detail_box()
             return
-        selected_item = self._get_selected_detail_item()
-        if selected_item and selected_item.page_index == self.cur_page_index:
-            self._show_detail_box(selected_item)
-            return
-        it = self._find_item_at_scene_pos(scene_pos)
-        if it:
-            self._show_detail_box(it)
+        hover_item = self._find_item_at_scene_pos(scene_pos)
+        if hover_item:
+            self._show_detail_box(hover_item)
         else:
             self._clear_detail_box()
 
