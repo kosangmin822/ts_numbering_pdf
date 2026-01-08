@@ -58,8 +58,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.38"
-TSN_VERSION = "1.38"
+APP_VER = "v1.39"
+TSN_VERSION = "1.39"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -7954,13 +7954,21 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if not path:
             return
         try:
-            df = pd.read_excel(path, dtype=str).fillna("")
+            from openpyxl import load_workbook
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, "가져오기 오류", f"엑셀 처리 모듈을 불러오지 못했습니다.\n{e}"
+            )
+            return
+        try:
+            wb = load_workbook(path, data_only=True)
+            ws = wb.active
         except Exception as e:
             QtWidgets.QMessageBox.critical(
                 self, "가져오기 오류", f"엑셀 파일을 불러오지 못했습니다.\n{e}"
             )
             return
-        if df.shape[1] != self.table.columnCount():
+        if ws.max_column != self.table.columnCount():
             QtWidgets.QMessageBox.warning(
                 self, "가져오기 오류", "형식이 맞지 않아 임포트 할 수 없습니다."
             )
@@ -7970,7 +7978,78 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             if value is None:
                 return ""
             text = str(value).strip()
-            return "" if text.lower() == "nan" else text
+            return text
+
+        def format_number(value: float, number_format: str) -> str:
+            fmt = (number_format or "").strip()
+            if not fmt or fmt.lower() == "general" or fmt == "@":
+                if isinstance(value, float) and value.is_integer():
+                    return str(int(value))
+                return str(value)
+            sections = fmt.split(";")
+            section_index = 0
+            if value < 0 and len(sections) > 1:
+                section_index = 1
+            elif value == 0 and len(sections) > 2:
+                section_index = 2
+            section = sections[section_index]
+            # Remove color codes like [Red]
+            if "[" in section and "]" in section:
+                import re
+                section = re.sub(r"\[[^\]]+\]", "", section)
+            use_comma = "," in section
+            decimals = 0
+            mandatory = 0
+            optional = 0
+            if "." in section:
+                after = section.split(".", 1)[1]
+                for ch in after:
+                    if ch == "0":
+                        mandatory += 1
+                        decimals += 1
+                    elif ch == "#":
+                        optional += 1
+                        decimals += 1
+                    else:
+                        break
+            abs_value = abs(value) if value < 0 else value
+            fmt_str = f"{{:{',' if use_comma else ''}.{decimals}f}}"
+            text = fmt_str.format(abs_value if section_index == 1 else value)
+            if optional > 0 and "." in text:
+                int_part, frac = text.split(".", 1)
+                frac_trim = frac.rstrip("0")
+                if len(frac_trim) < mandatory:
+                    frac_trim = frac[:mandatory]
+                text = f"{int_part}.{frac_trim}" if frac_trim else int_part
+            section = section.strip()
+            if section.startswith("(") and section.endswith(")"):
+                text = f"({text})"
+            elif section.startswith("+"):
+                if not text.startswith("+"):
+                    text = f"+{text}"
+            elif section.startswith("-") and not text.startswith("-"):
+                text = f"-{text}"
+            return text
+
+        def format_cell(cell) -> str:
+            if cell is None or cell.value is None:
+                return ""
+            value = cell.value
+            if isinstance(value, str):
+                return value.strip()
+            if isinstance(value, (int, float)):
+                return format_number(float(value), cell.number_format)
+            return str(value).strip()
+
+        rows = []
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column):
+            rows.append([format_cell(cell) for cell in row])
+        if not rows:
+            QtWidgets.QMessageBox.warning(
+                self, "가져오기 오류", "형식이 맞지 않아 임포트 할 수 없습니다."
+            )
+            return
+        data_rows = rows[1:]
 
         def normalize_no(value):
             text = cell_text(value)
@@ -7995,7 +8074,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         for r in range(self.table.rowCount()):
             item = self.table.item(r, 0)
             table_nos.append(normalize_no(item.text() if item else ""))
-        import_nos = [normalize_no(v) for v in df.iloc[:, 0].tolist()]
+        import_nos = [normalize_no(row[0] if row else "") for row in data_rows]
         if len(import_nos) != len(table_nos) or import_nos != table_nos:
             QtWidgets.QMessageBox.warning(
                 self, "가져오기 오류", "형식이 맞지 않아 임포트 할 수 없습니다."
@@ -8008,7 +8087,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 target_item = self.table_manager._get_target_item(r)
                 if not target_item:
                     continue
-                row_values = [cell_text(v) for v in df.iloc[r].tolist()]
+                row_values = data_rows[r] if r < len(data_rows) else []
                 if len(row_values) < self.table.columnCount():
                     row_values += [""] * (self.table.columnCount() - len(row_values))
 
