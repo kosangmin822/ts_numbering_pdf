@@ -98,7 +98,7 @@ class TableManager:
         viewport_item = QtWidgets.QTableWidgetItem(viewport_display)
         viewport_item.setTextAlignment(QtCore.Qt.AlignCenter)
         viewport_item.setFlags(viewport_item.flags() & ~QtCore.Qt.ItemIsEditable)  # 읽기 전용 설정
-        self.table.setItem(r, 5, viewport_item)
+        self.table.setItem(r, 10, viewport_item)
 
         # x1~x5 컬럼
         x_values = list(getattr(it, "x_values", ["", "", "", "", ""]))
@@ -107,7 +107,7 @@ class TableManager:
         elif len(x_values) > 5:
             x_values = x_values[:5]
         for idx, value in enumerate(x_values):
-            col = 6 + idx
+            col = 5 + idx
             extra_item = QtWidgets.QTableWidgetItem(str(value))
             extra_item.setTextAlignment(QtCore.Qt.AlignCenter)
             self.table.setItem(r, col, extra_item)
@@ -177,7 +177,7 @@ class TableManager:
             target_item = self._get_target_item(row)
         if not target_item:
             return
-        for c in range(6, 11):
+        for c in range(5, 10):
             self._apply_x_value_color(row, c, target_item)
 
     def on_table_cell_clicked(self, row: int, col: int):
@@ -331,18 +331,18 @@ class TableManager:
             self.table.blockSignals(False)
             self._refresh_x_value_colors(r, target_item)
 
-        elif 6 <= c <= 10:  # x1~x5 컬럼
+        elif 5 <= c <= 9:  # x1~x5 컬럼
             if not hasattr(target_item, "x_values") or target_item.x_values is None:
                 target_item.x_values = ["", "", "", "", ""]
             if len(target_item.x_values) < 5:
                 target_item.x_values = target_item.x_values + [""] * (5 - len(target_item.x_values))
             elif len(target_item.x_values) > 5:
                 target_item.x_values = target_item.x_values[:5]
-            target_item.x_values[c - 6] = qitem.text()
+            target_item.x_values[c - 5] = qitem.text()
             qitem.setTextAlignment(QtCore.Qt.AlignCenter)
             self._apply_x_value_color(r, c, target_item)
 
-        elif c == 5:  # 3D Parameter 컬럼 처리
+        elif c == 10:  # 3D Parameter 컬럼 처리
             # 3D Parameter는 읽기 전용이므로 원본 데이터로 되돌림
             self.table.blockSignals(True)
             formatted_value = self._format_3d_parameter(target_item.viewport_parameters)
@@ -442,7 +442,7 @@ class TableManager:
             it.tol_plus = normalize_signed_text(p_item.text()) if p_item else it.tol_plus
             it.tol_minus = normalize_signed_text(m_item.text()) if m_item else it.tol_minus
             x_values = []
-            for c in range(6, 11):
+            for c in range(5, 10):
                 x_item = self.table.item(r, c)
                 x_values.append(x_item.text() if x_item else "")
             it.x_values = x_values

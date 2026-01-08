@@ -58,8 +58,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.39"
-TSN_VERSION = "1.39"
+APP_VER = "v1.40"
+TSN_VERSION = "1.40"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -2636,7 +2636,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 테이블이 가능한 모든 공간을 차지하도록 크기 정책 설정
         self.table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.table.setHorizontalHeaderLabels(
-            ["No", "Type", "Dim", "Max", "Min", "3D Parameter", "x₁", "x₂", "x₃", "x₄", "x₅"]
+            ["No", "Type", "Dim", "Max", "Min", "x₁", "x₂", "x₃", "x₄", "x₅", "3D Parameter"]
         )
         self.table.setItemDelegateForColumn(1, ComboDelegate(DIM_TYPES, self.table))
         numeric_delegate = NumericDelegate(self)
@@ -2905,24 +2905,24 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)  # Dim
         self.table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)  # Max
         self.table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.Fixed)  # Min
-        self.table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.Fixed)  # 3D Parameter
-        self.table.horizontalHeader().setSectionResizeMode(6, QtWidgets.QHeaderView.Fixed)  # x1
-        self.table.horizontalHeader().setSectionResizeMode(7, QtWidgets.QHeaderView.Fixed)  # x2
-        self.table.horizontalHeader().setSectionResizeMode(8, QtWidgets.QHeaderView.Fixed)  # x3
-        self.table.horizontalHeader().setSectionResizeMode(9, QtWidgets.QHeaderView.Fixed)  # x4
-        self.table.horizontalHeader().setSectionResizeMode(10, QtWidgets.QHeaderView.Fixed)  # x5
+        self.table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.Fixed)  # x1
+        self.table.horizontalHeader().setSectionResizeMode(6, QtWidgets.QHeaderView.Fixed)  # x2
+        self.table.horizontalHeader().setSectionResizeMode(7, QtWidgets.QHeaderView.Fixed)  # x3
+        self.table.horizontalHeader().setSectionResizeMode(8, QtWidgets.QHeaderView.Fixed)  # x4
+        self.table.horizontalHeader().setSectionResizeMode(9, QtWidgets.QHeaderView.Fixed)  # x5
+        self.table.horizontalHeader().setSectionResizeMode(10, QtWidgets.QHeaderView.Fixed)  # 3D Parameter
         # 컬럼 너비 설정 (컬럼명이 깨지지 않을 최소 폭으로 조정)
         self.table.setColumnWidth(0, 30)   # No
         self.table.setColumnWidth(1, 40)   # Type
         self.table.setColumnWidth(2, 50)   # Dim
         self.table.setColumnWidth(3, 40)   # Max
         self.table.setColumnWidth(4, 40)   # Min
-        self.table.setColumnWidth(5, 120)  # 3D Parameter
-        self.table.setColumnWidth(6, 45)   # x1
-        self.table.setColumnWidth(7, 45)   # x2
-        self.table.setColumnWidth(8, 45)   # x3
-        self.table.setColumnWidth(9, 45)   # x4
-        self.table.setColumnWidth(10, 45)  # x5
+        self.table.setColumnWidth(5, 45)   # x1
+        self.table.setColumnWidth(6, 45)   # x2
+        self.table.setColumnWidth(7, 45)   # x3
+        self.table.setColumnWidth(8, 45)   # x4
+        self.table.setColumnWidth(9, 45)   # x5
+        self.table.setColumnWidth(10, 120)  # 3D Parameter
         # 3D Parameter는 Stretch로 설정되어 남은 공간을 차지
         # 셀 내용 중앙 정렬 설정
         self.table.setAlternatingRowColors(True)  # 행 색상 교대로 표시
@@ -8107,13 +8107,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 target_item.tol_plus = max_text
                 target_item.tol_minus = min_text
 
-                viewport_text = row_values[5].strip()
-                target_item.viewport_parameters = viewport_text
-
                 x_values = []
-                for c in range(6, 11):
+                for c in range(5, 10):
                     x_values.append(row_values[c].strip() if c < len(row_values) else "")
                 target_item.x_values = x_values
+
+                viewport_text = row_values[10].strip()
+                target_item.viewport_parameters = viewport_text
 
                 for c in range(1, self.table.columnCount()):
                     text = row_values[c]
@@ -8127,7 +8127,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     if item is None:
                         item = QtWidgets.QTableWidgetItem()
                         item.setTextAlignment(QtCore.Qt.AlignCenter)
-                        if c == 5:
+                        if c == 10:
                             item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
                         self.table.setItem(r, c, item)
                     item.setText(text)
