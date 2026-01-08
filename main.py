@@ -58,8 +58,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.40"
-TSN_VERSION = "1.40"
+APP_VER = "v1.41"
+TSN_VERSION = "1.41"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -2877,6 +2877,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         detail_layout = QtWidgets.QHBoxLayout()
         self.cb_detail_view = QtWidgets.QCheckBox("상세보기")
         self.cb_inspection_values = QtWidgets.QCheckBox("검사결과 값 보기")
+        self.cb_detail_view.setChecked(True)
+        self.cb_inspection_values.setChecked(True)
         self.btn_export_table = QtWidgets.QPushButton("내보내기")
         self.btn_import_table = QtWidgets.QPushButton("가져오기")
         detail_layout.addWidget(self.cb_detail_view)
