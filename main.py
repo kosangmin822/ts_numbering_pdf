@@ -57,8 +57,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.34"
-TSN_VERSION = "1.34"
+APP_VER = "v1.35"
+TSN_VERSION = "1.35"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -2599,13 +2599,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._egg_timer.setSingleShot(True)
         self._egg_timer.timeout.connect(self._reset_egg_sequence)
         # === Auto save ===
-        self.autosave_enabled = False
+        self.autosave_enabled = True
         self.autosave_interval_min = 5
-        self.autosave_filename = ""
         self.autosave_save_option = "link"
         self.autosave_timer = QtCore.QTimer(self)
         self.autosave_timer.setSingleShot(False)
         self.autosave_timer.timeout.connect(self._run_autosave)
+        if self.autosave_enabled:
+            self.autosave_timer.start(self.autosave_interval_min * 60 * 1000)
 
         # 다시 수정.. 4.00에서.
         # ===== ▼▼▼ 페이지 네비게이션 UI 생성 (수정) ▼▼▼ =====
@@ -6250,26 +6251,23 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         return True
     
     def open_autosave_settings(self):
-        default_name = self.autosave_filename or self._default_autosave_basename()
         settings = AutoSaveDialog.get_settings_dialog(
             parent=self,
             enabled=self.autosave_enabled,
             interval_min=self.autosave_interval_min,
-            filename=default_name,
             save_option=self.autosave_save_option,
         )
         if not settings:
             return
         self._apply_autosave_settings(**settings)
 
-    def _apply_autosave_settings(self, enabled: bool, interval_min: int, filename: str, save_option: str):
+    def _apply_autosave_settings(self, enabled: bool, interval_min: int, save_option: str):
         self.autosave_enabled = bool(enabled)
         self.autosave_interval_min = max(1, int(interval_min))
-        self.autosave_filename = filename or ""
         self.autosave_save_option = save_option if save_option in ("link", "embed") else "link"
         if self.autosave_enabled:
             self.autosave_timer.start(self.autosave_interval_min * 60 * 1000)
-            autosave_name = self._normalize_autosave_filename(self.autosave_filename)
+            autosave_name = self._format_autosave_filename()
             self.statusBar().showMessage(
                 f"Auto save enabled ({self.autosave_interval_min} min, {autosave_name})", 3000
             )
@@ -6277,22 +6275,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.autosave_timer.stop()
             self.statusBar().showMessage("Auto save disabled", 3000)
 
-    def _default_autosave_basename(self) -> str:
-        base = self.project_name or "project"
-        return f"autosave_{base}"
-
-    def _normalize_autosave_filename(self, filename: str) -> str:
-        name = (filename or "").strip()
-        if not name:
-            name = self._default_autosave_basename()
-        if not name.lower().endswith(".tsn"):
-            name += ".tsn"
-        return name
+    def _format_autosave_filename(self) -> str:
+        project_name = self.project_name or "project"
+        timestamp = datetime.now().strftime("%Y%m%d-%H:%M").replace(":", "-")
+        return f"Autosave[{project_name}]savetime({timestamp}).tsn"
 
     def _get_autosave_path(self) -> str:
-        name = self._normalize_autosave_filename(self.autosave_filename)
         base_dir = self.project_dir or os.getcwd()
-        return os.path.join(base_dir, os.path.basename(name))
+        return os.path.join(base_dir, self._format_autosave_filename())
 
     def _run_autosave(self):
         if not self.autosave_enabled:

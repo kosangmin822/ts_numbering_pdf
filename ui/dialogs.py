@@ -423,7 +423,7 @@ class SaveOptionsDialog(QtWidgets.QDialog):
 
 class AutoSaveDialog(QtWidgets.QDialog):
     """Auto save settings dialog"""
-    def __init__(self, parent=None, enabled=False, interval_min=5, filename="", save_option="link"):
+    def __init__(self, parent=None, enabled=False, interval_min=5, save_option="link"):
         super().__init__(parent)
         self.setWindowTitle("Auto Save Settings")
 
@@ -443,15 +443,9 @@ class AutoSaveDialog(QtWidgets.QDialog):
         self.interval_spin.setValue(max(1, int(interval_min)))
         interval_unit = QtWidgets.QLabel("min")
 
-        filename_label = QtWidgets.QLabel("Filename")
-        self.filename_edit = QtWidgets.QLineEdit()
-        self.filename_edit.setText(filename)
-
         grid.addWidget(interval_label, 0, 0)
         grid.addWidget(self.interval_spin, 0, 1)
         grid.addWidget(interval_unit, 0, 2)
-        grid.addWidget(filename_label, 0, 3)
-        grid.addWidget(self.filename_edit, 0, 4)
 
         option_label = QtWidgets.QLabel("3D Save")
         option_layout = QtWidgets.QHBoxLayout()
@@ -467,7 +461,7 @@ class AutoSaveDialog(QtWidgets.QDialog):
         option_layout.addWidget(self.radio_embed)
 
         grid.addWidget(option_label, 1, 0)
-        grid.addLayout(option_layout, 1, 1, 1, 4)
+        grid.addLayout(option_layout, 1, 1, 1, 2)
 
         layout.addLayout(grid)
 
@@ -480,24 +474,22 @@ class AutoSaveDialog(QtWidgets.QDialog):
         self._update_enabled(self.enable_checkbox.isChecked())
 
     def _update_enabled(self, enabled: bool):
-        for widget in (self.interval_spin, self.filename_edit, self.radio_link, self.radio_embed):
+        for widget in (self.interval_spin, self.radio_link, self.radio_embed):
             widget.setEnabled(bool(enabled))
 
     def get_settings(self):
         return {
             "enabled": self.enable_checkbox.isChecked(),
             "interval_min": self.interval_spin.value(),
-            "filename": self.filename_edit.text().strip(),
             "save_option": "embed" if self.radio_embed.isChecked() else "link",
         }
 
     @staticmethod
-    def get_settings_dialog(parent=None, enabled=False, interval_min=5, filename="", save_option="link"):
+    def get_settings_dialog(parent=None, enabled=False, interval_min=5, save_option="link"):
         dialog = AutoSaveDialog(
             parent=parent,
             enabled=enabled,
             interval_min=interval_min,
-            filename=filename,
             save_option=save_option,
         )
         if dialog.exec():
