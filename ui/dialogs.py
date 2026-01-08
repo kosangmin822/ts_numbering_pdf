@@ -420,3 +420,87 @@ class SaveOptionsDialog(QtWidgets.QDialog):
         if dialog.exec():
             return dialog.save_option
         return None
+
+class AutoSaveDialog(QtWidgets.QDialog):
+    """Auto save settings dialog"""
+    def __init__(self, parent=None, enabled=False, interval_min=5, filename="", save_option="link"):
+        super().__init__(parent)
+        self.setWindowTitle("Auto Save Settings")
+
+        layout = QtWidgets.QVBoxLayout(self)
+        self.enable_checkbox = QtWidgets.QCheckBox("Enable Auto Save")
+        self.enable_checkbox.setChecked(bool(enabled))
+        layout.addWidget(self.enable_checkbox)
+
+        grid = QtWidgets.QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
+
+        interval_label = QtWidgets.QLabel("Interval")
+        self.interval_spin = QtWidgets.QSpinBox()
+        self.interval_spin.setRange(1, 180)
+        self.interval_spin.setValue(max(1, int(interval_min)))
+        interval_unit = QtWidgets.QLabel("min")
+
+        filename_label = QtWidgets.QLabel("Filename")
+        self.filename_edit = QtWidgets.QLineEdit()
+        self.filename_edit.setText(filename)
+
+        grid.addWidget(interval_label, 0, 0)
+        grid.addWidget(self.interval_spin, 0, 1)
+        grid.addWidget(interval_unit, 0, 2)
+        grid.addWidget(filename_label, 0, 3)
+        grid.addWidget(self.filename_edit, 0, 4)
+
+        option_label = QtWidgets.QLabel("3D Save")
+        option_layout = QtWidgets.QHBoxLayout()
+        option_layout.setContentsMargins(0, 0, 0, 0)
+        option_layout.setSpacing(10)
+        self.radio_link = QtWidgets.QRadioButton("Path only")
+        self.radio_embed = QtWidgets.QRadioButton("Embed all")
+        if save_option == "embed":
+            self.radio_embed.setChecked(True)
+        else:
+            self.radio_link.setChecked(True)
+        option_layout.addWidget(self.radio_link)
+        option_layout.addWidget(self.radio_embed)
+
+        grid.addWidget(option_label, 1, 0)
+        grid.addLayout(option_layout, 1, 1, 1, 4)
+
+        layout.addLayout(grid)
+
+        button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        self.enable_checkbox.toggled.connect(self._update_enabled)
+        self._update_enabled(self.enable_checkbox.isChecked())
+
+    def _update_enabled(self, enabled: bool):
+        for widget in (self.interval_spin, self.filename_edit, self.radio_link, self.radio_embed):
+            widget.setEnabled(bool(enabled))
+
+    def get_settings(self):
+        return {
+            "enabled": self.enable_checkbox.isChecked(),
+            "interval_min": self.interval_spin.value(),
+            "filename": self.filename_edit.text().strip(),
+            "save_option": "embed" if self.radio_embed.isChecked() else "link",
+        }
+
+    @staticmethod
+    def get_settings_dialog(parent=None, enabled=False, interval_min=5, filename="", save_option="link"):
+        dialog = AutoSaveDialog(
+            parent=parent,
+            enabled=enabled,
+            interval_min=interval_min,
+            filename=filename,
+            save_option=save_option,
+        )
+        if dialog.exec():
+            return dialog.get_settings()
+        return None
+

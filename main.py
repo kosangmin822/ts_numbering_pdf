@@ -30,7 +30,7 @@ print("=" * 20 + ">>> 올바른 최신 main.py 파일이 실행되었습니다! 
 # --- 직접 만든 모듈들 ---
 from core.models import LabelStyle, MarkItem, StampItem
 from ui.delegates import ComboDelegate, NumericDelegate
-from ui.dialogs import SaveOptionsDialog  # <--- 이 부분을 추가해주세요.
+from ui.dialogs import SaveOptionsDialog, AutoSaveDialog  # <--- 이 부분을 추가해주세요.
 from ui.dialogs import (
     AppendPdfDialog,
     InsertDialog,
@@ -57,8 +57,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.32_stable"
-TSN_VERSION = "1.32"
+APP_VER = "v1.34"
+TSN_VERSION = "1.34"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -2598,6 +2598,15 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._egg_timer = QtCore.QTimer(self)
         self._egg_timer.setSingleShot(True)
         self._egg_timer.timeout.connect(self._reset_egg_sequence)
+        # === Auto save ===
+        self.autosave_enabled = False
+        self.autosave_interval_min = 5
+        self.autosave_filename = ""
+        self.autosave_save_option = "link"
+        self.autosave_timer = QtCore.QTimer(self)
+        self.autosave_timer.setSingleShot(False)
+        self.autosave_timer.timeout.connect(self._run_autosave)
+
         # 다시 수정.. 4.00에서.
         # ===== ▼▼▼ 페이지 네비게이션 UI 생성 (수정) ▼▼▼ =====
         self.btn_prev = QtWidgets.QPushButton("< 이전")
@@ -3046,6 +3055,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         a_save.triggered.connect(self.save_project)
         a_saveas = m_file.addAction("Save Project As…")
         a_saveas.triggered.connect(self.save_project_as)
+        a_autosave = m_file.addAction("Auto Save...")
+        a_autosave.triggered.connect(self.open_autosave_settings)
         m_file.addSeparator()
         # ▼▼▼ 3D 모델 열기 메뉴 추가 ▼▼▼
         a_open_3d = m_file.addAction("import 3D Model...")
@@ -5831,7 +5842,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         ]
         self.resizeDocks([self.page_dock, self.navigator_dock], left_sizes, QtCore.Qt.Vertical)
     
-    # 스페셜함수 적용 함수 새로 생성. v2.95에서 함.
     def set_individual_style(self):
         """선택된 항목에 개별 서식을 적용하거나 해제합니다."""
         row = self.table.currentRow()
@@ -6239,9 +6249,66 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         print(f"[save_project_as] 저장 완료")
         return True
     
-    # 스페셜 서식 적용 위해 교체 v2.95에서...
-    # main.py의 PdfAnnotator 클래스 내부
-    # main.py의 PdfAnnotator 클래스 내부
+    def open_autosave_settings(self):
+        default_name = self.autosave_filename or self._default_autosave_basename()
+        settings = AutoSaveDialog.get_settings_dialog(
+            parent=self,
+            enabled=self.autosave_enabled,
+            interval_min=self.autosave_interval_min,
+            filename=default_name,
+            save_option=self.autosave_save_option,
+        )
+        if not settings:
+            return
+        self._apply_autosave_settings(**settings)
+
+    def _apply_autosave_settings(self, enabled: bool, interval_min: int, filename: str, save_option: str):
+        self.autosave_enabled = bool(enabled)
+        self.autosave_interval_min = max(1, int(interval_min))
+        self.autosave_filename = filename or ""
+        self.autosave_save_option = save_option if save_option in ("link", "embed") else "link"
+        if self.autosave_enabled:
+            self.autosave_timer.start(self.autosave_interval_min * 60 * 1000)
+            autosave_name = self._normalize_autosave_filename(self.autosave_filename)
+            self.statusBar().showMessage(
+                f"Auto save enabled ({self.autosave_interval_min} min, {autosave_name})", 3000
+            )
+        else:
+            self.autosave_timer.stop()
+            self.statusBar().showMessage("Auto save disabled", 3000)
+
+    def _default_autosave_basename(self) -> str:
+        base = self.project_name or "project"
+        return f"autosave_{base}"
+
+    def _normalize_autosave_filename(self, filename: str) -> str:
+        name = (filename or "").strip()
+        if not name:
+            name = self._default_autosave_basename()
+        if not name.lower().endswith(".tsn"):
+            name += ".tsn"
+        return name
+
+    def _get_autosave_path(self) -> str:
+        name = self._normalize_autosave_filename(self.autosave_filename)
+        base_dir = self.project_dir or os.getcwd()
+        return os.path.join(base_dir, os.path.basename(name))
+
+    def _run_autosave(self):
+        if not self.autosave_enabled:
+            return
+        if self.doc is None:
+            return
+        path = self._get_autosave_path()
+        try:
+            self._sync_items_from_table()
+            if self._write_tsn(path, self.autosave_save_option):
+                self.statusBar().showMessage(
+                    f"Auto save complete: {os.path.basename(path)}", 2000
+                )
+        except Exception as e:
+            print(f"[autosave] ??: {e}")
+
     def _write_tsn(self, path, save_option="link"):
         """
         프로젝트를 .tsn 파일로 저장합니다.
@@ -8256,7 +8323,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         """툴바에 액션을 추가합니다. (UIManager로 위임)"""
         return self.ui_manager.add_toolbar_action(toolbar, icon_path_qrc, text, slot, checkable, checked)
 
-    # 스페셜 서식 적용하기 위해 통째로 교체 v2.95에서...
     def open_numbering_settings(self):
         """넘버링 관련 전역 설정을 열고, 변경 시 화면을 새로고칩니다."""
         if self._open_numbering_settings_dialog(self.style):
@@ -8576,7 +8642,6 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             
     # ===== ★★★ 이 함수만 최종 버전으로 교체되었습니다 ★★★ =====
     # ===== 넘버링 흐름도 함께 저장 위해 통째로 교체(중간에 일부 코드 추가)v2.93에서함. =====
-    # 스페셜 서식 적용 위해 통째로 교체. v2.95에서 함.
     # 스페셜 서식 적용 제대로 안되서 다시 교체... 시벌...몇번째여..ㅠㅠㅠ v2.98에서...
     # 스페셜 서식 흐름도 적용 저장 업데이트... 시벌 벌써 v3.00이네..ㅠㅠㅠ v2.99에서...
     def _save_pdf_with_labels(self, path):
