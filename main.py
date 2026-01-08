@@ -52,13 +52,14 @@ from utils.helpers import (
     normalize_signed_text,
     resource_path,
     strip_prefix_for_value,
+    to_float_or_none,
 )
 
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.36"
-TSN_VERSION = "1.36"
+APP_VER = "v1.37"
+TSN_VERSION = "1.37"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -2521,6 +2522,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._preview_text = None
         self._highlight_ellipse = None
         self._highlight_item_no = None
+        self._detail_box_items = []
+        self._detail_box_item = None
+        self._detail_box_show_x = False
+        self._detail_box_rect = None
+        self._detail_box_text = None
         self.highlight_color = QtGui.QColor(0x39, 0xFF, 0x14)
         self.insert_mode = False
         self.insert_option = None
@@ -2868,8 +2874,22 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             "background-color: #E8E8E8; padding: 4px; border-radius: 4px; font-size: 11px;"
         )
         dock_layout.addWidget(help_label)
+        detail_layout = QtWidgets.QHBoxLayout()
         self.cb_detail_view = QtWidgets.QCheckBox("상세보기")
-        dock_layout.addWidget(self.cb_detail_view)
+        self.cb_inspection_values = QtWidgets.QCheckBox("검사결과 값 보기")
+        self.btn_export_table = QtWidgets.QPushButton("내보내기")
+        self.btn_import_table = QtWidgets.QPushButton("가져오기")
+        detail_layout.addWidget(self.cb_detail_view)
+        detail_layout.addWidget(self.cb_inspection_values)
+        detail_layout.addWidget(self.btn_export_table)
+        detail_layout.addWidget(self.btn_import_table)
+        detail_layout.addStretch(1)
+        dock_layout.addLayout(detail_layout)
+        self.cb_detail_view.toggled.connect(self._on_detail_view_toggled)
+        self.cb_inspection_values.toggled.connect(self._on_detail_view_toggled)
+        self.btn_export_table.clicked.connect(self._export_table_to_excel)
+        self.btn_import_table.clicked.connect(self._import_table_from_excel)
+        self.cb_inspection_values.setEnabled(self.cb_detail_view.isChecked())
         dock_layout.addWidget(self.dock_stack)  # 스택 위젯을 도크에 추가
         # dock_stack이 가능한 모든 공간을 차지하도록 스트레치 설정
         dock_layout.setStretchFactor(self.dock_stack, 1)
@@ -6858,6 +6878,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self._preview_ellipse = None
             self._preview_text = None
             self._stamp_preview_item = None
+            self._clear_detail_box()
             # ▲▲▲ 여기까지 3줄 추가 ▲▲▲
             self._stamp_graphics_items.clear()
             self._clear_stamp_highlight()
@@ -7310,6 +7331,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             return
             # ▲▲▲ 여기까지 복원 ▲▲▲
         # 2. 현재 활성 모드에 따라 작업 결정
+        if self.active_mode == "view":
+            return
+
         if self.active_mode == "numbering":
             pdf_xy = self.view_to_pdf(scene_pos)
             if self.insert_mode:
@@ -7713,6 +7737,329 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         ellipse.setZValue(2)
         txt.setZValue(2)
 
+    def _detail_view_active(self) -> bool:
+        return bool(getattr(self, "cb_detail_view", None) and self.cb_detail_view.isChecked())
+
+    def _detail_show_x_values(self) -> bool:
+        return bool(getattr(self, "cb_inspection_values", None) and self.cb_inspection_values.isChecked())
+
+    def _on_detail_view_toggled(self, checked: bool):
+        if hasattr(self, "cb_inspection_values"):
+            self.cb_inspection_values.setEnabled(self._detail_view_active())
+        if not self._detail_view_active():
+            self._clear_detail_box()
+
+    def _clear_detail_box(self):
+        for item in getattr(self, "_detail_box_items", []):
+            try:
+                self.scene.removeItem(item)
+            except Exception:
+                pass
+        self._detail_box_items = []
+        self._detail_box_item = None
+        self._detail_box_rect = None
+        self._detail_box_text = None
+
+    def _find_item_at_scene_pos(self, scene_pos: QtCore.QPointF) -> Optional[MarkItem]:
+        if not self.doc:
+            return None
+        for it in self.items:
+            if it.page_index != self.cur_page_index:
+                continue
+            style = it.custom_style if it.custom_style else self.style
+            pt = self.pdf_to_view(*it.pdf_point)
+            dx = scene_pos.x() - pt.x()
+            dy = scene_pos.y() - pt.y()
+            if (dx * dx + dy * dy) <= (style.radius_view_px ** 2):
+                return it
+        return None
+
+    def _get_selected_detail_item(self) -> Optional[MarkItem]:
+        if not getattr(self, "table", None):
+            return None
+        row = -1
+        ranges = self.table.selectedRanges()
+        if ranges:
+            row = ranges[0].topRow()
+        else:
+            row = self.table.currentRow()
+        if row < 0:
+            return None
+        try:
+            return self.table_manager._get_target_item(row)
+        except Exception:
+            return None
+
+    def _get_detail_bounds(self, it: MarkItem):
+        base = to_float_or_none(it.value)
+        if base is None:
+            return None
+        tol_plus = to_float_or_none(it.tol_plus)
+        tol_minus = to_float_or_none(it.tol_minus)
+        if tol_plus is None and tol_minus is None:
+            return None
+        if tol_plus is None:
+            tol_plus = 0.0
+        if tol_minus is None:
+            tol_minus = 0.0
+        min_val = base + tol_minus
+        max_val = base + tol_plus
+        if min_val > max_val:
+            min_val, max_val = max_val, min_val
+        return min_val, max_val
+
+    def _detail_value_color(self, value: str, bounds) -> str:
+        if not bounds:
+            return "#000000"
+        v = to_float_or_none(value)
+        if v is None:
+            return "#000000"
+        min_val, max_val = bounds
+        return "#1e88e5" if min_val <= v <= max_val else "#e53935"
+
+    def _build_detail_html(self, it: MarkItem) -> str:
+        no_str = self._format_no(it.no)
+        dim_text = dim_format(it.dim_type, it.value)
+        header = f"{no_str} {dim_text}".strip()
+        html = "<div style='font-family:Arial; font-size:10pt;'>"
+        html += f"<div><b>{header}</b></div>"
+        html += "<table style='border-collapse:collapse;margin-top:4px;'>"
+
+        def row(label, value, color=None):
+            value_text = value or ""
+            if color:
+                value_text = f"<span style='color:{color};'>{value_text}</span>"
+            html_row = (
+                "<tr>"
+                f"<td style='border:1px solid #333;padding:2px 6px;background:#f5f5f5;'>{label}</td>"
+                f"<td style='border:1px solid #333;padding:2px 6px;'>{value_text}</td>"
+                "</tr>"
+            )
+            return html_row
+
+        html += row("Dim", dim_text)
+        html += row("Max", it.tol_plus)
+        html += row("Min", it.tol_minus)
+        if self._detail_show_x_values():
+            bounds = self._get_detail_bounds(it)
+            labels = ["x<sub>1</sub>", "x<sub>2</sub>", "x<sub>3</sub>", "x<sub>4</sub>", "x<sub>5</sub>"]
+            x_values = list(getattr(it, "x_values", ["", "", "", "", ""]))
+            if len(x_values) < 5:
+                x_values += [""] * (5 - len(x_values))
+            for label, val in zip(labels, x_values[:5]):
+                color = self._detail_value_color(val, bounds)
+                html += row(label, val, color)
+        html += "</table></div>"
+        return html
+    def _position_detail_box(self, it: MarkItem, padding: int = 6):
+        if not self._detail_box_rect or not self._detail_box_text:
+            return
+        style = it.custom_style if it.custom_style else self.style
+        anchor = self.pdf_to_view(*it.pdf_point)
+        text_rect = self._detail_box_text.boundingRect()
+        box_w = text_rect.width() + padding * 2
+        box_h = text_rect.height() + padding * 2
+        offset_x = style.radius_view_px + 12
+        box_x = anchor.x() + offset_x
+        box_y = anchor.y() - box_h / 2
+        view_rect = self.view.mapToScene(self.view.viewport().rect()).boundingRect()
+        if box_x + box_w > view_rect.right():
+            box_x = anchor.x() - offset_x - box_w
+        if box_x < view_rect.left():
+            box_x = view_rect.left() + 4
+        if box_y < view_rect.top():
+            box_y = view_rect.top() + 4
+        if box_y + box_h > view_rect.bottom():
+            box_y = view_rect.bottom() - box_h - 4
+        self._detail_box_rect.setRect(box_x, box_y, box_w, box_h)
+        self._detail_box_text.setPos(box_x + padding, box_y + padding)
+
+    def _show_detail_box(self, it: MarkItem):
+        show_x = self._detail_show_x_values()
+        if self._detail_box_item is it and self._detail_box_show_x == show_x:
+            self._position_detail_box(it)
+            return
+        self._clear_detail_box()
+        html = self._build_detail_html(it)
+        text_item = QtWidgets.QGraphicsTextItem()
+        text_item.setHtml(html)
+        text_item.setZValue(9001)
+        text_item.setDefaultTextColor(QtGui.QColor("black"))
+        self.scene.addItem(text_item)
+        rect_item = self.scene.addRect(0, 0, 10, 10, QtGui.QPen(QtGui.QColor("#333333"), 1),
+                                       QtGui.QBrush(QtGui.QColor(255, 255, 255, 235)))
+        rect_item.setZValue(9000)
+        self._detail_box_items = [rect_item, text_item]
+        self._detail_box_item = it
+        self._detail_box_show_x = show_x
+        self._detail_box_rect = rect_item
+        self._detail_box_text = text_item
+        self._position_detail_box(it)
+
+    def _update_detail_box_for_scene_pos(self, scene_pos: QtCore.QPointF):
+        if not self._detail_view_active():
+            if self._detail_box_item is not None:
+                self._clear_detail_box()
+            return
+        selected_item = self._get_selected_detail_item()
+        if selected_item and selected_item.page_index == self.cur_page_index:
+            self._show_detail_box(selected_item)
+            return
+        it = self._find_item_at_scene_pos(scene_pos)
+        if it:
+            self._show_detail_box(it)
+        else:
+            self._clear_detail_box()
+
+    def _export_table_to_excel(self):
+        if not getattr(self, "table", None):
+            return
+        if self.table.rowCount() == 0:
+            QtWidgets.QMessageBox.information(self, "내보내기", "내보낼 데이터가 없습니다.")
+            return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "내보내기", "", "Excel Files (*.xlsx)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        headers = []
+        for c in range(self.table.columnCount()):
+            header_item = self.table.horizontalHeaderItem(c)
+            headers.append(header_item.text() if header_item else f"Column{c + 1}")
+        rows = []
+        for r in range(self.table.rowCount()):
+            row = []
+            for c in range(self.table.columnCount()):
+                item = self.table.item(r, c)
+                row.append(item.text() if item else "")
+            rows.append(row)
+        try:
+            df = pd.DataFrame(rows, columns=headers)
+            df.to_excel(path, index=False)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, "내보내기 오류", f"엑셀 파일로 내보내기에 실패했습니다.\n{e}"
+            )
+            return
+        QtWidgets.QMessageBox.information(self, "내보내기", "내보내기가 완료되었습니다.")
+
+    def _import_table_from_excel(self):
+        if not getattr(self, "table", None):
+            return
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "가져오기", "", "Excel Files (*.xlsx *.xls)"
+        )
+        if not path:
+            return
+        try:
+            df = pd.read_excel(path, dtype=str).fillna("")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, "가져오기 오류", f"엑셀 파일을 불러오지 못했습니다.\n{e}"
+            )
+            return
+        if df.shape[1] != self.table.columnCount():
+            QtWidgets.QMessageBox.warning(
+                self, "가져오기 오류", "형식이 맞지 않아 임포트 할 수 없습니다."
+            )
+            return
+
+        def cell_text(value) -> str:
+            if value is None:
+                return ""
+            text = str(value).strip()
+            return "" if text.lower() == "nan" else text
+
+        def normalize_no(value):
+            text = cell_text(value)
+            if text == "":
+                return ""
+            v = to_float_or_none(text)
+            if v is None:
+                return text
+            if abs(v - round(v)) < 1e-9:
+                return int(round(v))
+            return round(v, 6)
+
+        def ensure_signed(text: str) -> str:
+            raw = text.strip()
+            if raw == "":
+                return ""
+            if raw[0] in "+-":
+                return raw
+            return f"+{raw}" if to_float_or_none(raw) is not None else raw
+
+        table_nos = []
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 0)
+            table_nos.append(normalize_no(item.text() if item else ""))
+        import_nos = [normalize_no(v) for v in df.iloc[:, 0].tolist()]
+        if len(import_nos) != len(table_nos) or import_nos != table_nos:
+            QtWidgets.QMessageBox.warning(
+                self, "가져오기 오류", "형식이 맞지 않아 임포트 할 수 없습니다."
+            )
+            return
+
+        self.table.blockSignals(True)
+        try:
+            for r in range(self.table.rowCount()):
+                target_item = self.table_manager._get_target_item(r)
+                if not target_item:
+                    continue
+                row_values = [cell_text(v) for v in df.iloc[r].tolist()]
+                if len(row_values) < self.table.columnCount():
+                    row_values += [""] * (self.table.columnCount() - len(row_values))
+
+                dim_type_val = row_values[1].strip()
+                if dim_type_val in DIM_TYPES:
+                    target_item.dim_type = dim_type_val
+                else:
+                    dim_type_val = target_item.dim_type
+
+                dim_text = row_values[2].strip()
+                target_item.value = (
+                    strip_prefix_for_value(target_item.dim_type, dim_text) if dim_text else ""
+                )
+
+                max_text = ensure_signed(row_values[3])
+                min_text = ensure_signed(row_values[4])
+                target_item.tol_plus = max_text
+                target_item.tol_minus = min_text
+
+                viewport_text = row_values[5].strip()
+                target_item.viewport_parameters = viewport_text
+
+                x_values = []
+                for c in range(6, 11):
+                    x_values.append(row_values[c].strip() if c < len(row_values) else "")
+                target_item.x_values = x_values
+
+                for c in range(1, self.table.columnCount()):
+                    text = row_values[c]
+                    if c == 1:
+                        text = dim_type_val
+                    elif c == 3:
+                        text = max_text
+                    elif c == 4:
+                        text = min_text
+                    item = self.table.item(r, c)
+                    if item is None:
+                        item = QtWidgets.QTableWidgetItem()
+                        item.setTextAlignment(QtCore.Qt.AlignCenter)
+                        if c == 5:
+                            item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
+                        self.table.setItem(r, c, item)
+                    item.setText(text)
+                self.table_manager._refresh_x_value_colors(r, target_item)
+        finally:
+            self.table.blockSignals(False)
+
+        self._set_dirty()
+        self._update_flow_view()
+        QtWidgets.QMessageBox.information(self, "가져오기", "가져오기가 완료되었습니다.")
+
     def _append_table_row(self, it: MarkItem):
         """Append new row to table. (TableManager delegation)"""
         return self.table_manager._append_table_row(it)
@@ -7745,6 +8092,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 pass
             self._highlight_ellipse = None
         self._highlight_item_no = None
+        self._clear_detail_box()
 
     def on_table_item_changed(self, qitem: QtWidgets.QTableWidgetItem):
         """테이블 아이템 변경 이벤트 처리. (TableManager로 위임)"""
@@ -7789,6 +8137,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 pass
             self._highlight_ellipse = None
         self._highlight_item_no = None
+        self._clear_detail_box()
 
     def clear_selection_and_highlight(self):
         """테이블의 선택 상태와 화면의 하이라이트를 모두 해제합니다."""
@@ -7821,6 +8170,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self._stamp_preview_item.hide()
         if self.shooting_mode:
             return
+        self._update_detail_box_for_scene_pos(scene_pos)
         # 2. 넘버링 모드일 때의 미리보기 로직
         if self.active_mode == "numbering" and self.doc:
             if self.preview_mode == "preview":
