@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 from PySide6 import QtGui
 
@@ -20,7 +20,8 @@ class MarkItem:
     tol_plus: str=""
     tol_minus: str=""
     custom_style: Optional[LabelStyle] = None
-    viewport_parameters: str = ""  # 3D 뷰포트 파라메터 JSON 문자열
+    viewport_parameters: str = ""  # 3D ??? ???? JSON ???
+    x_values: List[str] = field(default_factory=lambda: ["", "", "", "", ""])
 
 @dataclass
 class StampItem:

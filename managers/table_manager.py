@@ -9,7 +9,7 @@ from typing import List, Optional
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from core.models import MarkItem
-from utils.helpers import dim_format, normalize_signed_text, strip_prefix_for_value
+from utils.helpers import dim_format, normalize_signed_text, strip_prefix_for_value, to_float_or_none
 
 
 class TableManager:
@@ -100,6 +100,19 @@ class TableManager:
         viewport_item.setFlags(viewport_item.flags() & ~QtCore.Qt.ItemIsEditable)  # 읽기 전용 설정
         self.table.setItem(r, 5, viewport_item)
 
+        # x1~x5 컬럼
+        x_values = list(getattr(it, "x_values", ["", "", "", "", ""]))
+        if len(x_values) < 5:
+            x_values += [""] * (5 - len(x_values))
+        elif len(x_values) > 5:
+            x_values = x_values[:5]
+        for idx, value in enumerate(x_values):
+            col = 6 + idx
+            extra_item = QtWidgets.QTableWidgetItem(str(value))
+            extra_item.setTextAlignment(QtCore.Qt.AlignCenter)
+            self.table.setItem(r, col, extra_item)
+            self._apply_x_value_color(r, col, it)
+
     def _format_3d_parameter(self, viewport_parameters: str) -> str:
         """
         3D 뷰포트 파라메터를 (x, y, z, distance) 형태로 포맷팅합니다.
@@ -121,6 +134,51 @@ class TableManager:
             return f"({x}, {y}, {z}, {distance}d)"
         except (json.JSONDecodeError, KeyError, TypeError):
             return viewport_parameters  # 파싱 실패 시 원본 반환
+
+    def _get_dim_bounds(self, target_item: MarkItem):
+        base = to_float_or_none(target_item.value)
+        if base is None:
+            return None
+        tol_plus = to_float_or_none(target_item.tol_plus)
+        tol_minus = to_float_or_none(target_item.tol_minus)
+        if tol_plus is None and tol_minus is None:
+            return None
+        if tol_plus is None:
+            tol_plus = 0.0
+        if tol_minus is None:
+            tol_minus = 0.0
+        min_val = base + tol_minus
+        max_val = base + tol_plus
+        if min_val > max_val:
+            min_val, max_val = max_val, min_val
+        return min_val, max_val
+
+    def _apply_x_value_color(self, row: int, col: int, target_item: MarkItem):
+        if not self.table:
+            return
+        item = self.table.item(row, col)
+        if not item:
+            return
+        value = to_float_or_none(item.text())
+        bounds = self._get_dim_bounds(target_item)
+        if value is None or bounds is None:
+            item.setForeground(QtGui.QBrush())
+            return
+        min_val, max_val = bounds
+        if min_val <= value <= max_val:
+            item.setForeground(QtGui.QColor("blue"))
+        else:
+            item.setForeground(QtGui.QColor("red"))
+
+    def _refresh_x_value_colors(self, row: int, target_item: Optional[MarkItem] = None):
+        if not self.table:
+            return
+        if target_item is None:
+            target_item = self._get_target_item(row)
+        if not target_item:
+            return
+        for c in range(6, 11):
+            self._apply_x_value_color(row, c, target_item)
 
     def on_table_cell_clicked(self, row: int, col: int):
         """
@@ -255,6 +313,7 @@ class TableManager:
             self.table.blockSignals(True)
             qitem.setText(dim_format(target_item.dim_type, raw))
             self.table.blockSignals(False)
+            self._refresh_x_value_colors(r, target_item)
 
         elif c == 3:  # Max 컬럼
             norm = normalize_signed_text(qitem.text())
@@ -262,6 +321,7 @@ class TableManager:
             self.table.blockSignals(True)
             qitem.setText(norm)
             self.table.blockSignals(False)
+            self._refresh_x_value_colors(r, target_item)
 
         elif c == 4:  # Min 컬럼
             norm = normalize_signed_text(qitem.text())
@@ -269,6 +329,18 @@ class TableManager:
             self.table.blockSignals(True)
             qitem.setText(norm)
             self.table.blockSignals(False)
+            self._refresh_x_value_colors(r, target_item)
+
+        elif 6 <= c <= 10:  # x1~x5 컬럼
+            if not hasattr(target_item, "x_values") or target_item.x_values is None:
+                target_item.x_values = ["", "", "", "", ""]
+            if len(target_item.x_values) < 5:
+                target_item.x_values = target_item.x_values + [""] * (5 - len(target_item.x_values))
+            elif len(target_item.x_values) > 5:
+                target_item.x_values = target_item.x_values[:5]
+            target_item.x_values[c - 6] = qitem.text()
+            qitem.setTextAlignment(QtCore.Qt.AlignCenter)
+            self._apply_x_value_color(r, c, target_item)
 
         elif c == 5:  # 3D Parameter 컬럼 처리
             # 3D Parameter는 읽기 전용이므로 원본 데이터로 되돌림
@@ -369,6 +441,11 @@ class TableManager:
             m_item = self.table.item(r, 4)
             it.tol_plus = normalize_signed_text(p_item.text()) if p_item else it.tol_plus
             it.tol_minus = normalize_signed_text(m_item.text()) if m_item else it.tol_minus
+            x_values = []
+            for c in range(6, 11):
+                x_item = self.table.item(r, c)
+                x_values.append(x_item.text() if x_item else "")
+            it.x_values = x_values
             # 3D 뷰포트 파라메터 동기화 (5번째 컬럼)
             # 테이블에는 포맷팅된 값이 표시되지만, 원본 JSON 데이터는 이미 MarkItem에 저장되어 있음
             # 따라서 별도로 동기화할 필요 없음 (이미 저장된 원본 데이터 유지)

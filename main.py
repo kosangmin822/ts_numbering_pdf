@@ -57,8 +57,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.35"
-TSN_VERSION = "1.35"
+APP_VER = "v1.36"
+TSN_VERSION = "1.36"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -2626,11 +2626,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.spin_page.valueChanged.connect(self._go_to_page_from_spinbox)
         # ===== ▲▲▲ 여기까지 수정 (상태 표시줄 추가 부분 삭제) ▲▲▲ =====
         # --- 표 도크 ---
-        self.table = QtWidgets.QTableWidget(0, 6, self)
+        self.table = QtWidgets.QTableWidget(0, 11, self)
         # 테이블이 가능한 모든 공간을 차지하도록 크기 정책 설정
         self.table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.table.setHorizontalHeaderLabels(
-            ["No", "Type", "Dim", "Max", "Min", "3D Parameter"]
+            ["No", "Type", "Dim", "Max", "Min", "3D Parameter", "x₁", "x₂", "x₃", "x₄", "x₅"]
         )
         self.table.setItemDelegateForColumn(1, ComboDelegate(DIM_TYPES, self.table))
         numeric_delegate = NumericDelegate(self)
@@ -2868,6 +2868,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             "background-color: #E8E8E8; padding: 4px; border-radius: 4px; font-size: 11px;"
         )
         dock_layout.addWidget(help_label)
+        self.cb_detail_view = QtWidgets.QCheckBox("상세보기")
+        dock_layout.addWidget(self.cb_detail_view)
         dock_layout.addWidget(self.dock_stack)  # 스택 위젯을 도크에 추가
         # dock_stack이 가능한 모든 공간을 차지하도록 스트레치 설정
         dock_layout.setStretchFactor(self.dock_stack, 1)
@@ -2883,13 +2885,24 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)  # Dim
         self.table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)  # Max
         self.table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.Fixed)  # Min
-        self.table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.Stretch)  # 3D Parameter
+        self.table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.Fixed)  # 3D Parameter
+        self.table.horizontalHeader().setSectionResizeMode(6, QtWidgets.QHeaderView.Fixed)  # x1
+        self.table.horizontalHeader().setSectionResizeMode(7, QtWidgets.QHeaderView.Fixed)  # x2
+        self.table.horizontalHeader().setSectionResizeMode(8, QtWidgets.QHeaderView.Fixed)  # x3
+        self.table.horizontalHeader().setSectionResizeMode(9, QtWidgets.QHeaderView.Fixed)  # x4
+        self.table.horizontalHeader().setSectionResizeMode(10, QtWidgets.QHeaderView.Fixed)  # x5
         # 컬럼 너비 설정 (컬럼명이 깨지지 않을 최소 폭으로 조정)
         self.table.setColumnWidth(0, 30)   # No
         self.table.setColumnWidth(1, 40)   # Type
         self.table.setColumnWidth(2, 50)   # Dim
         self.table.setColumnWidth(3, 40)   # Max
         self.table.setColumnWidth(4, 40)   # Min
+        self.table.setColumnWidth(5, 120)  # 3D Parameter
+        self.table.setColumnWidth(6, 45)   # x1
+        self.table.setColumnWidth(7, 45)   # x2
+        self.table.setColumnWidth(8, 45)   # x3
+        self.table.setColumnWidth(9, 45)   # x4
+        self.table.setColumnWidth(10, 45)  # x5
         # 3D Parameter는 Stretch로 설정되어 남은 공간을 차지
         # 셀 내용 중앙 정렬 설정
         self.table.setAlternatingRowColors(True)  # 행 색상 교대로 표시
@@ -6104,6 +6117,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             if "custom_style" in m and m["custom_style"]:
                 custom_style = LabelStyle()
                 custom_style.from_dict(m["custom_style"])
+            x_values = m.get("x_values", ["", "", "", "", ""]) 
+            if not isinstance(x_values, list):
+                x_values = ["", "", "", "", ""]
+            if len(x_values) < 5:
+                x_values = x_values + [""] * (5 - len(x_values))
+            elif len(x_values) > 5:
+                x_values = x_values[:5]
             it = MarkItem(
                 no=float(m["no"]),
                 page_index=int(m["page_index"]),
@@ -6114,6 +6134,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 tol_minus=normalize_signed_text(m.get("tol_minus", "")),
                 custom_style=custom_style,
                 viewport_parameters=m.get("viewport_parameters", ""),
+                x_values=x_values,
             )  # 3D 뷰포트 파라메터 복원
             self.items.append(it)
         self.registered_stamps = meta.get("registered_stamps", {})
@@ -6358,6 +6379,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     "tol_plus": it.tol_plus,
                     "tol_minus": it.tol_minus,
                     "viewport_parameters": it.viewport_parameters,  # 3D 뷰포트 파라메터 추가
+                    "x_values": getattr(it, 'x_values', ["", "", "", "", ""]),
                 }
                 if it.custom_style:
                     item_dict["custom_style"] = it.custom_style.to_dict()
