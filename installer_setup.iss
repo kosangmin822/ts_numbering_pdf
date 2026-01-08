@@ -1,8 +1,8 @@
 ; Inno Setup 설치 스크립트
-; TS Numbering for PDF v1.2_stable 설치 프로그램
+; TS Numbering for PDF v1.29_stable 설치 프로그램
 
 #define MyAppName "TS Numbering for PDF"
-#define MyAppVersion "1.2"
+#define MyAppVersion "1.29"
 #define MyAppPublisher "Taesung Engineering"
 #define MyAppURL "https://www.taesung.co.kr"
 #define MyAppExeName "TS_Numbering_PDF.exe"
@@ -24,7 +24,7 @@ AllowNoIcons=yes
 LicenseFile=LICENSE
 InfoBeforeFile=README
 OutputDir=installer
-OutputBaseFilename=TS_Numbering_PDF_Setup_v1.2_stable
+OutputBaseFilename=TS_Numbering_PDF_Setup_v1.29_stable
 SetupIconFile=resources\icons\icon.ico
 Compression=lzma2
 SolidCompression=yes

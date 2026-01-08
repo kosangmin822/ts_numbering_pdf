@@ -58,8 +58,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.41"
-TSN_VERSION = "1.41"
+APP_VER = "v1.42"
+TSN_VERSION = "1.42"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -7903,7 +7903,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._position_detail_box(it)
 
     def _update_detail_box_for_scene_pos(self, scene_pos: QtCore.QPointF):
-        if not self._detail_view_active():
+        if not self._detail_view_active() or self.active_mode != "view":
             if self._detail_box_item is not None:
                 self._clear_detail_box()
             return
