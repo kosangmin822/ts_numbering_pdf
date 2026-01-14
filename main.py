@@ -8209,6 +8209,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         ell.setZValue(9999)
         self._highlight_ellipse = ell
         self._highlight_item_no = it.no
+        # 화면 중앙으로 이동 (줌 유지)
+        self.view.centerOn(ell)
     
     def clear_highlight(self):
         if self._highlight_ellipse:
