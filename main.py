@@ -58,8 +58,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.45"
-TSN_VERSION = "1.45"
+APP_VER = "v1.46"
+TSN_VERSION = "1.46"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -9103,10 +9103,26 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("넘버링 설정")
         form = QtWidgets.QFormLayout(dlg)
+        form.addRow(QtWidgets.QLabel("<b>\ubaa8\ub4dc\uc120\ud0dd</b>"))
         # --- 1. 넘버링 입력 방식 설정 ---
         cb_with_input = QtWidgets.QCheckBox("넘버링 시 치수 함께 입력", dlg)
         cb_with_input.setChecked(self.input_mode == "with_input")
         form.addRow("입력 방식:", cb_with_input)
+        shape_combo = QtWidgets.QComboBox(dlg)
+        shape_options = [
+            ("circle", "\uc6d0 (Circle)"),
+            ("rectangle", "\uc0ac\uac01\ud615 (Rectangle)"),
+            ("triangle", "\uc0bc\uac01\ud615 (Triangle)"),
+            ("star", "\ubcc4 (Star)"),
+            ("none", "\uc678\uacfd\ub3c4\ud615\uc5c6\uc74c (None)"),
+        ]
+        for key, label in shape_options:
+            shape_combo.addItem(label, key)
+        current_shape = getattr(style_object, "shape", "circle")
+        shape_index = shape_combo.findData(current_shape)
+        if shape_index >= 0:
+            shape_combo.setCurrentIndex(shape_index)
+        form.addRow("\ub118\ubc84\ub9c1 \uc678\uacfd\ud615\uc0c1:", shape_combo)
         separator1 = QtWidgets.QFrame()
         separator1.setFrameShape(QtWidgets.QFrame.HLine)
         form.addRow(separator1)
@@ -9219,6 +9235,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # [수정] OK를 누를 때 체크박스 상태에 따라 input_mode를 설정
             new_mode = "with_input" if cb_with_input.isChecked() else "number_only"
             self.set_input_mode(new_mode)
+            selected_shape = shape_combo.currentData()
+            if selected_shape:
+                style_object.shape = selected_shape
+                if style_object is self.style:
+                    self._set_numbering_shape(selected_shape)
             # 기존 스타일 저장 로직
             style_object.radius_view_px = sp_r.value()
             style_object.stroke_width = sp_s.value()
