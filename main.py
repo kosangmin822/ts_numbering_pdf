@@ -1,5 +1,5 @@
 """
-TS Numbering Tool (v1.33_performance_fix) - Refactored Version
+TS Numbering Tool (v1.50) - Refactored Version
 """
 from __future__ import annotations
 import copy
