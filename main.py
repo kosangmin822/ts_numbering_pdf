@@ -749,7 +749,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 [it for it in self.items if it.no >= start_no_float], key=lambda x: x.no
             )
             items_to_keep = [it for it in self.items if it.no < start_no_float]
-        current_new_no = int(start_no_float)
+        # 중복 방지 로직 추가
+        candidate_start = int(start_no_float)
+        if items_to_keep:
+            max_kept = max(it.no for it in items_to_keep)
+            if max_kept >= candidate_start:
+                candidate_start = int(max_kept) + 1
+        
+        current_new_no = candidate_start
         for item in items_to_renumber:
             item.no = float(current_new_no)
             current_new_no += 1
@@ -3185,6 +3192,44 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.a_inp.setChecked(self.input_mode == "with_input")
         self.a_only.triggered.connect(lambda: self._set_numbering_mode("number_only"))
         self.a_inp.triggered.connect(lambda: self._set_numbering_mode("with_input"))
+        
+        m_numbering_submenu.addSeparator()
+        
+        # --- [추가] 넘버링 외곽형상 메뉴 ---
+        m_shape_submenu = m_numbering_submenu.addMenu("넘버링 외곽형상")
+        
+        self.a_shape_circle = m_shape_submenu.addAction("원 (Circle)")
+        self.a_shape_circle.setCheckable(True)
+        self.a_shape_rect = m_shape_submenu.addAction("사각형 (Rectangle)")
+        self.a_shape_rect.setCheckable(True)
+        self.a_shape_tri = m_shape_submenu.addAction("삼각형 (Triangle)")
+        self.a_shape_tri.setCheckable(True)
+        self.a_shape_star = m_shape_submenu.addAction("별 (Star)")
+        self.a_shape_star.setCheckable(True)
+        self.a_shape_none = m_shape_submenu.addAction("외곽도형없음 (None)")
+        self.a_shape_none.setCheckable(True)
+        
+        shape_group = QtGui.QActionGroup(self)
+        shape_group.setExclusive(True)
+        shape_group.addAction(self.a_shape_circle)
+        shape_group.addAction(self.a_shape_rect)
+        shape_group.addAction(self.a_shape_tri)
+        shape_group.addAction(self.a_shape_star)
+        shape_group.addAction(self.a_shape_none)
+        
+        # 초기 상태 설정
+        current_shape = getattr(self.style, "shape", "circle")
+        if current_shape == "rectangle": self.a_shape_rect.setChecked(True)
+        elif current_shape == "triangle": self.a_shape_tri.setChecked(True)
+        elif current_shape == "star": self.a_shape_star.setChecked(True)
+        elif current_shape == "none": self.a_shape_none.setChecked(True)
+        else: self.a_shape_circle.setChecked(True)
+            
+        self.a_shape_circle.triggered.connect(lambda: self._set_numbering_shape("circle"))
+        self.a_shape_rect.triggered.connect(lambda: self._set_numbering_shape("rectangle"))
+        self.a_shape_tri.triggered.connect(lambda: self._set_numbering_shape("triangle"))
+        self.a_shape_star.triggered.connect(lambda: self._set_numbering_shape("star"))
+        self.a_shape_none.triggered.connect(lambda: self._set_numbering_shape("none"))
         
         # 스탬프 모드
         self.a_mode_stamp = m_mode.addAction("스탬프 모드")
@@ -6304,6 +6349,20 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             return
         self._apply_autosave_settings(**settings)
 
+    def _set_numbering_shape(self, shape_name):
+        """넘버링 외곽 형상을 변경하고 화면을 갱신합니다."""
+        self.style.shape = shape_name
+        # 프리뷰 아이템 레퍼런스 초기화 (Scene이 클리어되면 무효화되므로)
+        self._preview_ellipse = None
+        self._preview_text = None
+        
+        self.load_page(self.cur_page_index)
+        self._set_dirty()
+        
+        # 현재 모드가 넘버링 모드라면 프리뷰 복구 시도 (선택적)
+        if self.active_mode == "numbering":
+             self.preview_mode = "preview"
+
     def _apply_autosave_settings(self, enabled: bool, interval_min: int, save_option: str):
         self.autosave_enabled = bool(enabled)
         self.autosave_interval_min = max(1, int(interval_min))
@@ -7722,21 +7781,93 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         style = it.custom_style if it.custom_style else self.style
         pt = self.pdf_to_view(*it.pdf_point)
         r = style.radius_view_px
-        ellipse = self.scene.addEllipse(
-            pt.x() - r,
-            pt.y() - r,
-            2 * r,
-            2 * r,
-            pen=QtGui.QPen(style.stroke_color, style.stroke_width),
-            brush=self._ellipse_brush(style),
-        )  # _ellipse_brush도 style을 받도록 수정 필요
+        
+        pen = QtGui.QPen(style.stroke_color, style.stroke_width)
+        brush = self._ellipse_brush(style)
+        
+        shape_type = getattr(style, "shape", "circle")
+        
+        if shape_type == "circle":
+            shape_item = self.scene.addEllipse(
+                pt.x() - r,
+                pt.y() - r,
+                2 * r,
+                2 * r,
+                pen=pen,
+                brush=brush,
+            )
+        elif shape_type == "rectangle":
+            # 정사각형 형태로 그림
+            shape_item = self.scene.addRect(
+                pt.x() - r,
+                pt.y() - r,
+                2 * r,
+                2 * r,
+                pen=pen,
+                brush=brush,
+            )
+        elif shape_type == "triangle":
+            # 정삼각형 (윗변이 평평한 역삼각형 말고 정방향 삼각형)
+            # 중심 (0,0) 기준
+            # Top: (0, -r)
+            # Bottom Left: (-r * sin(60), r * cos(60)) -> (-r * 0.866, r * 0.5)
+            # Bottom Right: (r * 0.866, r * 0.5)
+            # 원에 내접하는 정삼각형 좌표 계산
+            p1 = QtCore.QPointF(pt.x(), pt.y() - r)
+            p2 = QtCore.QPointF(pt.x() - r * 0.866, pt.y() + r * 0.5)
+            p3 = QtCore.QPointF(pt.x() + r * 0.866, pt.y() + r * 0.5)
+            poly = QtGui.QPolygonF([p1, p2, p3])
+            shape_item = self.scene.addPolygon(poly, pen=pen, brush=brush)
+        elif shape_type == "star":
+            # 5각 별
+            # 외부 반지름 r, 내부 반지름 r * 0.4
+            points = []
+            import math
+            inner_r = r * 0.4
+            # -90도(12시 방향)부터 시작
+            angle = -90
+            for _ in range(5):
+                # Outer point
+                rad = math.radians(angle)
+                points.append(QtCore.QPointF(pt.x() + r * math.cos(rad), pt.y() + r * math.sin(rad)))
+                angle += 36
+                # Inner point
+                rad = math.radians(angle)
+                points.append(QtCore.QPointF(pt.x() + inner_r * math.cos(rad), pt.y() + inner_r * math.sin(rad)))
+                angle += 36
+            
+            poly = QtGui.QPolygonF(points)
+            shape_item = self.scene.addPolygon(poly, pen=pen, brush=brush)
+        elif shape_type == "none":
+            # 외곽선 없음 (투명한 사각형을 그려서 클릭 영역만 확보하거나, 아예 안 그림)
+            # 텍스트만 보이면 되므로 여기서는 아무것도 안 그리거나 투명 객체 생성
+            # 단, z-ordering이나 참조를 위해 투명 아이템을 하나 만들면 좋음.
+            shape_item = self.scene.addEllipse(
+                pt.x() - r, pt.y() - r, 2 * r, 2 * r,
+                pen=QtGui.QPen(QtCore.Qt.NoPen),
+                brush=QtCore.Qt.NoBrush
+            )
+        else:
+            # 기본값 circle
+            shape_item = self.scene.addEllipse(
+                pt.x() - r,
+                pt.y() - r,
+                2 * r,
+                2 * r,
+                pen=pen,
+                brush=brush,
+            )
+
         txt = self.scene.addText(
             self._format_no(it.no), QtGui.QFont("Arial", style.font_size_view_px, QtGui.QFont.Bold)
         )
         txt.setDefaultTextColor(style.text_color)
         br = txt.boundingRect()
         txt.setPos(pt.x() - br.width() / 2, pt.y() - br.height() / 2)
-        ellipse.setZValue(2)
+        
+        # shape_item이 None일 수 있는 경우(else문 등) 대비
+        if shape_item:
+            shape_item.setZValue(2)
         txt.setZValue(2)
 
     def _detail_view_active(self) -> bool:
@@ -8304,15 +8435,47 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self._stamp_preview_item.show()
         
     # 프리뷰 제대로 안되서 수정. v30.2에서...
+    # 프리뷰 제대로 안되서 수정. v30.2에서...
     def _create_preview_items(self):
         r = self.style.radius_view_px
         pen = QtGui.QPen(self.style.stroke_color)
         pen.setWidth(self.style.stroke_width)
-        self._preview_ellipse = self.scene.addEllipse(
-            -r, -r, 2 * r, 2 * r, pen=pen, brush=self._ellipse_brush(self.style)
-        )
+        brush = self._ellipse_brush(self.style)
+        
+        shape_type = getattr(self.style, "shape", "circle")
+        
+        if shape_type == "circle":
+            self._preview_ellipse = self.scene.addEllipse(-r, -r, 2 * r, 2 * r, pen=pen, brush=brush)
+        elif shape_type == "rectangle":
+            self._preview_ellipse = self.scene.addRect(-r, -r, 2 * r, 2 * r, pen=pen, brush=brush)
+        elif shape_type == "triangle":
+            p1 = QtCore.QPointF(0, -r)
+            p2 = QtCore.QPointF(-r * 0.866, r * 0.5)
+            p3 = QtCore.QPointF(r * 0.866, r * 0.5)
+            poly = QtGui.QPolygonF([p1, p2, p3])
+            self._preview_ellipse = self.scene.addPolygon(poly, pen=pen, brush=brush)
+        elif shape_type == "star":
+            points = []
+            import math
+            inner_r = r * 0.4
+            angle = -90
+            for _ in range(5):
+                rad = math.radians(angle)
+                points.append(QtCore.QPointF(r * math.cos(rad), r * math.sin(rad)))
+                angle += 36
+                rad = math.radians(angle)
+                points.append(QtCore.QPointF(inner_r * math.cos(rad), inner_r * math.sin(rad)))
+                angle += 36
+            poly = QtGui.QPolygonF(points)
+            self._preview_ellipse = self.scene.addPolygon(poly, pen=pen, brush=brush)
+        elif shape_type == "none":
+            self._preview_ellipse = self.scene.addEllipse(-r, -r, 2 * r, 2 * r, pen=QtGui.QPen(QtCore.Qt.NoPen), brush=QtCore.Qt.NoBrush)
+        else:
+            self._preview_ellipse = self.scene.addEllipse(-r, -r, 2 * r, 2 * r, pen=pen, brush=brush)
+            
         self._preview_ellipse.setOpacity(0.6)
         self._preview_ellipse.setZValue(10_000)
+        
         font = QtGui.QFont("Arial", self.style.font_size_view_px, QtGui.QFont.Bold)
         self._preview_text = self.scene.addText("", font)
         self._preview_text.setDefaultTextColor(self.style.text_color)
@@ -8320,10 +8483,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._preview_text.setZValue(10_001)
         
     def _move_preview_items(self, p: QtCore.QPointF):
-        r = self.style.radius_view_px
-        self._preview_ellipse.setRect(p.x() - r, p.y() - r, 2 * r, 2 * r)
-        br = self._preview_text.boundingRect()
-        self._preview_text.setPos(p.x() - br.width() / 2, p.y() - br.height() / 2)
+        if self._preview_ellipse:
+            self._preview_ellipse.setPos(p)
+        if self._preview_text:
+            br = self._preview_text.boundingRect()
+            self._preview_text.setPos(p.x() - br.width() / 2, p.y() - br.height() / 2)
 
     def _force_refresh_table(self):
         """Force refresh table with new format. (TableManager delegation)"""
