@@ -254,8 +254,7 @@ class UIManager:
         QtGui.QShortcut(QtGui.QKeySequence("F2"), self.main_window.table, activated=self.main_window.set_individual_style)
 
         esc_shortcut = QtGui.QShortcut(QtGui.QKeySequence.Cancel, self.main_window)
-        esc_shortcut.activated.connect(self.main_window.cancel_insert_mode)
-        esc_shortcut.activated.connect(self.main_window.clear_selection_and_highlight)
+        esc_shortcut.activated.connect(self.main_window.handle_escape_key)
 
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+F"), self.main_window, activated=self.main_window.fit_to_window)
 

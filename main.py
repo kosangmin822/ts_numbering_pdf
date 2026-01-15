@@ -58,8 +58,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.47"
-TSN_VERSION = "1.47"
+APP_VER = "v1.48"
+TSN_VERSION = "1.48"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -8777,17 +8777,23 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             )
         
     def cancel_insert_mode(self):
-        """삽입 모드를 취소합니다."""
+        """Cancel insert mode."""
         if self.insert_mode:
             self.insert_mode = False
             self.view.setCursor(QtCore.Qt.ArrowCursor)
             self._update_status()
-    
+
+    def handle_escape_key(self):
+        """Handle ESC behavior: exit numbering mode to view mode only."""
+        if self.active_mode == "numbering":
+            self._set_active_mode_from_action("view")
+        self.cancel_insert_mode()
+        self.clear_selection_and_highlight()
+
     def adjust_label_style(self, property_name: str, delta: int):
-        """전역 라벨 스타일의 숫자 속성을 조절하고 화면을 새로고침합니다."""
+        """Adjust label style property and refresh view."""
         current_value = getattr(self.style, property_name)
         new_value = current_value + delta
-        # 값이 비정상적으로 커지거나 작아지지 않도록 최소/최대값 제한
         if "radius" in property_name:
             new_value = max(6, min(64, new_value))
         elif "width" in property_name:
@@ -8795,7 +8801,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         elif "font" in property_name:
             new_value = max(6, min(48, new_value))
         setattr(self.style, property_name, new_value)
-        self.load_page(self.cur_page_index)  # 변경사항을 즉시 반영
+        self.load_page(self.cur_page_index)
         self._set_dirty()
 
     def toggle_preview_mode(self):
