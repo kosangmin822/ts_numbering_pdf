@@ -58,8 +58,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.49"
-TSN_VERSION = "1.49"
+APP_VER = "v1.50"
+TSN_VERSION = "1.50"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -2965,19 +2965,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._create_menus() 
         self._create_toolbar() 
         self._create_shortcuts()
-        # --- 5. 백그라운드 스레드 설정 ---
-        self.thread = QThread()
-        self.thread.start()
-        self.thread.setPriority(QThread.LowestPriority)  # <<--- 이 줄 추가
-        self.worker = Worker()
-        self.worker.moveToThread(self.thread)
-        self.start_loading_3d.connect(self.worker.load_model)
-        self.worker.finished.connect(self.on_3d_load_finished)
-        self.worker.error.connect(self.on_3d_load_error)
-        # --- 6. 뷰 정보 실시간 업데이트 타이머 설정 ---
-        self.view_info_timer = QtCore.QTimer(self)
-        self.view_info_timer.timeout.connect(self.update_view_info)
-        self.view_info_timer.start(500)  # 500ms마다 업데이트 (0.5초)
+        # --- 5. ????? ??? ?? ---
+        self.thread = None
+        self.worker = None
+        self.view_info_timer = None
+        self._3d_backend_ready = False
         # --- 7. 사운드 예열 ---
         try:
             from PySide6.QtMultimedia import QSoundEffect
@@ -3089,8 +3081,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         ):
             # ▼▼▼ [추가] 백그라운드 스레드를 안전하게 종료합니다. ▼▼▼
             print("백그라운드 스레드를 종료합니다...")
-            self.thread.quit()  # 1. 스레드에게 이벤트 루프를 종료하라고 알림
-            self.thread.wait()  # 2. 스레드가 완전히 끝날 때까지 기다림
+            if self.thread:
+                self.thread.quit()  # 1. ????? ??? ??? ????? ??
+                self.thread.wait()  # 2. ???? ??? ?? ??? ???
             print("스레드 종료 완료.")
             # ▲▲▲
             event.accept()  # 종료 허용
@@ -3331,6 +3324,22 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 self.view.setCursor(QtCore.Qt.BlankCursor)
     
     # ▼▼▼ 3D 뷰어 관련 메서드들 ▼▼▼
+    def _ensure_3d_backend(self):
+        if getattr(self, "_3d_backend_ready", False):
+            return
+        self._3d_backend_ready = True
+        self.thread = QThread()
+        self.thread.start()
+        self.thread.setPriority(QThread.LowestPriority)
+        self.worker = Worker()
+        self.worker.moveToThread(self.thread)
+        self.start_loading_3d.connect(self.worker.load_model)
+        self.worker.finished.connect(self.on_3d_load_finished)
+        self.worker.error.connect(self.on_3d_load_error)
+        self.view_info_timer = QtCore.QTimer(self)
+        self.view_info_timer.timeout.connect(self.update_view_info)
+        self.view_info_timer.start(500)
+
     def open_3d_model(self):
         # ▼▼▼ [추가] 프로젝트가 열려있는지 먼저 확인 ▼▼▼
         if not self.doc:
@@ -3354,6 +3363,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.progress_dialog.setModal(True)  # 다른 창을 클릭할 수 없도록 설정
         self.progress_dialog.show()
         # 2. 백그라운드 스레드에 작업 시작 신호를 보냅니다.
+        self._ensure_3d_backend()
         self.start_loading_3d.emit(path)
         # ▲▲▲ [수정 끝] ▲▲▲
         self.model_path = path  # <--- 이 줄을 추가해주세요
@@ -6261,10 +6271,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     self.model_path = os.path.join(temp_dir, f"tsn_temp_{original_filename}")
                     with open(self.model_path, "wb") as f:
                         f.write(model_bytes)
+                    self._ensure_3d_backend()
                     self.start_loading_3d.emit(self.model_path)
             else:
                 self.model_path = model_path_info
                 if os.path.exists(self.model_path):
+                    self._ensure_3d_backend()
                     self.start_loading_3d.emit(self.model_path)
                 else:
                     self.statusBar().showMessage(
