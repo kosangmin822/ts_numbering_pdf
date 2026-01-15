@@ -456,7 +456,13 @@ class TableManager:
             return
 
         menu = QtWidgets.QMenu(self.main_window)
-        is_item_selected = len(self.table.selectedIndexes()) > 0
+        selected_rows = sorted({index.row() for index in self.table.selectedIndexes()})
+        is_item_selected = len(selected_rows) > 0
+        target_row = self.table.currentRow()
+        if target_row < 0 and selected_rows:
+            target_row = selected_rows[0]
+        target_item = self._get_target_item(target_row) if target_row >= 0 else None
+        has_custom_style = bool(target_item and target_item.custom_style)
 
         # --- 삽입 메뉴 ---
         insert_excel_action = menu.addAction("번호 밀기(현재번호  +1)")
@@ -473,8 +479,10 @@ class TableManager:
 
         # --- 서식 및 기타 메뉴 ---
         menu.addSeparator()
-        style_action = menu.addAction("개별 서식 지정/해제...")
-        style_action.setShortcut(QtGui.QKeySequence("F2"))
+        style_set_action = menu.addAction("\uac1c\ubcc4 \uc11c\uc2dd \uc9c0\uc815...")
+        style_clear_action = menu.addAction("\uac1c\ubcc4 \uc11c\uc2dd \ud574\uc81c")
+        style_set_action.setShortcut(QtGui.QKeySequence("F2"))
+        style_clear_action.setShortcut(QtGui.QKeySequence("Shift+F2"))
 
         # 3D 뷰포트 파라메터 저장 메뉴
         menu.addSeparator()
@@ -486,15 +494,17 @@ class TableManager:
             menu.addAction(self.main_window.a_highlight)
 
         # 선택된 항목이 없을 경우 비활성화
-        for action in [delete_only_action, renumber_action, style_action]:
+        for action in [delete_only_action, renumber_action, style_set_action, style_clear_action]:
             action.setEnabled(is_item_selected)
+        style_clear_action.setEnabled(is_item_selected and has_custom_style)
 
         # 액션과 함수 연결
         insert_excel_action.triggered.connect(self.main_window.insert_excel_style)
         insert_precision_action.triggered.connect(self.main_window.insert_precision_style)
         delete_only_action.triggered.connect(self.main_window.delete_items)
         renumber_action.triggered.connect(self.main_window.renumber_items_by_unit)
-        style_action.triggered.connect(self.main_window.set_individual_style)
+        style_set_action.triggered.connect(self.main_window.set_individual_style)
+        style_clear_action.triggered.connect(self.main_window.clear_individual_style)
         save_viewport_action.triggered.connect(self.main_window.save_viewport_parameters)
 
         menu.exec(self.table.viewport().mapToGlobal(pos))

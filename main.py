@@ -58,8 +58,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.42"
-TSN_VERSION = "1.42"
+APP_VER = "v1.45"
+TSN_VERSION = "1.45"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -5924,7 +5924,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.resizeDocks([self.page_dock, self.navigator_dock], left_sizes, QtCore.Qt.Vertical)
     
     def set_individual_style(self):
-        """선택된 항목에 개별 서식을 적용하거나 해제합니다."""
+        """Set or edit custom style for the selected item."""
         row = self.table.currentRow()
         if row < 0:
             return
@@ -5935,35 +5935,60 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 return
         except (ValueError, AttributeError):
             return
+
         if target_item.custom_style:
-            # 이미 개별 서식이 있다면 -> 삭제 여부 확인
-            reply = QtWidgets.QMessageBox.question(
-                self,
-                "개별 서식 삭제",
-                f"{item_no}번에 설정된 개별 서식을 삭제하고 전체 서식으로 되돌리시겠습니까?",
-                                               QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                QtWidgets.QMessageBox.No,
-            )
-            if reply == QtWidgets.QMessageBox.Yes:
-                target_item.custom_style = None
-                self.load_page(self.cur_page_index)  # 화면 새로고침
+            title = "\uac1c\ubcc4 \uc11c\uc2dd \uc218\uc815"
+            prompt = f"{item_no}\ubc88\uc5d0 \uc774\ubbf8 \uac1c\ubcc4 \uc11c\uc2dd\uc774 \uc788\uc2b5\ub2c8\ub2e4. \uc218\uc815\ud558\uc2dc\uaca0\uc2b5\ub2c8\uae4c?"
+            base_style = copy.deepcopy(target_item.custom_style)
         else:
-            # 개별 서식이 없다면 -> 적용 여부 확인
-            reply = QtWidgets.QMessageBox.question(
-                self,
-                "개별 서식 지정",
-                f"{item_no}번에 개별 서식을 지정하시겠습니까?",
-                                               QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                QtWidgets.QMessageBox.No,
-            )
-            if reply == QtWidgets.QMessageBox.Yes:
-                # 현재 전역 스타일을 복사하여 초기값으로 사용
-                new_style = copy.deepcopy(self.style)
-                if self.open_label_settings(new_style):  # 사용자가 OK를 누르면
-                    target_item.custom_style = new_style
-                    self.load_page(self.cur_page_index)  # 화면 새로고침
-        self._set_dirty()
-        
+            title = "\uac1c\ubcc4 \uc11c\uc2dd \uc9c0\uc815"
+            prompt = f"{item_no}\ubc88\uc5d0 \uac1c\ubcc4 \uc11c\uc2dd\uc744 \uc9c0\uc815\ud558\uc2dc\uaca0\uc2b5\ub2c8\uae4c?"
+            base_style = copy.deepcopy(self.style)
+
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            title,
+            prompt,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+
+        if self.open_label_settings(base_style):  # ???? OK? ???
+            target_item.custom_style = base_style
+            self.load_page(self.cur_page_index)  # ?? ????
+            self._set_dirty()
+
+    def clear_individual_style(self):
+        """Clear custom style for the selected item."""
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        try:
+            item_no = int(self.table.item(row, 0).text())
+            target_item = next((it for it in self.items if it.no == item_no), None)
+            if not target_item:
+                return
+        except (ValueError, AttributeError):
+            return
+
+        if not target_item.custom_style:
+            return
+
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "\uac1c\ubcc4 \uc11c\uc2dd \uc0ad\uc81c",
+            f"{item_no}\ubc88\uc5d0 \uc124\uc815\ub41c \uac1c\ubcc4 \uc11c\uc2dd\uc744 \uc0ad\uc81c\ud558\uace0 \uc804\uccb4 \uc11c\uc2dd\uc73c\ub85c \ub418\ub3cc\ub9ac\uc2dc\uaca0\uc2b5\ub2c8\uae4c?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if reply == QtWidgets.QMessageBox.Yes:
+            target_item.custom_style = None
+            self.load_page(self.cur_page_index)  # ?? ????
+            self._set_dirty()
+
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._position_integrated_control_panel()
@@ -9070,6 +9095,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 self.load_page(self.cur_page_index)
                 self._set_dirty()
     
+    def open_label_settings(self, style_object: LabelStyle) -> bool:
+        return self._open_numbering_settings_dialog(style_object)
+
     def _open_numbering_settings_dialog(self, style_object: LabelStyle) -> bool:
         """'넘버링 설정' 대화상자를 엽니다. 성공 시 True를 반환합니다."""
         dlg = QtWidgets.QDialog(self)
@@ -9496,6 +9524,7 @@ def main():
     # 전역 예외 핸들러 설정
     def exception_hook(exc_type, exc_value, exc_traceback):
         """프로그램이 예기치 않게 종료되는 것을 방지하기 위한 예외 핸들러"""
+        import traceback
         if issubclass(exc_type, KeyboardInterrupt):
             sys.__excepthook__(exc_type, exc_value, exc_traceback)
             return

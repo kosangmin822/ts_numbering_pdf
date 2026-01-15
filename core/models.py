@@ -47,6 +47,7 @@ class LabelStyle:
         self.flow_line_style = "solid"
         self.flow_show_start_end = False
         self.flow_arrow_style = "arrow"
+        self.shape = "circle"  # circle, rectangle, triangle, star, none
 
     def to_dict(self):
         return {"radius_view_px":self.radius_view_px,"stroke_width":self.stroke_width,
@@ -58,6 +59,7 @@ class LabelStyle:
                 "flow_line_style": self.flow_line_style,
                 "flow_show_start_end": self.flow_show_start_end,
                 "flow_arrow_style": self.flow_arrow_style,
+                "shape": self.shape,
                 }
 
     def from_dict(self,d):
@@ -73,3 +75,4 @@ class LabelStyle:
         self.flow_line_style = str(d.get("flow_line_style", self.flow_line_style))
         self.flow_show_start_end = bool(d.get("flow_show_start_end", self.flow_show_start_end))
         self.flow_arrow_style = str(d.get("flow_arrow_style", self.flow_arrow_style))
+        self.shape = str(d.get("shape", self.shape))
