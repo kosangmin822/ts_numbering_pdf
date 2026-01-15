@@ -2612,7 +2612,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._egg_timer.setSingleShot(True)
         self._egg_timer.timeout.connect(self._reset_egg_sequence)
         # === Auto save ===
-        self.autosave_enabled = True
+        self.autosave_enabled = False
         self.autosave_interval_min = 5
         self.autosave_save_option = "link"
         self.autosave_timer = QtCore.QTimer(self)

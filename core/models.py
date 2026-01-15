@@ -40,7 +40,7 @@ class LabelStyle:
         self.font_size_view_px=12
         self.fill_color=QtGui.QColor(255,255,255,0)
         self.stroke_color=QtGui.QColor("red")
-        self.text_color=QtGui.QColor("black")
+        self.text_color=QtGui.QColor("red")
         self.fill_none=True
         self.flow_line_opacity = 0.5
         self.flow_line_color = QtGui.QColor("#555555")
