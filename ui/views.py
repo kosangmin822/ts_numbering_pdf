@@ -20,6 +20,7 @@ class PdfView(QtWidgets.QGraphicsView):
         self.setResizeAnchor(QtWidgets.QGraphicsView.AnchorViewCenter)
         self._panning=False; self._pan_start=QtCore.QPoint()
         self._min_scale=0.2; self._max_scale=8.0
+        self._rb_active=False; self._rb_origin=QtCore.QPoint(); self._rubber_band=None
     def _scale(self): return self.transform().m11()
     def _apply_scale(self, ns):
         ns=max(self._min_scale,min(self._max_scale,ns))
@@ -31,17 +32,42 @@ class PdfView(QtWidgets.QGraphicsView):
             self._apply_scale(self._scale()*(1.25 if e.angleDelta().y()>0 else 1/1.25)); e.accept(); return
         super().wheelEvent(e)
     def mousePressEvent(self,e):
+        if e.button()==QtCore.Qt.RightButton:
+            self._rb_active=True; self._rb_origin=e.position().toPoint()
+            if self._rubber_band is None:
+                self._rubber_band=QtWidgets.QRubberBand(QtWidgets.QRubberBand.Rectangle, self)
+            self._rubber_band.setGeometry(QtCore.QRect(self._rb_origin, QtCore.QSize()))
+            self._rubber_band.show()
+            self.setCursor(QtCore.Qt.CrossCursor)
+            e.accept(); return
         if e.button()==QtCore.Qt.MiddleButton:
             self._panning=True; self._pan_start=e.position().toPoint()
             self.setCursor(QtCore.Qt.ClosedHandCursor); e.accept(); return
         super().mousePressEvent(e)
     def mouseMoveEvent(self,e):
+        if self._rb_active:
+            rect=QtCore.QRect(self._rb_origin, e.position().toPoint()).normalized()
+            if self._rubber_band:
+                self._rubber_band.setGeometry(rect)
+            e.accept(); return
         if self._panning:
             cur=e.position().toPoint(); delta=cur-self._pan_start; self._pan_start=cur
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value()-delta.x())
             self.verticalScrollBar().setValue(self.verticalScrollBar().value()-delta.y()); e.accept(); return
         super().mouseMoveEvent(e)
     def mouseReleaseEvent(self,e):
+        if e.button()==QtCore.Qt.RightButton and self._rb_active:
+            self._rb_active=False
+            rect=QtCore.QRect(self._rb_origin, e.position().toPoint()).normalized()
+            if self._rubber_band:
+                self._rubber_band.hide()
+            self.setCursor(QtCore.Qt.ArrowCursor)
+            if rect.width()>4 and rect.height()>4:
+                scene_rect=self.mapToScene(rect).boundingRect()
+                if not scene_rect.isNull():
+                    self.fitInView(scene_rect, QtCore.Qt.KeepAspectRatio)
+                    self._apply_scale(self._scale())
+            e.accept(); return
         if e.button()==QtCore.Qt.MiddleButton and self._panning:
             self._panning=False; self.setCursor(QtCore.Qt.ArrowCursor); e.accept(); return
         super().mouseReleaseEvent(e)
