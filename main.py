@@ -1,6 +1,5 @@
-# -*- coding: utf-8 -*-
 """
-TS Numbering Tool (v1.32_stable) - Refactored Version
+TS Numbering Tool (v1.33_performance_fix) - Refactored Version
 """
 from __future__ import annotations
 import copy
@@ -70,27 +69,93 @@ DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
 # =====================================================================
 def _pil_to_qimage(pil_image_or_bitmap):
     """PIL Image 또는 PdfBitmap을 QImage로 변환합니다."""
-    # pypdfium2의 PdfBitmap인 경우 PIL Image로 변환
-    if hasattr(pil_image_or_bitmap, 'to_pil'):
-        pil_image = pil_image_or_bitmap.to_pil()
-    else:
-        pil_image = pil_image_or_bitmap
+    # 중요: QImage는 기본적으로 32비트 정렬된 스캔라인을 기대합니다.
+    # 하지만 PIL이나 pypdfium2는 패킹된(align되지 않은) 데이터를 줄 수 있습니다.
+    # 따라서 반드시 bytesPerLine(stride)을 명시해야 참조 오류(Segfault)를 막을 수 있습니다.
     
-    # PIL Image를 RGB 모드로 변환
-    if pil_image.mode != "RGB":
-        pil_image = pil_image.convert("RGB")
-    
-    width, height = pil_image.size
-    
-    # PIL Image를 바이트로 변환 (RGB 순서)
-    # 중요: bytes()로 명시적으로 복사하여 메모리 안정성 확보
-    img_data = bytes(pil_image.tobytes("raw", "RGB"))
-    
-    # QImage 생성 - 바이트 데이터를 직접 사용
-    # QImage는 내부적으로 데이터를 복사하므로 안전합니다
-    qimage = QtGui.QImage(img_data, width, height, QtGui.QImage.Format_RGB888)
-    
-    return qimage
+    # 1. pypdfium2 PdfBitmap 처리 (Direct Buffer Access 최적화)
+    if hasattr(pil_image_or_bitmap, 'to_pil') and hasattr(pil_image_or_bitmap, 'buffer'):
+        try:
+            # PdfBitmap 정보 추출
+            width = pil_image_or_bitmap.width
+            height = pil_image_or_bitmap.height
+            stride = pil_image_or_bitmap.stride
+            rev_byteorder = pil_image_or_bitmap.rev_byteorder # True if BGRA/BGR
+            
+            # 버퍼 가져오기
+            mv = memoryview(pil_image_or_bitmap.buffer)
+            
+            # 포맷 결정
+            # pypdfium2는 보통 BGR or BGRA
+            n_channels = stride // width
+            
+            fmt = QtGui.QImage.Format_RGB888
+            if n_channels == 4:
+                fmt = QtGui.QImage.Format_ARGB32 # or Format_RGB32
+            elif n_channels == 3:
+                # pypdfium2 기본은 BGR (Little Endian)
+                # 안타깝게도 PySide6에 Format_BGR888이 없을 수 있음.
+                # 일단 RGB888로 하고, 색이 반전되면 rgbSwapped() 해야 함.
+                # 보통 BGR로 나오므로 Format_RGB888로 읽으면 파란색/빨간색이 바뀜.
+                # 여기서는 일단 안정성을 위해 메모리 로드에 집중.
+                # PySide 6.4+ 에는 Format_BGR888이 있음. 없다면 RGB888.
+                if hasattr(QtGui.QImage, 'Format_BGR888'):
+                     fmt = getattr(QtGui.QImage, 'Format_BGR888')
+                else:
+                     fmt = QtGui.QImage.Format_RGB888
+            
+            # QImage 생성 (데이터 참조, stride 명시 필수!)
+            qimage = QtGui.QImage(mv, width, height, stride, fmt)
+            
+            if qimage.isNull():
+                 raise ValueError("Created QImage is null")
+            
+            # 색상 채널 보정 (BGR -> RGBIfNeeded)
+            # 만약 BGR888 포맷을 지원하지 않아서 RGB888로 읽었다면 색 변환 필요
+            # 하지만 여기서 .copy() 하기 전에 .rgbSwapped()를 하면 복사+변환이 동시에 됨
+            
+            if fmt == QtGui.QImage.Format_RGB888 and n_channels == 3 and rev_byteorder:
+                # BGR 데이터인데 RGB로 읽었으므로 스왑 필요
+                new_image = qimage.rgbSwapped()
+            else:
+                # Deep Copy로 데이터 소유권 확보
+                new_image = qimage.copy()
+            
+            return new_image
+            
+        except Exception as e:
+            print(f"[DEBUG] _pil_to_qimage: Direct Buffer 변환 실패 ({e}). PIL Fallback 시도.")
+            # 실패 시 PIL 로직으로 진행
+
+    # 2. PIL Image 처리 (Fallback)
+    try:
+        if hasattr(pil_image_or_bitmap, 'to_pil'):
+            pil_image = pil_image_or_bitmap.to_pil()
+        else:
+            pil_image = pil_image_or_bitmap
+        
+        # PIL Image를 RGB 모드로 변환
+        if pil_image.mode != "RGB":
+            pil_image = pil_image.convert("RGB")
+        
+        width, height = pil_image.size
+        
+        # PIL Image를 바이트로 변환 (Packed RGB)
+        img_data = bytes(pil_image.tobytes("raw", "RGB"))
+        
+        # 중요: PIL RGB 데이터의 stride는 width * 3
+        # QImage 생성 시 이를 명시하지 않으면 4바이트 align으로 가정하여 
+        # width * 3이 4의 배수가 아닐 때 버퍼 오버런(Crash) 발생함.
+        stride = width * 3
+        
+        qimage = QtGui.QImage(img_data, width, height, stride, QtGui.QImage.Format_RGB888)
+        
+        # .copy()를 호출하여 깊은 복사를 수행
+        return qimage.copy()
+    except Exception as e:
+        import traceback
+        traceback.print_exc() # 로그 남기고
+        return QtGui.QImage() # 빈 이미지 반환 (프로그램 종료 방지)
 
 
 def _pdfium_insert_pdf(target_doc, source_doc, from_page=0, to_page=None):
@@ -6868,168 +6933,147 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.cur_page_index = index
             print(f"[DEBUG] load_page: get_page 호출 전, index={index}")
             page = self.doc.get_page(index)
-            print(f"[DEBUG] load_page: get_page 완료, render 호출 전, scale={self.render_scale}")
-            # pypdfium2의 render()는 PdfBitmap을 반환합니다
+            print(f"[DEBUG] load_page: get_page 완료. page={page}")
+            
+            # --- Safe Rendering Logic Start ---
+            # 고해상도 PDF 크래시 방지를 위한 안전 렌더링 로직
+            # 제한 설정: 가로/세로 최대 10,000픽셀, 또는 총 픽셀 수 80,000,000 (약 320MB Raw RGBA)
+            MAX_DIM = 10000
+            MAX_PIXELS = 80_000_000
+            
+            w_pt = page.get_width()
+            h_pt = page.get_height()
+            print(f"[DEBUG] load_page: 원본 크기(pt) = {w_pt}x{h_pt}, 현재 배율={self.render_scale}")
+            
+            target_w = w_pt * self.render_scale
+            target_h = h_pt * self.render_scale
+            print(f"[DEBUG] load_page: 목표 렌더링 크기(px) = {target_w}x{target_h}")
+            
+            actual_scale = self.render_scale
+            
+            if target_w > MAX_DIM or target_h > MAX_DIM or (target_w * target_h) > MAX_PIXELS:
+                print(f"[DEBUG] load_page: 안전 렌더링 트리거됨! (제한 초과)")
+                # 안전한 스케일 계산
+                scale_w = MAX_DIM / w_pt
+                scale_h = MAX_DIM / h_pt
+                
+                # 픽셀 수 제한에 따른 스케일
+                # (w * s) * (h * s) = MAX_PIXELS  =>  s^2 = MAX_PIXELS / (w * h)
+                import math
+                scale_p = math.sqrt(MAX_PIXELS / (w_pt * h_pt))
+                
+                safe_scale = min(scale_w, scale_h, scale_p)
+                print(f"[DEBUG] load_page: 계산된 안전 스케일={safe_scale}")
+                
+                # 기존 요청 스케일보다 작을 때만 적용
+                if safe_scale < self.render_scale:
+                    print(f"[WARNING] Safe Rendering Triggered: Requested {int(target_w)}x{int(target_h)} -> Scaling down to safe limit.")
+                    actual_scale = safe_scale
+                    self.statusBar().showMessage(f"⚠️ 메모리 보호를 위해 해상도가 자동 조정되었습니다. ({self.render_scale:.2f} -> {actual_scale:.2f})", 5000)
+
+            # --- Safe Rendering Logic End ---
+
+            # 1. pypdfium2 렌더링 (메모리)
             bitmap = None
             try:
-                bitmap = page.render(scale=self.render_scale)
-                print(f"[DEBUG] load_page: render 완료, PIL Image 변환 시작")
+                print(f"[DEBUG] load_page: page.render 호출 시작 (scale={actual_scale})")
+                bitmap = page.render(scale=actual_scale)
+                print(f"[DEBUG] load_page: page.render 완료")
             except Exception as render_error:
                 print(f"[DEBUG] load_page: render 오류: {render_error}")
                 _log_error(self, "페이지 렌더링 오류", render_error)
                 return
             
-            # QImage를 완전히 우회하고 PIL Image를 직접 임시 파일로 저장
+            # 2. Bitmap -> QImage -> QPixmap 변환 (메모리 내 처리, Disk I/O 제거)
             pm = None
-            pil_image = None  # 메모리 해제를 위해 참조 유지
             try:
-                # bitmap 메모리 해제는 finally 블록에서 처리
-                import tempfile
-                import os
-                from PIL import Image
+                # 헬퍼 함수를 사용하여 직접 QImage로 변환
+                img = _pil_to_qimage(bitmap)
+                if img.isNull():
+                    raise ValueError("Converted QImage is null")
                 
-                # PdfBitmap을 PIL Image로 변환
-                pil_image = bitmap.to_pil()
-                if pil_image.mode != "RGB":
-                    pil_image = pil_image.convert("RGB")
-                
-                print(f"[DEBUG] load_page: PIL Image 생성 완료, 임시 파일 저장 시작")
-                # 임시 파일에 PIL Image를 직접 저장
-                tmp_path = None
-                try:
-                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
-                        tmp_path = tmp_file.name
-                    pil_image.save(tmp_path, 'PNG')
-                    print(f"[DEBUG] load_page: 임시 파일 저장 완료, QPixmap 로드 시작")
+                pm = QtGui.QPixmap.fromImage(img)
+                if pm.isNull():
+                    raise ValueError("Converted QPixmap is null")
                     
-                    # QPixmap으로 직접 로드 (QImage 완전히 우회)
-                    pm = QtGui.QPixmap(tmp_path)
-                    
-                    # 임시 파일 즉시 삭제
-                    try:
-                        os.unlink(tmp_path)
-                    except Exception:
-                        pass
-                    
-                    if not pm.isNull():
-                        print(f"[DEBUG] load_page: QPixmap 로드 성공, size={pm.width()}x{pm.height()}")
-                    else:
-                        raise ValueError("QPixmap is null")
-                finally:
-                    # PIL Image 메모리 해제
-                    if pil_image:
-                        pil_image.close()
-                        del pil_image
+                # print(f"[DEBUG] load_page: 메??  변환 성공, size={pm.width()}x{pm.height()}")
             except Exception as e:
                 import traceback
-                print(f"[DEBUG] load_page: PIL Image 임시 파일 방법 실패: {e}")
+                print(f"[DEBUG] load_page: 이미지 변환 실패: {e}")
                 traceback.print_exc()
-                pm = None
-                
-                # 대체 방법: QImage를 통한 변환 시도
-                try:
-                    print(f"[DEBUG] load_page: 대체 방법 시도 - QImage를 통한 변환")
-                    img = _pil_to_qimage(bitmap)
-                    if img.isNull():
-                        raise ValueError("QImage is null")
-                    pm = QtGui.QPixmap.fromImage(img)
-                    if not pm.isNull():
-                        print(f"[DEBUG] load_page: 대체 방법 성공, size={pm.width()}x{pm.height()}")
-                    else:
-                        raise ValueError("QPixmap is null")
-                except Exception as e2:
-                    import traceback
-                    print(f"[DEBUG] load_page: 대체 방법도 실패: {e2}")
-                    traceback.print_exc()
-                    _log_error(self, "페이지 이미지 변환 실패", e2)
-                    return
+                _log_error(self, "페이지 이미지 변환 실패", e)
+                return
             finally:
-                # bitmap 메모리 해제
+                # 비트맵 메모리 해제
                 if bitmap:
                     try:
-                        bitmap.close()
-                        del bitmap
+                        bitmap.close()  # pypdfium2 객체 해제
                     except Exception:
                         pass
-            
-            # 최종 검증
-            if pm is None or pm.isNull():
-                print(f"[DEBUG] load_page 오류: 모든 방법 실패")
-                _log_error(self, "페이지 이미지 변환 실패", Exception("모든 변환 방법 실패"))
-                return
-            
-            # pm이 유효한지 확인
-            if pm is None or pm.isNull():
-                print(f"[DEBUG] load_page 오류: QPixmap 생성 실패 (페이지 {index})")
-                _log_error(self, "페이지 이미지 생성 실패", Exception("QPixmap이 null입니다"))
-                return
-        except Exception as e:
-            import traceback
-            print(f"[DEBUG] load_page 오류: {e}")
-            traceback.print_exc()
-            _log_error(self, "페이지 로드 오류", e)
-            return
-        
-        print(f"[DEBUG] load_page: 이미지 생성 완료, scene 업데이트 시작")
-        
-        try:
-            # 이전 QPixmap 명시적 삭제 (메모리 해제)
+
+            # 3. Scene 업데이트
+            # 이전 QPixmap 아이템 제거 (메모리 해제)
             if self._page_pix:
                 try:
-                    old_pixmap = self._page_pix.pixmap()
-                    if not old_pixmap.isNull():
-                        old_pixmap.detach()
                     if self.scene:
                         self.scene.removeItem(self._page_pix)
+                    # 명시적 detach/gc.collect() 제거 -> Python GC에 위임
                     self._page_pix = None
                 except Exception:
                     pass
             
-            # scene.clear() 전에 가비지 컬렉션 실행
-            import gc
-            gc.collect()
-            
             self.scene.clear()
-            # ▼▼▼ [결정적 수정] 파괴된 객체에 대한 참조를 여기서 모두 초기화합니다. ▼▼▼
+            
+            # 파괴된 객체 참조 초기화
             self._preview_ellipse = None
             self._preview_text = None
             self._stamp_preview_item = None
             self._clear_detail_box()
-            # ▲▲▲ 여기까지 3줄 추가 ▲▲▲
             self._stamp_graphics_items.clear()
             self._clear_stamp_highlight()
-
+            
+            # 새 Pixmap 추가
             self._page_pix = self.scene.addPixmap(pm)
-            self.view.setSceneRect(pm.rect())
+            # Z값을 가장 아래로
+            self._page_pix.setZValue(-1000)
+            
+            # 씬 크기 설정
+            rect = QtCore.QRectF(0, 0, pm.width(), pm.height())
+            self.scene.setSceneRect(rect)
+            
+            # 4. 아이템 다시 그리기
+            # print(f"[DEBUG] load_page: 아이템 리스트 순회 시작, 개수={len(self.items)}")
+            
+            # (최적화) 현재 페이지의 아이템만 필터링
+            current_page_items = [it for it in self.items if it.page_index == index]
+            
+            for it in current_page_items:
+                self._draw_label(it)
+                
+            # 스탬프 다시 그리기
+            current_page_stamps = [st for st in self.stamps if st.page_index == index]
+            for st in current_page_stamps:
+                self._draw_stamp(st)
 
-            if self.view_show_numbering:
-                for it in self.items:
-                    if it.page_index == index:
-                        self._draw_label(it)
-            if self.view_show_stamps:
-                for st in self.stamps:
-                    if st.page_index == index:
-                        self._draw_stamp(st)
+            # 흐름도 선 그리기 (전체 페이지 대상일 수 있으므로 로직 유지하되 필요시 최적화)
             if self.flow_view_enabled:
-                self._draw_flow_elements()
-                self._preview_ellipse = None
-                self._preview_text = None
-
-            self._on_zoom_changed(self.view._scale())
+                 self._update_flow_view() # 전체 다시 그리기
+            
+            # 하이라이트/선택 상태 복구
             self._reapply_highlight_from_selection(same_page_only=True)
-            self._update_page_navigation_ui()
-            self._update_thumbnail_selection()
-            self._refresh_table_view()
-            self._refresh_stamp_table()
-
-            # [핵심 수정] UI 업데이트를 바로 호출하지 않고, 0초 뒤에 실행하도록 예약합니다.
-            QtCore.QTimer.singleShot(0, self._sync_ui_to_current_mode)
-            self.view.setFocus()
+            
+            # 미리보기 모드라면 커서 다시 활성화 (이동 시 생성됨)
+            if self.active_mode == "numbering" and self.preview_mode == "preview":
+                self._preview_ellipse = None # 확실히 초기화
+            
+            # print(f"[DEBUG] load_page 완료")
+            
         except Exception as e:
             import traceback
-            print(f"load_page - UI 업데이트 오류: {e}")
+            print(f"[DEBUG] load_page 전체 오류: {e}")
             traceback.print_exc()
-            _log_error(self, "페이지 UI 업데이트 오류", e)
+            _log_error(self, "페이지 로드 오류", e)
+
     
     def go_prev(self):
         if self.doc and self.cur_page_index > 0:
