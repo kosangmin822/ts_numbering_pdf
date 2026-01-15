@@ -58,8 +58,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.46"
-TSN_VERSION = "1.46"
+APP_VER = "v1.47"
+TSN_VERSION = "1.47"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -2947,6 +2947,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # TableManager 초기화
         self.table_manager = TableManager(self)
         self.table_manager.set_table(self.table)
+        # Shortcuts for custom style copy/paste (app-wide).
+        self.sc_copy_style = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+C"), self)
+        self.sc_copy_style.setContext(QtCore.Qt.ApplicationShortcut)
+        self.sc_copy_style.activated.connect(self.copy_format)
+        self.sc_paste_style = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+V"), self)
+        self.sc_paste_style.setContext(QtCore.Qt.ApplicationShortcut)
+        self.sc_paste_style.activated.connect(self.paste_format)
         
         # UIManager 초기화
         self.ui_manager = UIManager(self)
@@ -3019,10 +3026,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # ▲▲▲ 여기까지 삽입 ▲▲▲
 
     def copy_format(self):
-        """선택된 첫 번째 항목의 개별 서식을 클립보드에 복사합니다."""
-        selected_rows = sorted(list(set(index.row() for index in self.table.selectedIndexes())))
+        """Copy custom style from the selected row."""
+        selected_rows = sorted({index.row() for index in self.table.selectedIndexes()})
         if not selected_rows:
+            row = self.table.currentRow()
+            if row >= 0:
+                selected_rows = [row]
+        if not selected_rows:
+            self.statusBar().showMessage("\u274c \uc11c\uc2dd\uc744 \ubcf5\uc0ac\ud560 \ud56d\ubaa9\uc744 \uba3c\uc800 \uc120\ud0dd\ud574\uc8fc\uc138\uc694.", 3000)
             return
+
         source_row = selected_rows[0]
         try:
             item_no = float(self.table.item(source_row, 0).text())
@@ -3031,43 +3044,44 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 return
         except (ValueError, AttributeError):
             return
-        # 스타일 객체를 깊은 복사(deepcopy)하여 완전히 독립적인 복사본을 만듭니다.
+
+        if not source_item.custom_style:
+            self.statusBar().showMessage("\u274c \uac1c\ubcc4 \uc11c\uc2dd\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.", 3000)
+            return
+
         self.style_clipboard = copy.deepcopy(source_item.custom_style)
-        if self.style_clipboard:
-            self.statusBar().showMessage(f"✅ {item_no:g}번의 개별 서식이 복사되었습니다.")
-        else:
-            self.statusBar().showMessage(
-                f"✅ {item_no:g}번의 기본 서식(서식 없음)이 복사되었습니다."
-            )
+        self.statusBar().showMessage("\u2705 \uac1c\ubcc4 \uc11c\uc2dd\uc774 \ubcf5\uc0ac\ub418\uc5c8\uc2b5\ub2c8\ub2e4.", 3000)
 
     def paste_format(self):
-        """클립보드에 복사된 서식을 선택된 모든 항목에 붙여넣습니다."""
-        selected_rows = sorted(list(set(index.row() for index in self.table.selectedIndexes())))
+        """Paste copied custom style to the selected rows."""
+        selected_rows = sorted({index.row() for index in self.table.selectedIndexes()})
         if not selected_rows:
-            self.statusBar().showMessage("❗ 서식을 붙여넣을 항목을 먼저 선택해주세요.")
+            row = self.table.currentRow()
+            if row >= 0:
+                selected_rows = [row]
+        if not selected_rows:
+            self.statusBar().showMessage("\u274c \uc11c\uc2dd\uc744 \ubd99\uc5ec\ub123\uc744 \ud56d\ubaa9\uc744 \uba3c\uc800 \uc120\ud0dd\ud574\uc8fc\uc138\uc694.", 3000)
             return
-        # 붙여넣기 전, 복사된 서식이 있는지 확인합니다.
+
         if self.style_clipboard is None:
-            self.statusBar().showMessage(
-                "❗ 복사된 서식이 없습니다. Ctrl+Shift+C로 먼저 서식을 복사해주세요."
-            )
+            self.statusBar().showMessage("\u274c \ubcf5\uc0ac\ub41c \uc11c\uc2dd\uc774 \uc5c6\uc2b5\ub2c8\ub2e4. Ctrl+Shift+C\ub85c \uba3c\uc800 \uc11c\uc2dd\uc744 \ubcf5\uc0ac\ud574\uc8fc\uc138\uc694.", 3000)
             return
+
         applied_count = 0
         for row in selected_rows:
             try:
                 item_no = float(self.table.item(row, 0).text())
                 target_item = next((it for it in self.items if it.no == item_no), None)
                 if target_item:
-                    # 붙여넣을 때도 깊은 복사를 하여 각 항목이 독립적인 스타일 객체를 갖게 합니다.
                     target_item.custom_style = copy.deepcopy(self.style_clipboard)
                     applied_count += 1
             except (ValueError, AttributeError):
                 continue
         if applied_count > 0:
-            self.statusBar().showMessage(f"🎨 {applied_count}개 항목에 서식을 적용했습니다.")
-            self.load_page(self.cur_page_index)  # 변경 사항을 화면에 즉시 반영
-            self._set_dirty()  # 파일이 수정되었음을 표시
-    
+            self.statusBar().showMessage("\u2705 \uac1c\ubcc4 \uc11c\uc2dd\uc774 \uc801\uc6a9\ub418\uc5c8\uc2b5\ub2c8\ub2e4.", 3000)
+            self.load_page(self.cur_page_index)
+            self._set_dirty()
+
     def closeEvent(self, event):
         """창이 닫힐 때 호출되는 이벤트 핸들러입니다."""
         if self._maybe_save(
@@ -3247,6 +3261,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 넘버링 설정을 편집 메뉴로 이동
         a_num_settings = m_edit.addAction("넘버링 설정…")
         a_num_settings.triggered.connect(self.open_numbering_settings)
+        a_copy_style = m_edit.addAction("\uac1c\ubcc4 \uc11c\uc2dd \ubcf5\uc0ac")
+        a_copy_style.triggered.connect(self.copy_format)
+        a_paste_style = m_edit.addAction("\uac1c\ubcc4 \uc11c\uc2dd \ubd99\uc5ec\ub123\uae30")
+        a_paste_style.triggered.connect(self.paste_format)
         m_edit.addSeparator()
         a_start = m_edit.addAction("Set Start Number…")
         a_start.triggered.connect(self.set_start_number)

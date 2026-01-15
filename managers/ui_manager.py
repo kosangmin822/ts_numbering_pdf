@@ -273,9 +273,7 @@ class UIManager:
 
         QtGui.QShortcut(QtGui.QKeySequence("F1"), self.main_window, activated=self.main_window.show_shortcut_help)
 
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+C"), self.main_window.table, activated=self.main_window.copy_format)
 
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+V"), self.main_window.table, activated=self.main_window.paste_format)
 
         QtGui.QShortcut(QtGui.QKeySequence.MoveToPreviousPage, self.main_window, activated=self.main_window.go_prev)
 
@@ -323,9 +321,7 @@ class UIManager:
             activated=lambda: self.main_window.adjust_label_style("font_size_view_px", -2),
         )
 
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+C"), self.main_window.table, activated=self.main_window.copy_format)
 
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+V"), self.main_window.table, activated=self.main_window.paste_format)
 
     def setup_3d_viewer_color_controls(self):
         """3D 뷰어 색상 컨트롤을 설정합니다."""
