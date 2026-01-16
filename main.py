@@ -1,5 +1,5 @@
 """
-TS Numbering Tool (v1.50) - Refactored Version
+TS Numbering Tool (v1.51) - Refactored Version
 """
 from __future__ import annotations
 import copy
@@ -57,8 +57,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.50"
-TSN_VERSION = "1.50"
+APP_VER = "v1.51"
+TSN_VERSION = "1.51"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
@@ -1791,10 +1791,84 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     # v3.26에서 동째로 교체...... 안에 주석도 많이 날아감..
     # 새로 하려니 많이 귀찮아서 그냥 했음...ㅠㅠㅠ v3.26에서..
     # 이스터에크... 사격모드 함수!! v3.30에서..
+    def _load_shooting_resources(self):
+        """
+        사격 모드 리소스를 지연 로딩합니다.
+        시작 속도 개선을 위해 사격 모드 진입 시에만 로드됩니다.
+        한 번만 로드하고 캐시합니다.
+        """
+        if self._shooting_resources_loaded:
+            return  # 이미 로드됨
+        
+        try:
+            # 1. 이미지 리소스 로드
+            self.crosshair_pixmap = QtGui.QPixmap(
+                resource_path("resources/ester_egg/gun.png")
+            )
+            
+            # 탄피 이미지
+            self.shell_pixmaps = []
+            for name in [f"shell{i}.png" for i in range(1, 6)]:
+                pm = QtGui.QPixmap(resource_path(f"resources/ester_egg/{name}"))
+                if not pm.isNull():
+                    self.shell_pixmaps.append(pm)
+            self.enable_shell = bool(self.shell_pixmaps)
+            
+            # 혈흔 이미지
+            self.bullet_hole_pixmaps = []
+            for name in [f"blood{i}.png" for i in range(1, 6)]:
+                pm = QtGui.QPixmap(resource_path(f"resources/ester_egg/{name}"))
+                if not pm.isNull():
+                    self.bullet_hole_pixmaps.append(pm)
+            
+            # 폴백: 위에서 아무 것도 못 찾으면 기존 blood.png라도 사용
+            if not self.bullet_hole_pixmaps:
+                fallback_pm = QtGui.QPixmap(resource_path("resources/ester_egg/blood.png"))
+                if not fallback_pm.isNull():
+                    self.bullet_hole_pixmaps = [fallback_pm]
+            
+            # 2. 사운드 리소스 로드
+            self.gun_sound_url = QtCore.QUrl.fromLocalFile(
+                resource_path("resources/ester_egg/gun_sound.wav")
+            )
+            
+            # 3. 사운드 시스템 초기화
+            try:
+                from PySide6.QtMultimedia import QSoundEffect
+                
+                # 사운드 시스템 pre-load
+                prime_effect = QSoundEffect(self)
+                silent_url = QtCore.QUrl.fromLocalFile(
+                    resource_path("resources/ester_egg/silent_prime.wav")
+                )
+                prime_effect.setSource(silent_url)
+                prime_effect.play()
+                
+                self.sound_effect = QSoundEffect(self)
+                self.sound_effect.setSource(self.gun_sound_url)
+                self.sound_effect.setVolume(1.0)
+            except Exception as e:
+                print(f"Sound loading failed: {e}")
+                self.sound_effect = None
+            
+            self._shooting_resources_loaded = True
+            print("Shooting mode resources loaded.")
+            
+        except Exception as e:
+            print(f"Failed to load shooting resources: {e}")
+            # 폴백: 최소한의 리소스라도 로드 시도
+            self._shooting_resources_loaded = False
+    
     def toggle_shooting_mode(self, enable: bool):
         """이스터에그인 사격 모드를 켜거나 끄고, 다른 UI를 잠금/해제합니다."""
         if not enable and not getattr(self, "shooting_mode", False):
             return
+        
+        # ▼▼▼ 리소스 지연 로딩 (시작 속도 개선) ▼▼▼
+        if enable and not self._shooting_resources_loaded:
+            self._load_shooting_resources()
+        # ▲▲▲ 여기까지 추가 ▲▲▲
+        
         self.shooting_mode = enable
         # 잠금/해제할 UI 요소들을 리스트로 관리
         ui_elements = [self.menuBar(), self.main_toolbar, self.page_dock, self.dock]
@@ -1802,12 +1876,15 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # [사격 모드 진입]
             if self._preview_text:
                 self._preview_text.setVisible(False)
-            cursor = QtGui.QCursor(
-                self.crosshair_pixmap.scaled(
-                    64, 64, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
+            
+            # 리소스가 로드되었는지 확인
+            if self.crosshair_pixmap and not self.crosshair_pixmap.isNull():
+                cursor = QtGui.QCursor(
+                    self.crosshair_pixmap.scaled(
+                        64, 64, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
+                    )
                 )
-            )
-            self.view.setCursor(cursor)
+                self.view.setCursor(cursor)
             self.statusBar().showMessage("사격 모드 활성화! (해제: Ctrl+F11)")
             # 모든 UI 요소를 비활성화(잠금)
             for element in ui_elements:
@@ -2624,50 +2701,31 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.stamp_rotation_min = -5.0  # 기본값: -5도 ~ 5도
         self.stamp_rotation_max = 5.0
         # ▲▲▲ 여기까지 추가 ▲▲▲
-        # ===== ▼▼▼ 이스터에그(사격 모드) 변수 추가/수정 ▼▼▼ =====
+        # ===== ▼▼▼ 이스터에그(사격 모드) 변수 - 지연 로딩 버전 ▼▼▼ =====
         self.shooting_mode = False
         self.bullet_hole_items = []
-        self.crosshair_pixmap = QtGui.QPixmap(
-            resource_path("resources/ester_egg/gun.png")
-        )  # 경로 수정
-        # ── 탄피: 리소스/상태 ───────────────────────────────────────────
-        self.shell_pixmaps = []
-        for name in [f"shell{i}.png" for i in range(1, 6)]:
-            pm = QtGui.QPixmap(resource_path(f"resources/ester_egg/{name}"))  # 경로 수정
-            if not pm.isNull():
-                self.shell_pixmaps.append(pm)
-        # 폴백(이미지가 하나도 없을 때는 로직 비활성화)
-        self.enable_shell = bool(self.shell_pixmaps)
+        
+        # 리소스를 None으로 초기화 (시작 시 로드하지 않음 - 시작 속도 개선)
+        self.crosshair_pixmap = None
+        self.shell_pixmaps = None
+        self.bullet_hole_pixmaps = None
+        self.gun_sound_url = None
+        self.sound_effect = None
+        self.sound_volume = 1.0
+        self._shooting_resources_loaded = False  # 로드 상태 플래그
+        
+        # 탄피 물리/타이머는 사격 모드 진입 전에 초기화 (타이머 객체는 가벼움)
         self.shell_items = (
             []
         )  # [{'item':QGraphicsPixmapItem,'vx':..,'vy':..,'spin':..,'life':..}, ...]
-        # ▼▼▼ [핵심] 누락된 탄피 타이머 초기화 코드를 추가합니다. ▼▼▼
-        # ── 탄피 물리/타이머(60FPS 근사) ────────────────────────────────
         self._shell_timer = QtCore.QTimer(self)
         self._shell_timer.setInterval(16)
         self._shell_timer.timeout.connect(self._tick_shells)
-        # ▲▲▲ 여기까지 추가 ▲▲▲
         # 픽셀/초 단위 튜닝 파라미터(필요시 조절)
         self._shell_gravity = 1200.0  # 중력가속도(px/s^2)
         self._shell_air_drag = 0.15  # 공기저항(속도 감쇠 비율)
         self._shell_floor_y = None  # 바닥 Y(없으면 화면 밖까지 날게 둠)
-        # 여러 장의 혈흔 스프라이트를 미리 로드
-        self.bullet_hole_pixmaps = []
-        for name in [f"blood{i}.png" for i in range(1, 6)]:  # blood1~5.png
-            pm = QtGui.QPixmap(resource_path(f"resources/ester_egg/{name}"))  # 경로 수정
-            if not pm.isNull():
-                self.bullet_hole_pixmaps.append(pm)
-        # 폴백: 위에서 아무 것도 못 찾으면 기존 blood.png라도 사용
-        if not self.bullet_hole_pixmaps:
-            fallback_pm = QtGui.QPixmap(resource_path("resources/ester_egg/blood.png"))  # 경로 수정
-            if not fallback_pm.isNull():
-                self.bullet_hole_pixmaps = [fallback_pm]
-        # self.gun_sound -> self.gun_sound_url 로 이름을 변경하고 아래와 같이 수정합니다.
-        self.gun_sound_url = QtCore.QUrl.fromLocalFile(
-            resource_path("resources/ester_egg/gun_sound.wav")
-        )  # 경로 수정
-        self.sound_effect = None  # 사운드 플레이어를 저장할 변수
-        self.sound_volume = 1.0  # 사운드 볼륨 (0.0 ~ 1.0)
+        self.enable_shell = False  # 리소스 로드 후 True로 설정
         # ===== ▲▲▲ 여기까지 교체 ▲▲▲ =====
         # === Secret hotkey (Ctrl+F12 x4) state ===
         self._egg_required = 4  # 필요한 연속 입력 횟수
@@ -3035,23 +3093,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.worker = None
         self.view_info_timer = None
         self._3d_backend_ready = False
-        # --- 7. 사운드 예열 ---
-        try:
-            from PySide6.QtMultimedia import QSoundEffect
-
-            prime_effect = QSoundEffect(self)
-            silent_url = QtCore.QUrl.fromLocalFile(
-                resource_path("resources/ester_egg/silent_prime.wav")
-            )
-            prime_effect.setSource(silent_url)
-            prime_effect.play()
-            self.sound_effect = QSoundEffect(self)
-            self.sound_effect.setSource(self.gun_sound_url)
-            self.sound_effect.setVolume(1.0)
-            QThread.msleep(20) 
-            print("Sound system pre-loaded successfully.")
-        except Exception as e:
-            print(f"Sound pre-loading failed: {e}")
+        # --- 7. 사운드 예열 제거됨 (시작 속도 개선을 위해 지연 로딩으로 변경) ---
+        # 사운드는 사격 모드 진입 시에만 로드됩니다 (_load_shooting_resources 참조)
         # --- 7. 스타일시트 적용 ---
         self.setStyleSheet(
             """
@@ -7468,11 +7511,21 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 1. 사격 모드는 최상단에서 처리 (기존과 동일)
         if self.shooting_mode:
             # ▼▼▼ [핵심] 비어있던 사격 모드 로직을 복원합니다. ▼▼▼
+            # 리소스가 로드되지 않았으면 로드 시도
+            if not self._shooting_resources_loaded:
+                self._load_shooting_resources()
+            
             try:
                 if self.sound_effect:
                     self.sound_effect.play()
             except Exception as e:
                 print(f"사운드 재생 오류: {e}")
+            
+            # 리소스 안전성 체크
+            if not self.bullet_hole_pixmaps:
+                print("Warning: bullet_hole_pixmaps not loaded")
+                return
+            
             pm = random.choice(self.bullet_hole_pixmaps)
             scaled_pm = pm.scaled(
                 128, 128, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
