@@ -399,3 +399,56 @@ Project: Shape-Modeling Based LLM Mold Quotation System
   - Installers rebuilt successfully with bug fix
 - Next planned action:
   - User final confirmation
+
+## Session: 2026-01-19 / GD&T Smart Control & UI Refinement
+@agent=Anti-Gravity
+@role=Implementer, Debugger
+@scope=Functionality, UI
+@status=Done
+
+### Intent
+- Implement GD&T specific logic (Smart Field Control) and refine UI layout.
+  - 기하공차 전용 로직(스마트 필드 제어) 구현 및 UI 개선
+- Fix `ImportError` and Table resizing issues.
+  - 임포트 에러 및 테이블 크기 조절 문제 수정
+
+### Context
+- User requested specialized behavior for GD&T symbols (locking unnecessary fields).
+- Table column resizing was broken (overridden by legacy code).
+- `ImportError` occurred due to circular/missing imports of `DIM_TYPES`.
+
+### Changes
+- `core/models.py`:
+  - Updated `DIM_TYPES` to `Symbol(Description)` format.
+  - Moved `DIM_TYPES` definition here for centralization.
+- `managers/table_manager.py`:
+  - Added `_update_row_locking_state`: Locks `Dim` and `Min` for GD&T items, sets focus to `Max`.
+  - Added logic to `on_table_item_changed` and `_append_table_row` to trigger locking.
+- `ui/delegates.py`:
+  - Updated `NumericDelegate` to block negative numbers if row type is GD&T.
+- `main.py` / `main_trial.py`:
+  - Reduced "Type" column width to 110px.
+  - **Removed legacy Fixed resize mode overrides** to enable `Interactive` resizing.
+  - Explicitly set `setSectionResizeMode` to `Interactive` and disabled `StretchLastSection`.
+
+### Result
+- GD&T entry is now "Smart":
+  - Auto-locks unused fields (Dim/Min).
+  - Blocks negative inputs.
+  - Auto-focuses Max field.
+- Table UI is more flexible (resize works, column width optimized).
+- Codebase committed and pushed to remote.
+
+### Fast Context Update (MANDATORY)
+> Update the AI Fast Context section in WORKLOG.md based on this session.
+
+- Current focus:
+  - User verification of new features
+- Known blocker:
+  - None
+- Forbidden approaches:
+  - None
+- Last confirmed working logic:
+  - Smart GD&T fields and Input Validation working
+- Next planned action:
+  - Build new version (v1.52 planned)
