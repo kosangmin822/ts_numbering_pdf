@@ -2,7 +2,7 @@
 ; TS Numbering for PDF v1.29_trial 설치 프로그램
 
 #define MyAppName "TS Numbering for PDF"
-#define MyAppVersion "1.29"
+#define MyAppVersion "1.51"
 #define MyAppPublisher "Taesung Engineering"
 #define MyAppURL "https://www.taesung.co.kr"
 #define MyAppExeName "TS_Numbering_PDF_Trial.exe"
@@ -24,7 +24,7 @@ AllowNoIcons=yes
 LicenseFile=LICENSE
 InfoBeforeFile=README
 OutputDir=installer
-OutputBaseFilename=TS_Numbering_PDF_Trial_Setup_v1.29
+OutputBaseFilename=TS_Numbering_PDF_Trial_Setup_v1.51
 SetupIconFile=resources\icons\icon.ico
 Compression=lzma2
 SolidCompression=yes
@@ -43,7 +43,7 @@ Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescrip
 
 [Files]
 ; 메인 실행 파일 (트라이얼 버전)
-Source: "dist\TS_Numbering_PDF_Trial.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\TS_Numbering_PDF_Trial\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; 리소스 폴더 전체 복사 (아이콘, 이미지, 데이터 등)
 Source: "resources\*"; DestDir: "{app}\resources"; Flags: ignoreversion recursesubdirs createallsubdirs

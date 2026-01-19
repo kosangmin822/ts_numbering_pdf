@@ -8,7 +8,7 @@ def build_official():
     PyInstaller.__main__.run([
         'main.py',
         '--name=TS_Numbering_PDF',
-        '--onefile',
+        '--onedir',
         '--windowed',
         '--icon=resources/icons/icon.ico',
         '--add-data=resources;resources',
@@ -38,7 +38,7 @@ def build_trial():
     PyInstaller.__main__.run([
         'main_trial.py',
         '--name=TS_Numbering_PDF_Trial',
-        '--onefile',
+        '--onedir',
         '--windowed',
         '--icon=resources/icons/icon.ico',
         '--add-data=resources;resources',

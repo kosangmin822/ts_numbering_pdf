@@ -2,7 +2,7 @@
 ; TS Numbering for PDF v1.29_stable 설치 프로그램
 
 #define MyAppName "TS Numbering for PDF"
-#define MyAppVersion "1.29"
+#define MyAppVersion "1.51"
 #define MyAppPublisher "Taesung Engineering"
 #define MyAppURL "https://www.taesung.co.kr"
 #define MyAppExeName "TS_Numbering_PDF.exe"
@@ -24,7 +24,7 @@ AllowNoIcons=yes
 LicenseFile=LICENSE
 InfoBeforeFile=README
 OutputDir=installer
-OutputBaseFilename=TS_Numbering_PDF_Setup_v1.29_stable
+OutputBaseFilename=TS_Numbering_PDF_Setup_v1.51_stable
 SetupIconFile=resources\icons\icon.ico
 Compression=lzma2
 SolidCompression=yes
@@ -47,7 +47,7 @@ Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescrip
 
 [Files]
 ; 메인 실행 파일
-Source: "dist\TS_Numbering_PDF.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\TS_Numbering_PDF\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; 리소스 폴더 전체 복사 (아이콘, 이미지, 데이터 등)
 Source: "resources\*"; DestDir: "{app}\resources"; Flags: ignoreversion recursesubdirs createallsubdirs

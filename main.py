@@ -61,7 +61,10 @@ APP_VER = "v1.51"
 TSN_VERSION = "1.51"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
-DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
+
+from core.models import DIM_TYPES
+
+# =====================================================================
 
 
 # =====================================================================
@@ -2768,6 +2771,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.table.setHorizontalHeaderLabels(
             ["No", "Type", "Dim", "Max", "Min", "x₁", "x₂", "x₃", "x₄", "x₅", "3D Parameter"]
         )
+        self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Interactive) # 모든 컬럼 크기 조절 가능
+        self.table.horizontalHeader().setStretchLastSection(False)  # 마지막 컬럼 늘어남 방지 (드래그 방해 가능성)
+        self.table.horizontalHeader().setSectionsMovable(True)      # 컬럼 이동도 가능하게 (선택사항, 편의성)
+        self.table.setColumnWidth(0, 35)   # No
+        self.table.setColumnWidth(1, 110)  # Type (사용자 요청: 135px -> 110px 축소)
+        self.table.setColumnWidth(2, 60)   # Dim
+        self.table.setColumnWidth(3, 50)   # Max
+        self.table.setColumnWidth(4, 50)   # Min
         self.table.setItemDelegateForColumn(1, ComboDelegate(DIM_TYPES, self.table))
         numeric_delegate = NumericDelegate(self)
         self.table.setItemDelegateForColumn(3, numeric_delegate)
@@ -3032,21 +3043,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # Qt의 최대값인 16777215을 사용하여 높이 제한을 사실상 제거
         self.dock.setMaximumSize(600, 16777215)
         # 테이블 컬럼 크기 설정
-        self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)  # No
-        self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)  # Type
-        self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)  # Dim
-        self.table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)  # Max
-        self.table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.Fixed)  # Min
-        self.table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.Fixed)  # x1
-        self.table.horizontalHeader().setSectionResizeMode(6, QtWidgets.QHeaderView.Fixed)  # x2
-        self.table.horizontalHeader().setSectionResizeMode(7, QtWidgets.QHeaderView.Fixed)  # x3
-        self.table.horizontalHeader().setSectionResizeMode(8, QtWidgets.QHeaderView.Fixed)  # x4
-        self.table.horizontalHeader().setSectionResizeMode(9, QtWidgets.QHeaderView.Fixed)  # x5
-        self.table.horizontalHeader().setSectionResizeMode(10, QtWidgets.QHeaderView.Fixed)  # 3D Parameter
-        # 컬럼 너비 설정 (컬럼명이 깨지지 않을 최소 폭으로 조정)
-        self.table.setColumnWidth(0, 30)   # No
-        self.table.setColumnWidth(1, 40)   # Type
-        self.table.setColumnWidth(2, 50)   # Dim
+
         self.table.setColumnWidth(3, 40)   # Max
         self.table.setColumnWidth(4, 40)   # Min
         self.table.setColumnWidth(5, 45)   # x1
@@ -6408,6 +6405,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_page_navigation_ui()
         self._populate_thumbnails()
         self._update_stamp_button_icon()
+        # [수정] 프로젝트 로드 시 테이블 강제 갱신 (리스트 안보임 현상 수정)
+        if hasattr(self, "table_manager"):
+            self.table_manager._force_refresh_table()
+
         # 6. [수정 1] 모든 화면이 로드된 후, 마지막으로 다음 번호 지정 대화상자 호출
         if self.numbering_mode == "global":
             if self.items:

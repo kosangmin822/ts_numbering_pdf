@@ -16,7 +16,24 @@ class ComboDelegate(QtWidgets.QStyledItemDelegate):
 class NumericDelegate(QtWidgets.QStyledItemDelegate):
     def createEditor(self, parent, option, index):
         editor = QtWidgets.QLineEdit(parent)
-        regex = QtCore.QRegularExpression("[+-]?\\d*\\.?\\d*")
+        
+        # 현재 행의 Type(컬럼 1)을 확인하여 기하공차 여부 판단
+        type_idx = index.sibling(index.row(), 1)
+        dim_type = type_idx.data(QtCore.Qt.DisplayRole) or ""
+        
+        # 선형 치수 목록 (음수 허용)
+        linear_types = ["선형", "Ø", "R", "C", "기타"]
+        
+        # 기하공차 등은 음수 입력 방지
+        # (단, dim_type이 아예 없거나 하는 경우엔 기본적으로 음수 허용하는게 안전할 수도 있으나,
+        #  사용자 요청에 따라 GD&T로 추정되면 막음)
+        if dim_type and dim_type not in linear_types:
+            # 양수만 허용 (소수점 포함)
+            regex = QtCore.QRegularExpression("[+]?\\d*\\.?\\d*")
+        else:
+            # 음수도 허용
+            regex = QtCore.QRegularExpression("[+-]?\\d*\\.?\\d*")
+            
         validator = QtGui.QRegularExpressionValidator(regex, editor)
         editor.setValidator(validator)
         return editor

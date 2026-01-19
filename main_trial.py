@@ -1,6 +1,5 @@
-# -*- coding: utf-8 -*-
 """
-TS Numbering Tool (v1.29_trial) - Refactored Version
+TS Numbering Tool (v1.51) - Refactored Version
 """
 from __future__ import annotations
 import copy
@@ -15,8 +14,10 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
-import fitz
+import pypdfium2 as pdfium
 import pandas as pd
+import numpy as np
+from PIL import Image
 import requests
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QObject, QThread, Signal, Slot
@@ -28,7 +29,7 @@ print("=" * 20 + ">>> 올바른 최신 main.py 파일이 실행되었습니다! 
 # --- 직접 만든 모듈들 ---
 from core.models import LabelStyle, MarkItem, StampItem
 from ui.delegates import ComboDelegate, NumericDelegate
-from ui.dialogs import SaveOptionsDialog  # <--- 이 부분을 추가해주세요.
+from ui.dialogs import SaveOptionsDialog, AutoSaveDialog  # <--- 이 부분을 추가해주세요.
 from ui.dialogs import (
     AppendPdfDialog,
     InsertDialog,
@@ -50,16 +51,211 @@ from utils.helpers import (
     normalize_signed_text,
     resource_path,
     strip_prefix_for_value,
+    to_float_or_none,
 )
 
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.29_trial"
-TSN_VERSION = "1.29"
+APP_VER = "v1.51_trial"
+TSN_VERSION = "1.51"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
-DIM_TYPES = ["선형", "Ø", "R", "C", "기타"]
+
+from core.models import DIM_TYPES
+
+# =====================================================================
+
+
+# =====================================================================
+#  pypdfium2 헬퍼 함수
+# =====================================================================
+def _pil_to_qimage(pil_image_or_bitmap):
+    """PIL Image 또는 PdfBitmap을 QImage로 변환합니다."""
+    # 중요: QImage는 기본적으로 32비트 정렬된 스캔라인을 기대합니다.
+    # 하지만 PIL이나 pypdfium2는 패킹된(align되지 않은) 데이터를 줄 수 있습니다.
+    # 따라서 반드시 bytesPerLine(stride)을 명시해야 참조 오류(Segfault)를 막을 수 있습니다.
+    
+    # 1. pypdfium2 PdfBitmap 처리 (Direct Buffer Access 최적화)
+    if hasattr(pil_image_or_bitmap, 'to_pil') and hasattr(pil_image_or_bitmap, 'buffer'):
+        try:
+            # PdfBitmap 정보 추출
+            width = pil_image_or_bitmap.width
+            height = pil_image_or_bitmap.height
+            stride = pil_image_or_bitmap.stride
+            rev_byteorder = pil_image_or_bitmap.rev_byteorder # True if BGRA/BGR
+            
+            # 버퍼 가져오기
+            mv = memoryview(pil_image_or_bitmap.buffer)
+            
+            # 포맷 결정
+            # pypdfium2는 보통 BGR or BGRA
+            n_channels = stride // width
+            
+            fmt = QtGui.QImage.Format_RGB888
+            if n_channels == 4:
+                fmt = QtGui.QImage.Format_ARGB32 # or Format_RGB32
+            elif n_channels == 3:
+                # pypdfium2 기본은 BGR (Little Endian)
+                # 안타깝게도 PySide6에 Format_BGR888이 없을 수 있음.
+                # 일단 RGB888로 하고, 색이 반전되면 rgbSwapped() 해야 함.
+                # 보통 BGR로 나오므로 Format_RGB888로 읽으면 파란색/빨간색이 바뀜.
+                # 여기서는 일단 안정성을 위해 메모리 로드에 집중.
+                # PySide 6.4+ 에는 Format_BGR888이 있음. 없다면 RGB888.
+                if hasattr(QtGui.QImage, 'Format_BGR888'):
+                     fmt = getattr(QtGui.QImage, 'Format_BGR888')
+                else:
+                     fmt = QtGui.QImage.Format_RGB888
+            
+            # QImage 생성 (데이터 참조, stride 명시 필수!)
+            qimage = QtGui.QImage(mv, width, height, stride, fmt)
+            
+            if qimage.isNull():
+                 raise ValueError("Created QImage is null")
+            
+            # 색상 채널 보정 (BGR -> RGBIfNeeded)
+            # 만약 BGR888 포맷을 지원하지 않아서 RGB888로 읽었다면 색 변환 필요
+            # 하지만 여기서 .copy() 하기 전에 .rgbSwapped()를 하면 복사+변환이 동시에 됨
+            
+            if fmt == QtGui.QImage.Format_RGB888 and n_channels == 3 and rev_byteorder:
+                # BGR 데이터인데 RGB로 읽었으므로 스왑 필요
+                new_image = qimage.rgbSwapped()
+            else:
+                # Deep Copy로 데이터 소유권 확보
+                new_image = qimage.copy()
+            
+            return new_image
+            
+        except Exception as e:
+            print(f"[DEBUG] _pil_to_qimage: Direct Buffer 변환 실패 ({e}). PIL Fallback 시도.")
+            # 실패 시 PIL 로직으로 진행
+
+    # 2. PIL Image 처리 (Fallback)
+    try:
+        if hasattr(pil_image_or_bitmap, 'to_pil'):
+            pil_image = pil_image_or_bitmap.to_pil()
+        else:
+            pil_image = pil_image_or_bitmap
+        
+        # PIL Image를 RGB 모드로 변환
+        if pil_image.mode != "RGB":
+            pil_image = pil_image.convert("RGB")
+        
+        width, height = pil_image.size
+        
+        # PIL Image를 바이트로 변환 (Packed RGB)
+        img_data = bytes(pil_image.tobytes("raw", "RGB"))
+        
+        # 중요: PIL RGB 데이터의 stride는 width * 3
+        # QImage 생성 시 이를 명시하지 않으면 4바이트 align으로 가정하여 
+        # width * 3이 4의 배수가 아닐 때 버퍼 오버런(Crash) 발생함.
+        stride = width * 3
+        
+        qimage = QtGui.QImage(img_data, width, height, stride, QtGui.QImage.Format_RGB888)
+        
+        # .copy()를 호출하여 깊은 복사를 수행
+        return qimage.copy()
+    except Exception as e:
+        import traceback
+        traceback.print_exc() # 로그 남기고
+        return QtGui.QImage() # 빈 이미지 반환 (프로그램 종료 방지)
+
+
+def _pdfium_insert_pdf(target_doc, source_doc, from_page=0, to_page=None):
+    """pypdfium2에서 PDF 병합 기능을 구현합니다."""
+    if to_page is None:
+        to_page = len(source_doc) - 1
+    
+    # pypdfium2의 import_pages를 사용하여 페이지를 직접 복사
+    target_doc.import_pages(source_doc, pages=[i for i in range(from_page, to_page + 1)])
+
+
+def _pil_image_to_pdf_page(pil_image, width_points, height_points):
+    """PIL Image를 pypdfium2 PDF 페이지로 변환합니다."""
+    import io
+    import tempfile
+    
+    # PIL Image를 PDF로 변환 (임시 파일 사용)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        tmp_path = tmp_file.name
+    
+    # PIL Image를 PDF로 저장 (reportlab 또는 다른 방법 사용)
+    # 간단한 방법: 이미지를 PNG로 저장 후 PDF에 삽입
+    # 하지만 pypdfium2는 이미지 삽입이 복잡하므로, 
+    # 대신 이미지를 PDF로 변환한 후 import_pages 사용
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.utils import ImageReader
+    
+    c = canvas.Canvas(tmp_path, pagesize=(width_points, height_points))
+    img_reader = ImageReader(pil_image)
+    c.drawImage(img_reader, 0, 0, width=width_points, height=height_points)
+    c.save()
+    
+    # 변환된 PDF를 읽어서 페이지 반환
+    img_doc = pdfium.PdfDocument(tmp_path)
+    if len(img_doc) > 0:
+        page = img_doc.get_page(0)
+        os.unlink(tmp_path)
+        return page
+    os.unlink(tmp_path)
+    return None
+
+
+class AxisNavigatorWidget(QtWidgets.QWidget):
+    def __init__(self, parent=None, size=140, margin=12):
+        super().__init__(parent)
+        self._margin = margin
+        self._size = size
+        self.setFixedSize(size, size)
+        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+
+        origin = QtCore.QPointF(self._margin, self.height() - self._margin)
+        length = min(self.width(), self.height()) - self._margin * 2
+
+        x_end = QtCore.QPointF(origin.x() + length, origin.y())
+        y_end = QtCore.QPointF(origin.x(), origin.y() - length)
+        z_end = QtCore.QPointF(origin.x() + length * 0.7, origin.y() - length * 0.7)
+
+        axis_color = "#1e88e5"
+        self._draw_axis(painter, origin, x_end, axis_color, "X")
+        self._draw_axis(painter, origin, y_end, axis_color, "Y")
+        self._draw_axis(painter, origin, z_end, axis_color, "Z")
+
+    def _draw_axis(self, painter, origin, end_pt, color, label):
+        pen = QtGui.QPen(QtGui.QColor(color))
+        pen.setWidth(2)
+        painter.setPen(pen)
+        painter.setBrush(QtGui.QColor(color))
+        painter.drawLine(origin, end_pt)
+        self._draw_arrowhead(painter, origin, end_pt, color)
+        self._draw_label(painter, end_pt, label, color)
+
+    def _draw_arrowhead(self, painter, start, end, color):
+        import math
+        angle = math.atan2(start.y() - end.y(), start.x() - end.x())
+        size = 8
+        p1 = QtCore.QPointF(
+            end.x() + size * math.cos(angle + math.pi / 6),
+            end.y() + size * math.sin(angle + math.pi / 6),
+        )
+        p2 = QtCore.QPointF(
+            end.x() + size * math.cos(angle - math.pi / 6),
+            end.y() + size * math.sin(angle - math.pi / 6),
+        )
+        painter.setBrush(QtGui.QColor(color))
+        painter.drawPolygon(QtGui.QPolygonF([end, p1, p2]))
+
+    def _draw_label(self, painter, pos, label, color):
+        font = QtGui.QFont("Segoe UI", 9, QtGui.QFont.Bold)
+        painter.setFont(font)
+        painter.setPen(QtGui.QPen(QtGui.QColor(color)))
+        offset = QtCore.QPointF(6, -6)
+        painter.drawText(pos + offset, label)
 
 
 # =====================================================================
@@ -106,12 +302,12 @@ class Worker(QObject):
             self.finished.emit(geometry)
         except Exception as e:
             self.error.emit(str(e))
-
+                
 
 class PdfAnnotator(QtWidgets.QMainWindow):
     # Worker를 시작시키는 신호 추가
     start_loading_3d = Signal(str)
-
+    
     def check_trial_status(self):
         """
         30일 트라이얼 상태를 확인합니다.
@@ -186,8 +382,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         project_data = {"projectName": self.project_name or "Untitled Project", "items": items_data}
         # 3. 업로드할 PDF 파일 데이터 준비 (파일을 새로 열지 않고 메모리에서 바로 가져옴)
         try:
-            # self.doc.tobytes()를 사용해 현재 PDF 문서의 내용을 바이트 데이터로 변환
-            pdf_bytes = self.doc.tobytes()
+            # pypdfium2는 tobytes()가 없으므로 임시 파일을 사용합니다
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                tmp_path = tmp_file.name
+            self.doc.save(tmp_path)
+            with open(tmp_path, "rb") as f:
+                pdf_bytes = f.read()
+            os.unlink(tmp_path)  # 임시 파일 삭제
             # 업로드할 때 사용할 파일명 결정
             pdf_filename = f"{self.project_name or 'source'}.pdf"
             # 파일 객체 대신 메모리의 바이트 데이터를 직접 전송
@@ -198,7 +400,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 4. 서버로 데이터와 파일 함께 전송 (이하 기존과 동일)
         try:
             response = requests.post(
-                SERVER_URL, files=files_to_upload, data={"project_data": json.dumps(project_data)}
+                SERVER_URL,
+                files=files_to_upload,
+                data={"project_data": json.dumps(project_data)},
+                # NOTE:
+                #   테스트 서버는 개발용 기능입니다. 서버가 꺼져있을 때 매번 모달 팝업을 띄우면
+                #   사용 흐름을 크게 방해하므로, 짧은 타임아웃 + 비모달(상태바) 안내로 처리합니다.
+                timeout=2.0,
             )
             if response.status_code == 200:
                 server_message = response.json().get("message")
@@ -210,20 +418,38 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     self, "실패", f"서버 응답 오류 (코드: {response.status_code})"
                 )
         except requests.exceptions.RequestException as e:
-            QtWidgets.QMessageBox.critical(
-                self, "연결 오류", f"테스트 서버에 연결할 수 없습니다.\n\n{e}"
-            )
+            # UX:
+            #   - 기존: 모달 팝업(연결 오류) -> 사용자가 실수로 눌렀을 때 반복적으로 거슬림
+            #   - 변경: 상태바 메시지로만 안내 (필요하면 로그에서 상세 확인)
+            try:
+                self.statusBar().showMessage(
+                    "테스트 서버 연결 실패(개발자용 기능). 서버를 실행한 뒤 다시 시도하세요.",
+                    6000,
+                )
+            except Exception:
+                pass
+            try:
+                _log_error(self, "테스트 서버 연결 실패", e)
+            except Exception:
+                pass
         # ▲▲▲ [수정 끝] ▲▲▲
-
+    
     def _append_pdf(self, path_to_append: str):
         """선택한 PDF 파일을 원본 그대로 현재 문서 뒤에 이어붙입니다."""
         try:
-            new_doc = fitz.open(path_to_append)
+            # 파일명 인코딩 문제를 방지하기 위해 파일을 바이너리로 읽어서 전달
+            try:
+                with open(path_to_append, 'rb') as f:
+                    pdf_bytes = f.read()
+                new_doc = pdfium.PdfDocument(pdf_bytes)
+            except (UnicodeEncodeError, OSError):
+                # 바이너리 읽기 실패 시 경로 문자열로 직접 시도
+                new_doc = pdfium.PdfDocument(path_to_append)
             # ▼▼▼ [핵심] 이어붙이기 전의 상태를 기록합니다. ▼▼▼
             original_page_count = len(self.doc)
             num_new_pages = len(new_doc)
             # 원본 그대로 이어붙이기
-            self.doc.insert_pdf(new_doc)
+            _pdfium_insert_pdf(self.doc, new_doc)
             new_doc.close()
             # UI 새로고침
             self._set_dirty(True)
@@ -239,13 +465,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # ▲▲▲ 여기까지 변경 ▲▲▲
         except Exception as e:
             _log_error(self, "PDF 이어붙이기 오류", e)
-
+    
     def rotate_page_left(self):
         """현재 페이지를 왼쪽으로 90도 회전합니다."""
         if not self.doc:
             return
-        page = self.doc[self.cur_page_index]
-        new_rotation = (page.rotation - 90) % 360
+        page = self.doc.get_page(self.cur_page_index)
+        current_rotation = page.get_rotation()
+        new_rotation = (current_rotation - 90) % 360
         page.set_rotation(new_rotation)
         self._set_dirty(True)
         self.load_page(self.cur_page_index)  # 화면 새로고침
@@ -255,13 +482,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         """현재 페이지를 오른쪽으로 90도 회전합니다."""
         if not self.doc:
             return
-        page = self.doc[self.cur_page_index]
-        new_rotation = (page.rotation + 90) % 360
+        page = self.doc.get_page(self.cur_page_index)
+        current_rotation = page.get_rotation()
+        new_rotation = (current_rotation + 90) % 360
         page.set_rotation(new_rotation)
         self._set_dirty(True)
         self.load_page(self.cur_page_index)  # 화면 새로고침
         self._populate_thumbnails()  # 썸네일도 새로고침
-
+    
     # ===== ▼▼▼ 스탬프 하이라이트 및 삭제 함수 (새로 추가) ▼▼▼ =====
     def _delete_selected_stamps(self):
         """스탬프 테이블에서 선택된 스탬프들을 삭제합니다."""
@@ -348,7 +576,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         item.setOpacity(stamp_item.opacity)
         item.setZValue(5)
         self._stamp_graphics_items[id(stamp_item)] = item
-
+    
     def _refresh_stamp_table(self):
         """현재 페이지에 있는 스탬프 목록으로 스탬프 테이블을 새로고칩니다."""
         self.stamp_table.setRowCount(0)
@@ -361,7 +589,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             no_item.setTextAlignment(QtCore.Qt.AlignCenter)
             self.stamp_table.setItem(row, 0, no_item)
             self.stamp_table.setItem(row, 1, QtWidgets.QTableWidgetItem(stamp_item.stamp_key))
-
+    
     def _update_stamp_selector(self):
         """self.registered_stamps 목록을 툴바의 ComboBox에 반영합니다."""
         self.stamp_selector.clear()
@@ -371,7 +599,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         else:
             self.stamp_selector.addItems(self.registered_stamps.keys())
             self.stamp_selector.setEnabled(True)
-
+    
     def open_stamp_settings(self):
         """스탬프 설정 대화상자를 엽니다."""
         dialog = StampSettingsDialog(self)
@@ -397,7 +625,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.stamp_rotation_min = new_settings["rotation_min"]
             self.stamp_rotation_max = new_settings["rotation_max"]
             self._set_dirty()  # 설정이 변경되었으므로 저장 필요
-
+    
     def open_stamp_manager(self):
         """스탬프 관리 대화상자를 엽니다."""
         # ▼▼▼ 전역 설정을 딕셔너리로 묶어서 전달합니다. ▼▼▼
@@ -421,7 +649,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 f"{len(self.registered_stamps)}개의 스탬프가 등록되었습니다."
             )
             self._set_dirty()
-
+    
     # ... toggle_flow_view 함수 근처 ...
     def toggle_flow_view(self, checked):
         """흐름도 보기 상태를 변경하고, 화면 전체를 새로고침합니다."""
@@ -441,7 +669,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if hasattr(self, "a_flow_menu"):
             self.a_flow_menu.setChecked(checked)
         self.load_page(self.cur_page_index)
-
+        
     def toggle_numbering_view(self, checked):
         """넘버링 보기 상태를 변경하고, 화면 전체를 새로고침합니다."""
         # 1. 넘버링 보기를 끌 경우, 흐름도 보기도 함께 끕니다.
@@ -457,7 +685,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if hasattr(self, "a_numbering_view_menu"):
             self.a_numbering_view_menu.setChecked(checked)
         self.load_page(self.cur_page_index)
-
+        
     def toggle_stamps_view(self, checked):
         """스탬프 보기 상태를 변경하고, 화면 전체를 새로고침합니다."""
         # print(f"\n>>> [탐침 #3] 스탬프 보기 토글됨: {checked} <<<") # <-- 추가
@@ -466,7 +694,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if hasattr(self, "a_stamps_view_menu"):
             self.a_stamps_view_menu.setChecked(checked)
         self.load_page(self.cur_page_index)
-
+    
     def _format_no(self, no: float) -> str:
         """정수면 '11', 소수면 '11.5'처럼 깔끔하게 표시."""
         return f"{no:.0f}" if abs(no - round(no)) < 1e-9 else f"{no:g}"
@@ -477,7 +705,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.set_input_mode("with_input")
         else:
             self.set_input_mode("number_only")
-
+    
     def _set_dirty(self, dirty: bool = True):
         """파일의 수정 상태(dirty flag)를 설정하고 창 제목을 업데이트합니다."""
         if self.is_dirty == dirty:
@@ -527,7 +755,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._egg_count = 0
         # 필요하면 상태바 메시지 정리:
         # self.statusBar().clearMessage()
-
+    
     def _on_egg_hotkey(self):
         if not self.doc:
             self.statusBar().showMessage(
@@ -561,7 +789,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         reply = QtWidgets.QMessageBox.question(
             self,
             "1단위 재정렬",
-            f"'{start_no_float:g}'번부터 번호를 1단위 정수로 재정렬하시겠습니까?",
+                                           f"'{start_no_float:g}'번부터 번호를 1단위 정수로 재정렬하시겠습니까?",
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No,
         )
@@ -589,7 +817,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 [it for it in self.items if it.no >= start_no_float], key=lambda x: x.no
             )
             items_to_keep = [it for it in self.items if it.no < start_no_float]
-        current_new_no = int(start_no_float)
+        # 중복 방지 로직 추가
+        candidate_start = int(start_no_float)
+        if items_to_keep:
+            max_kept = max(it.no for it in items_to_keep)
+            if max_kept >= candidate_start:
+                candidate_start = int(max_kept) + 1
+        
+        current_new_no = candidate_start
         for item in items_to_renumber:
             item.no = float(current_new_no)
             current_new_no += 1
@@ -605,7 +840,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_status()
         self._set_dirty()
         QtWidgets.QMessageBox.information(self, "완료", "1단위 재정렬이 완료되었습니다.")
-
+    
     def show_table_context_menu(self, pos):
         """Show table context menu with all features. (TableManager delegation)"""
         return self.table_manager.show_table_context_menu(pos)
@@ -646,11 +881,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             panel_width = self.widget_3d.width() - 20  # 좌우 10px씩 여백
             # 패널 높이: 현재 90px의 75% = 67.5px → 68px
             self.integrated_control_panel.setFixedSize(panel_width, 68)  # 높이 75%로 조정
-            # 반투명 배경 설정
+            # 불투명 배경 설정 (회색 배경, 완전 불투명)
             self.integrated_control_panel.setStyleSheet("""
                 QWidget {
-                    background-color: rgba(40, 40, 40, 200);
-                    border: 1px solid rgba(80, 80, 80, 200);
+                    background-color: rgba(128, 128, 128, 255);
+                    border: 1px solid rgba(100, 100, 100, 255);
                     border-radius: 6px;
                 }
             """)
@@ -689,7 +924,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 뷰 모드 버튼들 생성 (크기 절반으로 조정)
             self.shading_btn = QtWidgets.QPushButton()
             self.shading_btn.setCheckable(True)
-            self.shading_btn.setChecked(True)
+            self.shading_btn.setChecked(False)
             self.shading_btn.setFixedSize(32, 32)  # 버튼 크기 절반으로 조정
             self.shading_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)  # 크기 고정
             self.shading_btn.setToolTip("음영처리")
@@ -711,6 +946,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
             self.edges_btn = QtWidgets.QPushButton()
             self.edges_btn.setCheckable(True)
+            self.edges_btn.setChecked(True)  # 기본값: 모서리 표시 음영
             self.edges_btn.setFixedSize(32, 32)  # 버튼 크기 절반으로 조정
             self.edges_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)  # 크기 고정
             self.edges_btn.setToolTip("모서리 표시 음영")
@@ -806,7 +1042,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 일반 뷰 버튼 (크기 절반으로 조정)
             self.normal_view_btn = QtWidgets.QPushButton()
             self.normal_view_btn.setCheckable(True)
-            self.normal_view_btn.setChecked(False)  # 기본값은 투시도
+            self.normal_view_btn.setChecked(True)  # 기본값: 일반 뷰 (Orthographic)
             self.normal_view_btn.setFixedSize(32, 32)  # 버튼 크기 절반으로 조정
             self.normal_view_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)  # 크기 고정
             self.normal_view_btn.setToolTip("일반 뷰 (Orthographic): 원근감 없음, 정확한 치수 표시")
@@ -839,7 +1075,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 투시도 버튼 (크기 절반으로 조정)
             self.perspective_btn = QtWidgets.QPushButton()
             self.perspective_btn.setCheckable(True)
-            self.perspective_btn.setChecked(True)  # 기본값은 투시도
+            self.perspective_btn.setChecked(False)  # 기본값은 일반 뷰
             self.perspective_btn.setFixedSize(32, 32)  # 버튼 크기 절반으로 조정
             self.perspective_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)  # 크기 고정
             self.perspective_btn.setToolTip("투시도 (Perspective): 원근감 있음, 현실적인 시각화")
@@ -874,6 +1110,159 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             projection_button_group.addButton(self.normal_view_btn, 0)
             projection_button_group.addButton(self.perspective_btn, 1)
             projection_button_group.setExclusive(True)
+
+            # === 치수 측정 섹션 ===
+            measure_frame = QtWidgets.QFrame()
+            measure_frame.setStyleSheet("""
+                QFrame {
+                    background-color: rgba(60, 60, 60, 150);
+                    border: 1px solid rgba(100, 100, 100, 150);
+                    border-radius: 4px;
+                }
+            """)
+            measure_layout = QtWidgets.QHBoxLayout(measure_frame)
+            measure_layout.setContentsMargins(8, 8, 8, 8)  # 뷰모드와 동일
+            measure_layout.setSpacing(8)
+
+            # 치수 측정 라벨 (뷰모드와 동일한 스타일)
+            measure_label = QtWidgets.QLabel("치수측정")
+            measure_label.setStyleSheet("""
+                QLabel {
+                    color: white;
+                    font-weight: bold;
+                    font-size: 10px;
+                    border: 2px solid rgba(255, 255, 255, 200);
+                    border-radius: 3px;
+                    padding: 2px 4px;
+                }
+            """)
+            measure_layout.addWidget(measure_label)
+
+            # === 치수 측정 툴(3개) ===
+            # 요구사항:
+            #   - ruler.png(거리), radius_measure.png(R), diameter_measure.png(Φ) 3개 아이콘 버튼
+            #   - 셋 중 하나만 선택(토글)되며, 선택된 버튼을 다시 누르면 측정 모드 종료
+            #
+            # UX:
+            #   - 측정 모드 ON/OFF는 별도 버튼이 아니라 "툴 선택 상태"로 동작합니다.
+            #   - Shift+좌클릭은 측정용으로만 사용하고, 일반 좌클릭은 카메라 조작을 유지합니다.
+
+            # 공통 스타일(기본/hover). checked 컬러는 버튼별로 다르게 적용합니다.
+            tool_btn_style_base = """
+                QPushButton {
+                    background-color: rgba(60, 60, 60, 150);
+                    border: none;
+                    border-radius: 4px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(80, 80, 80, 180);
+                }
+            """
+
+            def _mk_tool_btn(checked_bg_rgba: str, checked_border_rgba: str) -> QtWidgets.QPushButton:
+                btn = QtWidgets.QPushButton()
+                btn.setCheckable(True)
+                btn.setFixedSize(32, 32)
+                btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+                btn.setStyleSheet(
+                    tool_btn_style_base
+                    + f"""
+                    QPushButton:checked {{
+                        background-color: {checked_bg_rgba};
+                        border: 2px solid {checked_border_rgba};
+                    }}
+                    """
+                )
+                return btn
+
+            # 거리(두 점) 버튼: 기존 이름(self.measure_btn)을 유지해 다른 코드 영향 최소화
+            # - 주황(기존 ruler와 동일 톤)
+            self.measure_btn = _mk_tool_btn(
+                checked_bg_rgba="rgba(200, 150, 100, 220)",
+                checked_border_rgba="rgba(255, 200, 150, 255)",
+            )
+            self.measure_btn.setToolTip("거리 측정(D): Shift+좌클릭으로 두 점 선택")
+
+            # - 시안(반경)
+            self.measure_radius_btn = _mk_tool_btn(
+                checked_bg_rgba="rgba(80, 170, 200, 220)",
+                checked_border_rgba="rgba(160, 240, 255, 255)",
+            )
+            self.measure_radius_btn.setToolTip("반경 측정(R): Shift+좌클릭으로 원/홀(엣지) 클릭")
+
+            # 아이콘 설정 (없어도 동작)
+            try:
+                from utils.helpers import icon_if
+
+                ruler_icon = icon_if("resources/icons/ruler.png")
+                if ruler_icon and not ruler_icon.isNull():
+                    self.measure_btn.setIcon(ruler_icon)
+                    self.measure_btn.setIconSize(QtCore.QSize(28, 28))
+
+                r_icon = icon_if("resources/icons/radius_measure.png")
+                if r_icon and not r_icon.isNull():
+                    self.measure_radius_btn.setIcon(r_icon)
+                    self.measure_radius_btn.setIconSize(QtCore.QSize(28, 28))
+            except Exception:
+                pass
+
+            measure_layout.addWidget(self.measure_btn)
+            measure_layout.addWidget(self.measure_radius_btn)
+
+            # 버튼 클릭 연결 (독점 토글 + 재클릭 시 종료 동작은 슬롯에서 처리)
+            self.measure_btn.clicked.connect(lambda: self._on_measure_tool_clicked("distance"))
+            self.measure_radius_btn.clicked.connect(lambda: self._on_measure_tool_clicked("radius"))
+
+            # 스냅 옵션을 오른쪽으로 최대한 보내기
+            measure_layout.addStretch()
+
+            # 스냅 옵션 레이아웃 (2x2 그리드)
+            snap_grid_layout = QtWidgets.QGridLayout()
+            snap_grid_layout.setSpacing(4)
+
+            # 공통 스타일 정의
+            snap_checkbox_style = """
+                QCheckBox {
+                    color: white;
+                    font-size: 8px;
+                }
+                QCheckBox::indicator {
+                    width: 10px;
+                    height: 10px;
+                }
+            """
+
+            # 스냅 옵션 체크박스들 (2x2 그리드)
+            self.snap_endpoint_cb = QtWidgets.QCheckBox("End")
+            self.snap_endpoint_cb.setChecked(True)  # 기본값: 활성화
+            self.snap_endpoint_cb.setToolTip("엔드포인트 스냅")
+            self.snap_endpoint_cb.setStyleSheet(snap_checkbox_style)
+            self.snap_endpoint_cb.toggled.connect(self._on_snap_option_changed)
+            snap_grid_layout.addWidget(self.snap_endpoint_cb, 0, 0)
+
+            self.snap_midpoint_cb = QtWidgets.QCheckBox("Mid")
+            self.snap_midpoint_cb.setChecked(True)  # 기본값: 활성화
+            self.snap_midpoint_cb.setToolTip("중간점 스냅")
+            self.snap_midpoint_cb.setStyleSheet(snap_checkbox_style)
+            self.snap_midpoint_cb.toggled.connect(self._on_snap_option_changed)
+            snap_grid_layout.addWidget(self.snap_midpoint_cb, 0, 1)
+
+            self.snap_center_cb = QtWidgets.QCheckBox("Cen")
+            self.snap_center_cb.setChecked(True)  # 기본값: 활성화
+            self.snap_center_cb.setToolTip("중심점 스냅")
+            self.snap_center_cb.setStyleSheet(snap_checkbox_style)
+            self.snap_center_cb.toggled.connect(self._on_snap_option_changed)
+            snap_grid_layout.addWidget(self.snap_center_cb, 1, 0)
+
+            # Near 옵션 추가 (가장 가까운 점)
+            self.snap_near_cb = QtWidgets.QCheckBox("Near")
+            self.snap_near_cb.setChecked(True)  # 기본값: 활성화
+            self.snap_near_cb.setToolTip("가장 가까운 점 스냅")
+            self.snap_near_cb.setStyleSheet(snap_checkbox_style)
+            self.snap_near_cb.toggled.connect(self._on_snap_option_changed)
+            snap_grid_layout.addWidget(self.snap_near_cb, 1, 1)
+
+            measure_layout.addLayout(snap_grid_layout)
 
             # === 컬러 컨트롤 섹션 ===
             color_control_frame = QtWidgets.QFrame()
@@ -958,6 +1347,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 메인 레이아웃에 섹션들 추가
             main_layout.addWidget(view_mode_frame)
             main_layout.addWidget(projection_frame)
+            main_layout.addWidget(measure_frame)
             main_layout.addWidget(color_control_frame)
             main_layout.addStretch()
             # ��Ʈ�� �г��� 3D ����� ��Ȯ�� ���� ��� ���� ��ġ
@@ -973,6 +1363,101 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             import traceback
 
             traceback.print_exc()
+
+    def _setup_3d_axis_navigator(self):
+        """
+        3D 뷰어 좌측 하단에 XYZ 축 네비게이터를 표시합니다.
+        """
+        if not hasattr(self, "plotter") or self.plotter is None:
+            return
+        axis_widget_ready = False
+        try:
+            if hasattr(self, "_axis_widget") and self._axis_widget is not None:
+                try:
+                    self._axis_widget.EnabledOff()
+                except Exception:
+                    try:
+                        self._axis_widget.SetEnabled(0)
+                    except Exception:
+                        pass
+                self._axis_widget = None
+
+            try:
+                # Prefer VTK orientation marker for a stable in-render navigator.
+                from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
+                from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
+
+                axes = vtkAxesActor()
+                axes.AxisLabelsOn()
+                axes.SetTotalLength(0.8, 0.8, 0.8)
+
+                marker = vtkOrientationMarkerWidget()
+                marker.SetOrientationMarker(axes)
+                marker.SetInteractor(self.plotter.interactor)
+                marker.SetViewport(0.0, 0.0, 0.2, 0.2)
+                marker.SetEnabled(1)
+                marker.InteractiveOff()
+
+                self._axis_widget = marker
+                axis_widget_ready = True
+            except Exception:
+                pass
+
+            if not axis_widget_ready:
+                # Fallback to PyVista axes if the VTK marker is unavailable.
+                try:
+                    self._axis_widget = self.plotter.add_axes(
+                        interactive=False,
+                        line_width=2,
+                        labels=True,
+                        x_color="red",
+                        y_color="green",
+                        z_color="blue",
+                        viewport=(0.0, 0.0, 0.2, 0.2),
+                    )
+                    axis_widget_ready = True
+                except TypeError:
+                    self._axis_widget = self.plotter.add_axes(
+                        interactive=False,
+                        line_width=2,
+                        labels=True,
+                        x_color="red",
+                        y_color="green",
+                        z_color="blue",
+                    )
+                    axis_widget_ready = True
+        except Exception as e:
+            print(f"axis navigator setup failed: {e}")
+
+        if axis_widget_ready:
+            try:
+                self.plotter.render()
+            except Exception:
+                pass
+
+        try:
+            if hasattr(self, "_axis_nav_widget") and self._axis_nav_widget is not None:
+                self._axis_nav_widget.deleteLater()
+                self._axis_nav_widget = None
+            if not axis_widget_ready:
+                # Final fallback: a lightweight Qt overlay widget.
+                self._axis_nav_widget = AxisNavigatorWidget(self.widget_3d)
+                self._axis_nav_widget.show()
+                self._position_axis_navigator()
+                QtCore.QTimer.singleShot(0, self._position_axis_navigator)
+        except Exception as e:
+            print(f"axis overlay setup failed: {e}")
+
+    def _position_axis_navigator(self):
+        widget_3d = getattr(self, "widget_3d", None)
+        axis_widget = getattr(self, "_axis_nav_widget", None)
+        if widget_3d is None or axis_widget is None:
+            return
+        margin = 16
+        x = margin
+        y = max(margin, widget_3d.height() - axis_widget.height() - margin)
+        axis_widget.move(x, y)
+        axis_widget.raise_()
 
     def _create_color_palette(self):
         """
@@ -1146,7 +1631,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if hasattr(self, 'plotter'):
             self.viewport_manager.set_plotter(self.plotter)
         return self.viewport_manager.reset_3d_colors()
-
+    
     def show_about_dialog(self):
         """프로그램 정보 대화상자를 띄웁니다."""
         about_text = f"""
@@ -1157,7 +1642,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             <p>Copyright © 2025 Taesung Engineering. All rights reserved.</p>
         """
         QtWidgets.QMessageBox.about(self, f"{APP_NAME} 정보", about_text)
-
+    
     # =====================================================================
     #  Windows 메뉴 - 도킹 윈도우 토글 함수들
     # =====================================================================
@@ -1280,7 +1765,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 f"도움말 창을 여는 중 오류가 발생했습니다:\n\n{e}\n\n{traceback.format_exc()}"
             )
             QtWidgets.QMessageBox.critical(self, "도움말 창 오류", error_details)
-
+        
     # 프로젝트 저장관련 교체.
     def _cmd_export_pdf(self):
         try:
@@ -1305,12 +1790,88 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "TS Numbering", "내보내기 완료:\n" + path)
         except Exception as e:
             _log_error(self, "PDF 내보내기 오류", e)
-
+                
     # v3.26에서 동째로 교체...... 안에 주석도 많이 날아감..
     # 새로 하려니 많이 귀찮아서 그냥 했음...ㅠㅠㅠ v3.26에서..
     # 이스터에크... 사격모드 함수!! v3.30에서..
+    def _load_shooting_resources(self):
+        """
+        사격 모드 리소스를 지연 로딩합니다.
+        시작 속도 개선을 위해 사격 모드 진입 시에만 로드됩니다.
+        한 번만 로드하고 캐시합니다.
+        """
+        if self._shooting_resources_loaded:
+            return  # 이미 로드됨
+        
+        try:
+            # 1. 이미지 리소스 로드
+            self.crosshair_pixmap = QtGui.QPixmap(
+                resource_path("resources/ester_egg/gun.png")
+            )
+            
+            # 탄피 이미지
+            self.shell_pixmaps = []
+            for name in [f"shell{i}.png" for i in range(1, 6)]:
+                pm = QtGui.QPixmap(resource_path(f"resources/ester_egg/{name}"))
+                if not pm.isNull():
+                    self.shell_pixmaps.append(pm)
+            self.enable_shell = bool(self.shell_pixmaps)
+            
+            # 혈흔 이미지
+            self.bullet_hole_pixmaps = []
+            for name in [f"blood{i}.png" for i in range(1, 6)]:
+                pm = QtGui.QPixmap(resource_path(f"resources/ester_egg/{name}"))
+                if not pm.isNull():
+                    self.bullet_hole_pixmaps.append(pm)
+            
+            # 폴백: 위에서 아무 것도 못 찾으면 기존 blood.png라도 사용
+            if not self.bullet_hole_pixmaps:
+                fallback_pm = QtGui.QPixmap(resource_path("resources/ester_egg/blood.png"))
+                if not fallback_pm.isNull():
+                    self.bullet_hole_pixmaps = [fallback_pm]
+            
+            # 2. 사운드 리소스 로드
+            self.gun_sound_url = QtCore.QUrl.fromLocalFile(
+                resource_path("resources/ester_egg/gun_sound.wav")
+            )
+            
+            # 3. 사운드 시스템 초기화
+            try:
+                from PySide6.QtMultimedia import QSoundEffect
+                
+                # 사운드 시스템 pre-load
+                prime_effect = QSoundEffect(self)
+                silent_url = QtCore.QUrl.fromLocalFile(
+                    resource_path("resources/ester_egg/silent_prime.wav")
+                )
+                prime_effect.setSource(silent_url)
+                prime_effect.play()
+                
+                self.sound_effect = QSoundEffect(self)
+                self.sound_effect.setSource(self.gun_sound_url)
+                self.sound_effect.setVolume(1.0)
+            except Exception as e:
+                print(f"Sound loading failed: {e}")
+                self.sound_effect = None
+            
+            self._shooting_resources_loaded = True
+            print("Shooting mode resources loaded.")
+            
+        except Exception as e:
+            print(f"Failed to load shooting resources: {e}")
+            # 폴백: 최소한의 리소스라도 로드 시도
+            self._shooting_resources_loaded = False
+    
     def toggle_shooting_mode(self, enable: bool):
         """이스터에그인 사격 모드를 켜거나 끄고, 다른 UI를 잠금/해제합니다."""
+        if not enable and not getattr(self, "shooting_mode", False):
+            return
+        
+        # ▼▼▼ 리소스 지연 로딩 (시작 속도 개선) ▼▼▼
+        if enable and not self._shooting_resources_loaded:
+            self._load_shooting_resources()
+        # ▲▲▲ 여기까지 추가 ▲▲▲
+        
         self.shooting_mode = enable
         # 잠금/해제할 UI 요소들을 리스트로 관리
         ui_elements = [self.menuBar(), self.main_toolbar, self.page_dock, self.dock]
@@ -1318,12 +1879,15 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # [사격 모드 진입]
             if self._preview_text:
                 self._preview_text.setVisible(False)
-            cursor = QtGui.QCursor(
-                self.crosshair_pixmap.scaled(
-                    64, 64, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
+            
+            # 리소스가 로드되었는지 확인
+            if self.crosshair_pixmap and not self.crosshair_pixmap.isNull():
+                cursor = QtGui.QCursor(
+                    self.crosshair_pixmap.scaled(
+                        64, 64, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
+                    )
                 )
-            )
-            self.view.setCursor(cursor)
+                self.view.setCursor(cursor)
             self.statusBar().showMessage("사격 모드 활성화! (해제: Ctrl+F11)")
             # 모든 UI 요소를 비활성화(잠금)
             for element in ui_elements:
@@ -1341,7 +1905,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 모든 UI 요소를 다시 활성화
             for element in ui_elements:
                 element.setEnabled(True)
-
+    
     def _create_sub_separator(self):
         """여백(9px)을 포함한 서브 구분선 위젯을 생성합니다."""
         # 전체를 담을 컨테이너 위젯
@@ -1403,7 +1967,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         else:  # "solid"
             self.action_cycle_line_style.setIcon(self.solid_icon)
             self.action_cycle_line_style.setToolTip("선 스타일: 실선 (클릭해서 변경)")
-
+    
     # ▼▼▼ 아래 2개 함수를 새로 추가해주세요 ▼▼▼
     def _cycle_arrow_style(self):
         """흐름도의 선 끝 스타일을 none -> arrow -> circle 순서로 변경합니다."""
@@ -1432,7 +1996,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         else:  # "arrow"
             self.action_cycle_arrow_style.setIcon(self.arrow_arrow_icon)
             self.action_cycle_arrow_style.setToolTip("선 끝 모양: 화살표 (클릭해서 변경)")
-
+    
     def _create_toolbar_group(self, actions, text_label):
         """버튼(Action) 리스트와 제목을 받아 하나의 그룹 상자 위젯을 생성합니다. (UIManager로 위임)"""
         return self.ui_manager.create_toolbar_group(actions, text_label)
@@ -1577,7 +2141,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.stamp_button.clicked.connect(self._cycle_next_stamp)
         # --- 그룹별 레이아웃 구성 ---
         group1_actions = [self.action_undo, self.action_redo]
-
+        
         # === 모드 선택 그룹 ===
         # 넘버링 / 스탬프 / 보기 모드를 개별 아이콘으로 선택
         self.mode_action_group = QtGui.QActionGroup(self)
@@ -1678,7 +2242,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         group3_actions = [self.action_highlight_toolbar, self.action_toggle_start_end]
         # ▼▼▼ 새로운 회전 그룹 추가 ▼▼▼
         group_rotate_actions = [self.action_rotate_left, self.action_rotate_right]
-        
+
         # 색상 아이콘 로드
         circle_color_icon = icon_if("resources/icons/circle_color.png")
         text_color_icon = icon_if("resources/icons/text_color.png")
@@ -1725,8 +2289,47 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         main_layout.addSpacing(18)
         main_layout.addWidget(self._create_toolbar_group(group4_actions, "라벨 및 흐름도 서식"))
         main_layout.addStretch(1)
+        # ▼▼▼ [추가] 뷰어 레이아웃 선택 버튼 3개 추가 ▼▼▼
+        # 레이아웃 아이콘 로드
+        icon_tab = icon_if("resources/icons/tab_windows.png")
+        icon_horizontal = icon_if("resources/icons/horizontal_windows.png")
+        icon_vertical = icon_if("resources/icons/vertical_windows.png")
+        
+        # 레이아웃 액션 생성 (QAction 생성자 올바른 사용법)
+        self.action_layout_tab = QtGui.QAction(self)
+        self.action_layout_tab.setIcon(icon_tab)
+        self.action_layout_tab.setText("탭")
+        self.action_layout_tab.setToolTip("탭 모드")
+        self.action_layout_tab.setCheckable(True)
+        self.action_layout_tab.setChecked(True)  # 기본값
+        self.action_layout_tab.triggered.connect(lambda: self._set_viewer_layout("tab"))
+        
+        self.action_layout_horizontal = QtGui.QAction(self)
+        self.action_layout_horizontal.setIcon(icon_horizontal)
+        self.action_layout_horizontal.setText("가로")
+        self.action_layout_horizontal.setToolTip("가로 2분할")
+        self.action_layout_horizontal.setCheckable(True)
+        self.action_layout_horizontal.triggered.connect(lambda: self._set_viewer_layout("horizontal_split"))
+        
+        self.action_layout_vertical = QtGui.QAction(self)
+        self.action_layout_vertical.setIcon(icon_vertical)
+        self.action_layout_vertical.setText("세로")
+        self.action_layout_vertical.setToolTip("세로 2분할")
+        self.action_layout_vertical.setCheckable(True)
+        self.action_layout_vertical.triggered.connect(lambda: self._set_viewer_layout("vertical_split"))
+        
+        # 배타적 버튼 그룹으로 묶기
+        layout_action_group = QtGui.QActionGroup(self)
+        layout_action_group.setExclusive(True)
+        layout_action_group.addAction(self.action_layout_tab)
+        layout_action_group.addAction(self.action_layout_horizontal)
+        layout_action_group.addAction(self.action_layout_vertical)
+        
+        layout_actions = [self.action_layout_tab, self.action_layout_horizontal, self.action_layout_vertical]
+        main_layout.addWidget(self._create_toolbar_group(layout_actions, "뷰어 레이아웃"))
+        # ▲▲▲ 여기까지 추가 ▲▲▲
         self.main_toolbar.addWidget(custom_toolbar_widget)
-
+    
     # ===== ▼▼▼ 모드 전환 및 시각적 업데이트 함수 (새로 추가) ▼▼▼ =====
     def _cycle_active_mode(self):
         """활성 모드를 현재 '보기' 설정에 따라 동적으로 순환시킵니다."""
@@ -1755,7 +2358,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.active_mode = available_modes[next_index]
         # 5. UI를 새 모드에 맞게 업데이트합니다.
         self._sync_ui_to_current_mode()
-
+        
     def _set_active_mode_from_action(self, mode: str):
         """
         모드 선택 리본(모드 선택 탭)에서 호출되는 헬퍼.
@@ -1795,7 +2398,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 이미 넘버링 모드인 경우에도 체크 상태만 업데이트
             if hasattr(self, "a_mode_numbering_menu"):
                 self.a_mode_numbering_menu.setChecked(True)
-
+        
     # ===== ▼▼▼ 스탬프 버튼 관련 함수 3개 (새로 추가) ▼▼▼ =====
     def _get_current_stamp_key(self) -> Optional[str]:
         """현재 인덱스에 해당하는 스탬프의 키(이름)를 반환합니다. (StampManager로 위임)"""
@@ -1808,9 +2411,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def _cycle_next_stamp(self):
         """다음 스탬프로 순환시킵니다. (StampManager로 위임)"""
         return self.stamp_manager.cycle_next_stamp()
-
+        
     # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
-    # ... _cycle_next_stamp 함수 아래에 추가 ...
+        # ... _cycle_next_stamp 함수 아래에 추가 ...
     # ===== ▼▼▼ 미리보기 버튼 관련 함수 2개 (새로 추가) ▼▼▼ =====
     def _update_preview_button_visuals(self):
         """현재 미리보기 모드에 맞춰 버튼 체크 상태를 업데이트합니다."""
@@ -1902,7 +2505,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.dock_stack.setCurrentWidget(self.stamp_table)
             self._update_stamp_button_icon()
             # ▼▼▼ [핵심] 십자선/투명 커서 대신 일반 화살표 커서로 변경합니다. ▼▼▼
-            self.view.setCursor(QtCore.Qt.ArrowCursor)
+            self.view.setCursor(QtCore.Qt.ArrowCursor) 
             # ▲▲▲ 여기까지 수정 ▲▲▲
         else:  # "view" 모드
             self.dock_stack.setCurrentWidget(self.table)
@@ -1925,12 +2528,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     lambda key=stamp_keys[i]: self._select_stamp_by_key(key)
                 )
                 self.stamp_shortcuts.append(sc_select)
-
+    
     def __init__(self, pdf_path: Optional[str] = None):
         super().__init__()
         # --- 개발자 모드 및 평가판 기능 ---
 
-        DEV_MODE = False  # 트라이얼 버전: False로 설정하여 트라이얼 체크 활성화
+        DEV_MODE = False  # 배포 시 False로 변경
 
         trial_message = ""
         self.trial_days_left = 0
@@ -1952,18 +2555,29 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.setWindowTitle(f"{APP_NAME} ({APP_VER}){trial_message}")
         self.resize(1400, 800)  # 윈도우 크기를 줄여서 테이블에 맞춤
         # ▼▼▼ 탭 위젯 설정 코드 (삽입) ▼▼▼
-        # 1. 탭 위젯을 생성하고 중앙에 배치합니다.
-        self.tab_widget = QtWidgets.QTabWidget()
-        self.setCentralWidget(self.tab_widget)
-        # 2. 기존의 PDF 뷰어를 첫 번째 탭에 추가합니다.
+        # 1. 2D 뷰어 생성
         self.scene = PdfScene(self)
         self.view = PdfView(self.scene, self)
-        self.tab_widget.addTab(self.view, "2D View")
-        # 3. 3D 뷰어를 위한 두 번째 탭을 만듭니다. (지금은 빈 공간)
+        # 2. 3D 뷰어 위젯 생성
         self.vlayout_3d = QtWidgets.QVBoxLayout()
+        self.vlayout_3d.setContentsMargins(0, 0, 0, 0)
+        self.vlayout_3d.setSpacing(0)
         self.widget_3d = QtWidgets.QWidget()
+        # ▼▼▼ [수정] 3D 뷰어 배경을 흰색으로 설정하여 2D PDF가 보이지 않도록 함 ▼▼▼
+        self.widget_3d.setStyleSheet("background-color: white;")
+        self.widget_3d.setAutoFillBackground(True)  # 배경을 자동으로 채우도록 설정
+        # widget_3d를 완전히 불투명하게 설정
+        self.widget_3d.setAttribute(QtCore.Qt.WA_OpaquePaintEvent, True)
+        # ▲▲▲ 여기까지 추가 ▲▲▲
         self.widget_3d.setLayout(self.vlayout_3d)
-        self.tab_widget.addTab(self.widget_3d, "3D View")
+        # 3. 중앙 뷰어 컨테이너 생성 (도크 위젯들은 유지하고 뷰어 영역만 변경)
+        self.viewer_container = QtWidgets.QWidget()
+        self.viewer_container_layout = QtWidgets.QVBoxLayout(self.viewer_container)
+        self.viewer_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.viewer_container_layout.setSpacing(0)
+        self.setCentralWidget(self.viewer_container)
+        # 4. 초기 레이아웃 설정 (기본값: 탭 모드)
+        self._set_viewer_layout("tab")
         # 신호/슬롯 연결
         self.scene.clicked.connect(self.on_clicked)
         self.scene.moved.connect(self.on_scene_moved)
@@ -1980,6 +2594,33 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.model_path = None
         self.doc = None
         self.cur_page_index = 0
+        # === 치수 측정 관련 변수 초기화 ===
+        self.measure_mode_active = False
+        self.measure_points = []
+        self.measure_actors = []
+        self.measure_meshes = []  # 스냅 계산을 위한 메시 객체들 (실시간 계산)
+        # NOTE: 3D 모델 좌표계는 "meter"로 들어오는 케이스가 많습니다(STEP/STP 등).
+        # 스냅 반경을 5mm 기준으로 잡되, 실제 계산은 meter 단위로 맞춥니다.
+        # 5mm = 0.005m
+        self.measure_snap_distance = 0.005  # 스냅 거리 (meter 단위, 기본값 5mm)
+        # 스냅 포인트 미리보기 관련 변수
+        self.measure_snap_preview_actor = None  # 미리보기 마커 액터
+        self.measure_snap_preview_raw_actor = None  # RAW(스냅 전) 미리보기 마커
+        self.measure_hover_timer = None  # 호버 타이머
+        self.measure_last_mouse_pos = None  # 마지막 마우스 위치
+        self.measure_hover_delay = 1000  # 호버 감지 지연 시간 (ms)
+        # 스냅 캐시(모서리 표시 음영의 feature edges 라인 기반)
+        self._snap_edge_cache = None
+        # 표면(메시) 기반 반경 추정(필렛/코너 라운드)용 캐시
+        # - key: id(vtkPolyData), value: {"mtime": int, "points_np": np.ndarray, "locator": vtkPointLocator}
+        self._surface_point_locator_cache = {}
+        self._measure_hover_seen = False  # 호버 이벤트가 실제로 들어오는지 확인용
+        # 치수 측정 서브모드:
+        # - distance: Shift+좌클릭 2점 거리(기존 기능)
+        # - radius:   Shift+좌클릭 1회로 원/홀의 R(반경) 추정
+        # - diameter: Shift+좌클릭 1회로 원/홀의 Φ(지름) 추정
+        # Why: 본 앱은 전문 측정 도구가 아니라 넘버링 전 "간단 확인" 용도이므로, 토글 방식이 직관적입니다.
+        self.measure_submode = "distance"
         self.numbering_mode = "global"  # <--- 이 줄을 추가해주세요
         self.flow_items = []  # <--- 이 줄을 추가해주세요
         # ===== ▼▼▼ [추가] 페이지 연결점 색상표 ▼▼▼ =====
@@ -2002,10 +2643,20 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
         self.is_dirty = False  # ===== ▼▼▼ 이 줄을 추가해주세요 ▼▼▼ =====
         self.style_clipboard = None  # ===== ▼▼▼ 이 줄을 추가해주세요 ▼▼▼ =====
+        # ▼▼▼ [추가] 뷰어 레이아웃 모드 설정 (tab, horizontal_split, vertical_split) ▼▼▼
+        self.viewer_layout_mode = "tab"  # 기본값: 탭 모드
+        # ▲▲▲ 여기까지 추가 ▲▲▲
         self.render_scale = 2
         self.auto_highres = True
+        # 확대/축소 시 중복 렌더링 방지를 위한 변수
+        self._zoom_rerender_timer = None
+        self._is_rerendering = False
+        self._last_zoom_time = 0  # 마지막 줌 이벤트 시간
+        self._zoom_call_count = 0  # 짧은 시간 내 줌 호출 횟수
+        self._last_zoom_time = 0  # 마지막 줌 이벤트 시간
+        self._zoom_call_count = 0  # 짧은 시간 내 줌 호출 횟수
         # ===== ▼▼▼ 보기/숨기기 상태 변수 추가/수정 ▼▼▼ =====
-        self.flow_view_enabled = True  # 흐름도 (디폴트 ON)
+        self.flow_view_enabled = False  # 흐름도 (디폴트 OFF)
         self.view_show_numbering = True  # 넘버링 (디폴트 ON)
         self.view_show_stamps = True  # 스탬프 (디폴트 ON)
         # ===== ▲▲▲ 여기까지 추가/수정 ▲▲▲ =====
@@ -2023,6 +2674,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._preview_text = None
         self._highlight_ellipse = None
         self._highlight_item_no = None
+        self._detail_box_items = []
+        self._detail_box_item = None
+        self._detail_box_show_x = False
+        self._detail_box_rect = None
+        self._detail_box_text = None
         self.highlight_color = QtGui.QColor(0x39, 0xFF, 0x14)
         self.insert_mode = False
         self.insert_option = None
@@ -2048,50 +2704,31 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.stamp_rotation_min = -5.0  # 기본값: -5도 ~ 5도
         self.stamp_rotation_max = 5.0
         # ▲▲▲ 여기까지 추가 ▲▲▲
-        # ===== ▼▼▼ 이스터에그(사격 모드) 변수 추가/수정 ▼▼▼ =====
+        # ===== ▼▼▼ 이스터에그(사격 모드) 변수 - 지연 로딩 버전 ▼▼▼ =====
         self.shooting_mode = False
         self.bullet_hole_items = []
-        self.crosshair_pixmap = QtGui.QPixmap(
-            resource_path("resources/ester_egg/gun.png")
-        )  # 경로 수정
-        # ── 탄피: 리소스/상태 ───────────────────────────────────────────
-        self.shell_pixmaps = []
-        for name in [f"shell{i}.png" for i in range(1, 6)]:
-            pm = QtGui.QPixmap(resource_path(f"resources/ester_egg/{name}"))  # 경로 수정
-            if not pm.isNull():
-                self.shell_pixmaps.append(pm)
-        # 폴백(이미지가 하나도 없을 때는 로직 비활성화)
-        self.enable_shell = bool(self.shell_pixmaps)
+        
+        # 리소스를 None으로 초기화 (시작 시 로드하지 않음 - 시작 속도 개선)
+        self.crosshair_pixmap = None
+        self.shell_pixmaps = None
+        self.bullet_hole_pixmaps = None
+        self.gun_sound_url = None
+        self.sound_effect = None
+        self.sound_volume = 1.0
+        self._shooting_resources_loaded = False  # 로드 상태 플래그
+        
+        # 탄피 물리/타이머는 사격 모드 진입 전에 초기화 (타이머 객체는 가벼움)
         self.shell_items = (
             []
         )  # [{'item':QGraphicsPixmapItem,'vx':..,'vy':..,'spin':..,'life':..}, ...]
-        # ▼▼▼ [핵심] 누락된 탄피 타이머 초기화 코드를 추가합니다. ▼▼▼
-        # ── 탄피 물리/타이머(60FPS 근사) ────────────────────────────────
         self._shell_timer = QtCore.QTimer(self)
         self._shell_timer.setInterval(16)
         self._shell_timer.timeout.connect(self._tick_shells)
-        # ▲▲▲ 여기까지 추가 ▲▲▲
         # 픽셀/초 단위 튜닝 파라미터(필요시 조절)
         self._shell_gravity = 1200.0  # 중력가속도(px/s^2)
         self._shell_air_drag = 0.15  # 공기저항(속도 감쇠 비율)
         self._shell_floor_y = None  # 바닥 Y(없으면 화면 밖까지 날게 둠)
-        # 여러 장의 혈흔 스프라이트를 미리 로드
-        self.bullet_hole_pixmaps = []
-        for name in [f"blood{i}.png" for i in range(1, 6)]:  # blood1~5.png
-            pm = QtGui.QPixmap(resource_path(f"resources/ester_egg/{name}"))  # 경로 수정
-            if not pm.isNull():
-                self.bullet_hole_pixmaps.append(pm)
-        # 폴백: 위에서 아무 것도 못 찾으면 기존 blood.png라도 사용
-        if not self.bullet_hole_pixmaps:
-            fallback_pm = QtGui.QPixmap(resource_path("resources/ester_egg/blood.png"))  # 경로 수정
-            if not fallback_pm.isNull():
-                self.bullet_hole_pixmaps = [fallback_pm]
-        # self.gun_sound -> self.gun_sound_url 로 이름을 변경하고 아래와 같이 수정합니다.
-        self.gun_sound_url = QtCore.QUrl.fromLocalFile(
-            resource_path("resources/ester_egg/gun_sound.wav")
-        )  # 경로 수정
-        self.sound_effect = None  # 사운드 플레이어를 저장할 변수
-        self.sound_volume = 1.0  # 사운드 볼륨 (0.0 ~ 1.0)
+        self.enable_shell = False  # 리소스 로드 후 True로 설정
         # ===== ▲▲▲ 여기까지 교체 ▲▲▲ =====
         # === Secret hotkey (Ctrl+F12 x4) state ===
         self._egg_required = 4  # 필요한 연속 입력 횟수
@@ -2100,22 +2737,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._egg_timer = QtCore.QTimer(self)
         self._egg_timer.setSingleShot(True)
         self._egg_timer.timeout.connect(self._reset_egg_sequence)
-        # 1. 탭 위젯을 생성하고 중앙에 배치합니다.
-        self.tab_widget = QtWidgets.QTabWidget()
-        self.setCentralWidget(self.tab_widget)
-        # 2. 기존의 PDF 뷰어를 첫 번째 탭에 추가합니다.
-        self.scene = PdfScene(self)
-        self.view = PdfView(self.scene, self)
-        self.tab_widget.addTab(self.view, "2D View")
-        # 3. 3D 뷰어를 위한 두 번째 탭을 만듭니다. (지금은 빈 공간)
-        self.vlayout_3d = QtWidgets.QVBoxLayout()
-        self.widget_3d = QtWidgets.QWidget()
-        self.widget_3d.setLayout(self.vlayout_3d)
-        self.tab_widget.addTab(self.widget_3d, "3D View")
-        # ▲▲▲ [수정 끝] ▲▲▲
-        self.scene.clicked.connect(self.on_clicked)
-        self.scene.moved.connect(self.on_scene_moved)
-        self.view.zoom_changed.connect(self._on_zoom_changed)
+        # === Auto save ===
+        self.autosave_enabled = False
+        self.autosave_interval_min = 5
+        self.autosave_save_option = "link"
+        self.autosave_timer = QtCore.QTimer(self)
+        self.autosave_timer.setSingleShot(False)
+        self.autosave_timer.timeout.connect(self._run_autosave)
+        if self.autosave_enabled:
+            self.autosave_timer.start(self.autosave_interval_min * 60 * 1000)
+
         # 다시 수정.. 4.00에서.
         # ===== ▼▼▼ 페이지 네비게이션 UI 생성 (수정) ▼▼▼ =====
         self.btn_prev = QtWidgets.QPushButton("< 이전")
@@ -2134,10 +2765,20 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.spin_page.valueChanged.connect(self._go_to_page_from_spinbox)
         # ===== ▲▲▲ 여기까지 수정 (상태 표시줄 추가 부분 삭제) ▲▲▲ =====
         # --- 표 도크 ---
-        self.table = QtWidgets.QTableWidget(0, 6, self)
+        self.table = QtWidgets.QTableWidget(0, 11, self)
+        # 테이블이 가능한 모든 공간을 차지하도록 크기 정책 설정
+        self.table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.table.setHorizontalHeaderLabels(
-            ["No", "Type", "Dim", "Max", "Min", "3D Parameter"]
+            ["No", "Type", "Dim", "Max", "Min", "x₁", "x₂", "x₃", "x₄", "x₅", "3D Parameter"]
         )
+        self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Interactive) # 모든 컬럼 크기 조절 가능
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.horizontalHeader().setSectionsMovable(True)
+        self.table.setColumnWidth(0, 35)   # No
+        self.table.setColumnWidth(1, 110)  # Type (사용자 요청: 135px -> 110px 축소)
+        self.table.setColumnWidth(2, 60)   # Dim
+        self.table.setColumnWidth(3, 50)   # Max
+        self.table.setColumnWidth(4, 50)   # Min
         self.table.setItemDelegateForColumn(1, ComboDelegate(DIM_TYPES, self.table))
         numeric_delegate = NumericDelegate(self)
         self.table.setItemDelegateForColumn(3, numeric_delegate)
@@ -2157,7 +2798,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.stamp_table.setHorizontalHeaderLabels(["No", "스탬프 종류"])
         self.stamp_table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
         self.stamp_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
+        # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====        
         # ===== ▼▼▼ 스탬프 테이블 기능 연결 및 변수 추가 ▼▼▼ =====
         self._stamp_graphics_items = {}  # StampItem id를 QGraphicsItem에 매핑
         self._highlighted_stamp_rect = None  # 하이라이트 그래픽 아이템
@@ -2374,24 +3015,43 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             "background-color: #E8E8E8; padding: 4px; border-radius: 4px; font-size: 11px;"
         )
         dock_layout.addWidget(help_label)
+        detail_layout = QtWidgets.QHBoxLayout()
+        self.cb_detail_view = QtWidgets.QCheckBox("상세보기")
+        self.cb_inspection_values = QtWidgets.QCheckBox("검사결과 값 보기")
+        self.cb_detail_view.setChecked(True)
+        self.cb_inspection_values.setChecked(True)
+        self.btn_export_table = QtWidgets.QPushButton("내보내기")
+        self.btn_import_table = QtWidgets.QPushButton("가져오기")
+        detail_layout.addWidget(self.cb_detail_view)
+        detail_layout.addWidget(self.cb_inspection_values)
+        detail_layout.addWidget(self.btn_export_table)
+        detail_layout.addWidget(self.btn_import_table)
+        detail_layout.addStretch(1)
+        dock_layout.addLayout(detail_layout)
+        self.cb_detail_view.toggled.connect(self._on_detail_view_toggled)
+        self.cb_inspection_values.toggled.connect(self._on_detail_view_toggled)
+        self.btn_export_table.clicked.connect(self._export_table_to_excel)
+        self.btn_import_table.clicked.connect(self._import_table_from_excel)
+        self.cb_inspection_values.setEnabled(self.cb_detail_view.isChecked())
         dock_layout.addWidget(self.dock_stack)  # 스택 위젯을 도크에 추가
+        # dock_stack이 가능한 모든 공간을 차지하도록 스트레치 설정
+        dock_layout.setStretchFactor(self.dock_stack, 1)
         self.dock.setWidget(dock_container)
         # 도크 위젯 크기 제한 설정 (3D Parameter 컬럼을 위해 더 넓게)
         self.dock.setMinimumSize(400, 250)
-        self.dock.setMaximumSize(600, 500)
+        # 최대 높이 제한 제거 (테이블이 전체 높이를 차지하도록)
+        # Qt의 최대값인 16777215을 사용하여 높이 제한을 사실상 제거
+        self.dock.setMaximumSize(600, 16777215)
         # 테이블 컬럼 크기 설정
-        self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)  # No
-        self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)  # Type
-        self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)  # Dim
-        self.table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)  # Max
-        self.table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.Fixed)  # Min
-        self.table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.Stretch)  # 3D Parameter
-        # 컬럼 너비 설정 (컬럼명이 깨지지 않을 최소 폭으로 조정)
-        self.table.setColumnWidth(0, 30)   # No
-        self.table.setColumnWidth(1, 40)   # Type
-        self.table.setColumnWidth(2, 50)   # Dim
+
         self.table.setColumnWidth(3, 40)   # Max
         self.table.setColumnWidth(4, 40)   # Min
+        self.table.setColumnWidth(5, 45)   # x1
+        self.table.setColumnWidth(6, 45)   # x2
+        self.table.setColumnWidth(7, 45)   # x3
+        self.table.setColumnWidth(8, 45)   # x4
+        self.table.setColumnWidth(9, 45)   # x5
+        self.table.setColumnWidth(10, 120)  # 3D Parameter
         # 3D Parameter는 Stretch로 설정되어 남은 공간을 차지
         # 셀 내용 중앙 정렬 설정
         self.table.setAlternatingRowColors(True)  # 행 색상 교대로 표시
@@ -2407,6 +3067,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # TableManager 초기화
         self.table_manager = TableManager(self)
         self.table_manager.set_table(self.table)
+        # Shortcuts for custom style copy/paste (app-wide).
+        self.sc_copy_style = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+C"), self)
+        self.sc_copy_style.setContext(QtCore.Qt.ApplicationShortcut)
+        self.sc_copy_style.activated.connect(self.copy_format)
+        self.sc_paste_style = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+V"), self)
+        self.sc_paste_style.setContext(QtCore.Qt.ApplicationShortcut)
+        self.sc_paste_style.activated.connect(self.paste_format)
         
         # UIManager 초기화
         self.ui_manager = UIManager(self)
@@ -2415,39 +3082,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.stamp_manager = StampManager(self)
         
         # --- 4. 메뉴바, 툴바, 단축키 생성 ---
-        self._create_menus()
-        self._create_toolbar()
+        self._create_menus() 
+        self._create_toolbar() 
         self._create_shortcuts()
-        # --- 5. 백그라운드 스레드 설정 ---
-        self.thread = QThread()
-        self.thread.start()
-        self.thread.setPriority(QThread.LowestPriority)  # <<--- 이 줄 추가
-        self.worker = Worker()
-        self.worker.moveToThread(self.thread)
-        self.start_loading_3d.connect(self.worker.load_model)
-        self.worker.finished.connect(self.on_3d_load_finished)
-        self.worker.error.connect(self.on_3d_load_error)
-        # --- 6. 뷰 정보 실시간 업데이트 타이머 설정 ---
-        self.view_info_timer = QtCore.QTimer(self)
-        self.view_info_timer.timeout.connect(self.update_view_info)
-        self.view_info_timer.start(500)  # 500ms마다 업데이트 (0.5초)
-        # --- 7. 사운드 예열 ---
-        try:
-            from PySide6.QtMultimedia import QSoundEffect
-
-            prime_effect = QSoundEffect(self)
-            silent_url = QtCore.QUrl.fromLocalFile(
-                resource_path("resources/ester_egg/silent_prime.wav")
-            )
-            prime_effect.setSource(silent_url)
-            prime_effect.play()
-            self.sound_effect = QSoundEffect(self)
-            self.sound_effect.setSource(self.gun_sound_url)
-            self.sound_effect.setVolume(1.0)
-            QThread.msleep(20)
-            print("Sound system pre-loaded successfully.")
-        except Exception as e:
-            print(f"Sound pre-loading failed: {e}")
+        # --- 5. ????? ??? ?? ---
+        self.thread = None
+        self.worker = None
+        self.view_info_timer = None
+        self._3d_backend_ready = False
+        # --- 7. 사운드 예열 제거됨 (시작 속도 개선을 위해 지연 로딩으로 변경) ---
+        # 사운드는 사격 모드 진입 시에만 로드됩니다 (_load_shooting_resources 참조)
         # --- 7. 스타일시트 적용 ---
         self.setStyleSheet(
             """
@@ -2479,10 +3123,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # ▲▲▲ 여기까지 삽입 ▲▲▲
 
     def copy_format(self):
-        """선택된 첫 번째 항목의 개별 서식을 클립보드에 복사합니다."""
-        selected_rows = sorted(list(set(index.row() for index in self.table.selectedIndexes())))
+        """Copy custom style from the selected row."""
+        selected_rows = sorted({index.row() for index in self.table.selectedIndexes()})
         if not selected_rows:
+            row = self.table.currentRow()
+            if row >= 0:
+                selected_rows = [row]
+        if not selected_rows:
+            self.statusBar().showMessage("\u274c \uc11c\uc2dd\uc744 \ubcf5\uc0ac\ud560 \ud56d\ubaa9\uc744 \uba3c\uc800 \uc120\ud0dd\ud574\uc8fc\uc138\uc694.", 3000)
             return
+
         source_row = selected_rows[0]
         try:
             item_no = float(self.table.item(source_row, 0).text())
@@ -2491,42 +3141,43 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 return
         except (ValueError, AttributeError):
             return
-        # 스타일 객체를 깊은 복사(deepcopy)하여 완전히 독립적인 복사본을 만듭니다.
+
+        if not source_item.custom_style:
+            self.statusBar().showMessage("\u274c \uac1c\ubcc4 \uc11c\uc2dd\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.", 3000)
+            return
+
         self.style_clipboard = copy.deepcopy(source_item.custom_style)
-        if self.style_clipboard:
-            self.statusBar().showMessage(f"✅ {item_no:g}번의 개별 서식이 복사되었습니다.")
-        else:
-            self.statusBar().showMessage(
-                f"✅ {item_no:g}번의 기본 서식(서식 없음)이 복사되었습니다."
-            )
+        self.statusBar().showMessage("\u2705 \uac1c\ubcc4 \uc11c\uc2dd\uc774 \ubcf5\uc0ac\ub418\uc5c8\uc2b5\ub2c8\ub2e4.", 3000)
 
     def paste_format(self):
-        """클립보드에 복사된 서식을 선택된 모든 항목에 붙여넣습니다."""
-        selected_rows = sorted(list(set(index.row() for index in self.table.selectedIndexes())))
+        """Paste copied custom style to the selected rows."""
+        selected_rows = sorted({index.row() for index in self.table.selectedIndexes()})
         if not selected_rows:
-            self.statusBar().showMessage("❗ 서식을 붙여넣을 항목을 먼저 선택해주세요.")
+            row = self.table.currentRow()
+            if row >= 0:
+                selected_rows = [row]
+        if not selected_rows:
+            self.statusBar().showMessage("\u274c \uc11c\uc2dd\uc744 \ubd99\uc5ec\ub123\uc744 \ud56d\ubaa9\uc744 \uba3c\uc800 \uc120\ud0dd\ud574\uc8fc\uc138\uc694.", 3000)
             return
-        # 붙여넣기 전, 복사된 서식이 있는지 확인합니다.
+
         if self.style_clipboard is None:
-            self.statusBar().showMessage(
-                "❗ 복사된 서식이 없습니다. Ctrl+Shift+C로 먼저 서식을 복사해주세요."
-            )
+            self.statusBar().showMessage("\u274c \ubcf5\uc0ac\ub41c \uc11c\uc2dd\uc774 \uc5c6\uc2b5\ub2c8\ub2e4. Ctrl+Shift+C\ub85c \uba3c\uc800 \uc11c\uc2dd\uc744 \ubcf5\uc0ac\ud574\uc8fc\uc138\uc694.", 3000)
             return
+
         applied_count = 0
         for row in selected_rows:
             try:
                 item_no = float(self.table.item(row, 0).text())
                 target_item = next((it for it in self.items if it.no == item_no), None)
                 if target_item:
-                    # 붙여넣을 때도 깊은 복사를 하여 각 항목이 독립적인 스타일 객체를 갖게 합니다.
                     target_item.custom_style = copy.deepcopy(self.style_clipboard)
                     applied_count += 1
             except (ValueError, AttributeError):
                 continue
         if applied_count > 0:
-            self.statusBar().showMessage(f"🎨 {applied_count}개 항목에 서식을 적용했습니다.")
-            self.load_page(self.cur_page_index)  # 변경 사항을 화면에 즉시 반영
-            self._set_dirty()  # 파일이 수정되었음을 표시
+            self.statusBar().showMessage("\u2705 \uac1c\ubcc4 \uc11c\uc2dd\uc774 \uc801\uc6a9\ub418\uc5c8\uc2b5\ub2c8\ub2e4.", 3000)
+            self.load_page(self.cur_page_index)
+            self._set_dirty()
 
     def closeEvent(self, event):
         """창이 닫힐 때 호출되는 이벤트 핸들러입니다."""
@@ -2535,18 +3186,19 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         ):
             # ▼▼▼ [추가] 백그라운드 스레드를 안전하게 종료합니다. ▼▼▼
             print("백그라운드 스레드를 종료합니다...")
-            self.thread.quit()  # 1. 스레드에게 이벤트 루프를 종료하라고 알림
-            self.thread.wait()  # 2. 스레드가 완전히 끝날 때까지 기다림
+            if self.thread:
+                self.thread.quit()  # 1. ????? ??? ??? ????? ??
+                self.thread.wait()  # 2. ???? ??? ?? ??? ???
             print("스레드 종료 완료.")
             # ▲▲▲
             event.accept()  # 종료 허용
         else:
-            event.ignore()  # 종료 취소
-
+            event.ignore()  # 종료 취소 
+    
     def _create_shortcuts(self):
         """단축키를 생성합니다. (UIManager로 위임)"""
         return self.ui_manager.create_shortcuts()
-
+    
     def _create_menus(self):
         mb = self.menuBar()
         m_file = mb.addMenu("파일")
@@ -2558,6 +3210,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         a_save.triggered.connect(self.save_project)
         a_saveas = m_file.addAction("Save Project As…")
         a_saveas.triggered.connect(self.save_project_as)
+        a_autosave = m_file.addAction("Auto Save...")
+        a_autosave.triggered.connect(self.open_autosave_settings)
         m_file.addSeparator()
         # ▼▼▼ 3D 모델 열기 메뉴 추가 ▼▼▼
         a_open_3d = m_file.addAction("import 3D Model...")
@@ -2651,6 +3305,44 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.a_only.triggered.connect(lambda: self._set_numbering_mode("number_only"))
         self.a_inp.triggered.connect(lambda: self._set_numbering_mode("with_input"))
         
+        m_numbering_submenu.addSeparator()
+        
+        # --- [추가] 넘버링 외곽형상 메뉴 ---
+        m_shape_submenu = m_numbering_submenu.addMenu("넘버링 외곽형상")
+        
+        self.a_shape_circle = m_shape_submenu.addAction("원 (Circle)")
+        self.a_shape_circle.setCheckable(True)
+        self.a_shape_rect = m_shape_submenu.addAction("사각형 (Rectangle)")
+        self.a_shape_rect.setCheckable(True)
+        self.a_shape_tri = m_shape_submenu.addAction("삼각형 (Triangle)")
+        self.a_shape_tri.setCheckable(True)
+        self.a_shape_star = m_shape_submenu.addAction("별 (Star)")
+        self.a_shape_star.setCheckable(True)
+        self.a_shape_none = m_shape_submenu.addAction("외곽도형없음 (None)")
+        self.a_shape_none.setCheckable(True)
+        
+        shape_group = QtGui.QActionGroup(self)
+        shape_group.setExclusive(True)
+        shape_group.addAction(self.a_shape_circle)
+        shape_group.addAction(self.a_shape_rect)
+        shape_group.addAction(self.a_shape_tri)
+        shape_group.addAction(self.a_shape_star)
+        shape_group.addAction(self.a_shape_none)
+        
+        # 초기 상태 설정
+        current_shape = getattr(self.style, "shape", "circle")
+        if current_shape == "rectangle": self.a_shape_rect.setChecked(True)
+        elif current_shape == "triangle": self.a_shape_tri.setChecked(True)
+        elif current_shape == "star": self.a_shape_star.setChecked(True)
+        elif current_shape == "none": self.a_shape_none.setChecked(True)
+        else: self.a_shape_circle.setChecked(True)
+            
+        self.a_shape_circle.triggered.connect(lambda: self._set_numbering_shape("circle"))
+        self.a_shape_rect.triggered.connect(lambda: self._set_numbering_shape("rectangle"))
+        self.a_shape_tri.triggered.connect(lambda: self._set_numbering_shape("triangle"))
+        self.a_shape_star.triggered.connect(lambda: self._set_numbering_shape("star"))
+        self.a_shape_none.triggered.connect(lambda: self._set_numbering_shape("none"))
+        
         # 스탬프 모드
         self.a_mode_stamp = m_mode.addAction("스탬프 모드")
         self.a_mode_stamp.setCheckable(True)
@@ -2667,6 +3359,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 넘버링 설정을 편집 메뉴로 이동
         a_num_settings = m_edit.addAction("넘버링 설정…")
         a_num_settings.triggered.connect(self.open_numbering_settings)
+        a_copy_style = m_edit.addAction("\uac1c\ubcc4 \uc11c\uc2dd \ubcf5\uc0ac")
+        a_copy_style.triggered.connect(self.copy_format)
+        a_paste_style = m_edit.addAction("\uac1c\ubcc4 \uc11c\uc2dd \ubd99\uc5ec\ub123\uae30")
+        a_paste_style.triggered.connect(self.paste_format)
         m_edit.addSeparator()
         a_start = m_edit.addAction("Set Start Number…")
         a_start.triggered.connect(self.set_start_number)
@@ -2705,7 +3401,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         m_help = mb.addMenu("도움말")
         a_about = m_help.addAction("정보...")
         a_about.triggered.connect(self.show_about_dialog)
-
+            
     # 프리뷰 모드 선택 추가 함수... v3.01에서...
     def set_preview_mode(self, mode: str):
         """넘버링 프리뷰 모드를 '십자선' 또는 '프리뷰'로 설정합니다."""
@@ -2731,8 +3427,24 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     self._preview_text.hide()
             else:  # 'preview' 모드일 경우
                 self.view.setCursor(QtCore.Qt.BlankCursor)
-
+    
     # ▼▼▼ 3D 뷰어 관련 메서드들 ▼▼▼
+    def _ensure_3d_backend(self):
+        if getattr(self, "_3d_backend_ready", False):
+            return
+        self._3d_backend_ready = True
+        self.thread = QThread()
+        self.thread.start()
+        self.thread.setPriority(QThread.LowestPriority)
+        self.worker = Worker()
+        self.worker.moveToThread(self.thread)
+        self.start_loading_3d.connect(self.worker.load_model)
+        self.worker.finished.connect(self.on_3d_load_finished)
+        self.worker.error.connect(self.on_3d_load_error)
+        self.view_info_timer = QtCore.QTimer(self)
+        self.view_info_timer.timeout.connect(self.update_view_info)
+        self.view_info_timer.start(500)
+
     def open_3d_model(self):
         # ▼▼▼ [추가] 프로젝트가 열려있는지 먼저 확인 ▼▼▼
         if not self.doc:
@@ -2756,11 +3468,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.progress_dialog.setModal(True)  # 다른 창을 클릭할 수 없도록 설정
         self.progress_dialog.show()
         # 2. 백그라운드 스레드에 작업 시작 신호를 보냅니다.
+        self._ensure_3d_backend()
         self.start_loading_3d.emit(path)
         # ▲▲▲ [수정 끝] ▲▲▲
         self.model_path = path  # <--- 이 줄을 추가해주세요
         self.last_opened_3d_path = path
-
+        
     # main.py의 on_3d_load_finished 함수 (구버전 호환용)
     # on_3d_load_finished 함수를 아래 코드로 통째로 교체하세요.
     def on_3d_load_finished(self, geometry):
@@ -2780,9 +3493,18 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 3. 새로운 3D 뷰어(plotter)를 만듭니다.
         plotter = QtInteractor(self.widget_3d)
         self.plotter = plotter  # Navigator에서 접근할 수 있도록 저장
+        # ▼▼▼ [수정] 3D 뷰어 배경색을 흰색으로 초기화하고 렌더링 ▼▼▼
+        plotter.background_color = "white"
+        # plotter.interactor의 배경을 불투명하게 설정
+        plotter.interactor.setStyleSheet("background-color: white;")
+        plotter.interactor.setAutoFillBackground(True)
+        plotter.interactor.show()  # interactor를 명시적으로 표시
+        # ▲▲▲ 여기까지 추가 ▲▲▲
         self.vlayout_3d.addWidget(plotter.interactor)
         # 3-1. 3D 뷰어에 컬러 컨트롤 패널 추가
         self._setup_3d_viewer_color_controls()
+        # 3-2. 3D 뷰어 좌측 하단에 XYZ 축 네비게이터 표시
+        self._setup_3d_axis_navigator()
 
         # 4. 3D 모델을 뷰어에 추가하는 내부 함수 정의
         def render_solid_mesh(geom):
@@ -2829,10 +3551,32 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             plotter.add_mesh(pv.lines_from_points(geometry.vertices), color="yellow", line_width=5)
         # 5. 카메라 위치를 모델에 맞게 재설정합니다.
         plotter.reset_camera()
-        # 5-1. 기본 뷰 모드를 "음영 처리"로 설정 (엣지 없음)
-        self.set_view_mode("shading")
-        # 5-2. 초기 뷰 정보 표시
+        # ▼▼▼ [수정] 3D 뷰어를 렌더링하여 배경이 제대로 표시되도록 함 ▼▼▼
+        plotter.background_color = "white"  # 배경색을 다시 설정
+        plotter.render()
+        # plotter.interactor가 제대로 렌더링되도록 강제 업데이트
+        plotter.interactor.update()
+        # ▲▲▲ 여기까지 추가 ▲▲▲
+        # 5-1. 기본 투영 모드를 "일반 뷰 (Orthographic)"로 설정
+        self.set_projection_mode("orthographic")
+        # 5-2. 기본 뷰 모드를 "모서리 표시 음영"으로 설정
+        self.set_view_mode("edges")
+        # 5-3. 초기 뷰 정보 표시
         self.update_view_info()
+        # ▼▼▼ [수정] plotter.interactor를 완전히 불투명하게 만들기 ▼▼▼
+        plotter.interactor.setAttribute(QtCore.Qt.WA_OpaquePaintEvent, True)
+        plotter.interactor.setAttribute(QtCore.Qt.WA_NoSystemBackground, True)
+        # ▲▲▲ 여기까지 추가 ▲▲▲
+        # 5-4. 치수 측정 모드 초기화
+        self.measure_mode_active = False
+        self.measure_points = []
+        self.measure_actors = []
+        if hasattr(self, 'measure_btn'):
+            self.measure_btn.setChecked(False)
+        if hasattr(self, "measure_radius_btn"):
+            self.measure_radius_btn.setChecked(False)
+        # 5-5. 스냅 포인트 계산은 측정 모드가 활성화될 때만 수행하도록 변경
+        # (파일 로드 시 자동 계산 제거 - 크래시 방지)
         # 6. 화면을 3D 탭으로 전환합니다.
         # self.tab_widget.setCurrentWidget(self.widget_3d)
         # ▼▼▼ [수정 3] 대신 상태 표시줄에 완료 메시지를 표시 ▼▼▼
@@ -2856,6 +3600,2445 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.progress_dialog.close()
         _log_error(self, "3D 모델 로딩 오류", Exception(error_message))
         self.statusBar().showMessage("3D 모델을 불러오는 데 실패했습니다.", 5000)
+            
+    def toggle_measure_mode(self, checked):
+        """
+        치수 측정 모드를 토글합니다.
+        
+        Args:
+            checked: 버튼이 체크되었는지 여부
+        """
+        if not hasattr(self, 'plotter') or self.plotter is None:
+            return
+        
+        # NOTE:
+        #   UI는 3개 툴 버튼(거리/반경/지름) 중 하나가 선택되면 측정 모드가 ON이 됩니다.
+        #   따라서 여기서는 "측정 모드 활성/비활성"만 책임지고, 버튼 체크는
+        #   `_on_measure_tool_clicked()`에서 관리합니다.
+        
+        if checked:
+            # 측정 모드 활성화
+            self.measure_mode_active = True
+            self._measure_hover_seen = False
+            self.measure_points = []  # 선택된 점들을 저장할 리스트
+            self._clear_measurements()  # 기존 측정 결과 제거
+            
+            # 스냅 포인트 계산 (측정 모드 활성화 시에만 수행)
+            try:
+                if hasattr(self, 'plotter') and self.plotter is not None:
+                    # 백그라운드에서 스냅 포인트 계산 (UI 블로킹 방지)
+                    QtCore.QTimer.singleShot(100, lambda: self._calculate_snap_points(self.plotter))
+            except Exception as e:
+                print(f"스냅 포인트 계산 시작 오류: {e}")
+            
+            try:
+                # 기존 피커 비활성화
+                if hasattr(self, '_measure_mouse_observer'):
+                    try:
+                        self.plotter.iren.RemoveObserver(self._measure_mouse_observer)
+                    except:
+                        pass
+                
+                # 마우스 이동 이벤트 핸들러 추가 (스냅 포인트 미리보기용)
+                # PySide6의 이벤트 필터 사용 (QtInteractor는 QWidget이므로)
+                try:
+                    if hasattr(self.plotter, 'interactor') and self.plotter.interactor is not None:
+                        # 이벤트 필터 설치
+                        self.plotter.interactor.installEventFilter(self)
+                        self._measure_event_filter_installed = True
+                        # 마우스를 누르지 않아도 Move 이벤트가 오도록 설정
+                        try:
+                            self.plotter.interactor.setMouseTracking(True)
+                        except Exception:
+                            pass
+                        print("마우스 이동 이벤트 필터 설치 완료")
+                except Exception as e:
+                    print(f"마우스 이동 이벤트 핸들러 추가 실패 (미리보기 기능 비활성화): {e}")
+                    # 미리보기 기능 없이도 작동하도록 계속 진행
+
+                # NOTE:
+                #   PyVista의 enable_point_picking은 기본적으로 "원본 픽 좌표"에 핑크 포인트를 찍어줍니다.
+                #   사용자 요구사항은 "스냅된 좌표"에 측정 포인트가 표시되어야 하므로,
+                #   Qt(eventFilter)에서 클릭을 직접 처리하여 스냅 좌표를 확정하는 방식으로 동작시킵니다.
+                # 서브모드에 따라 안내 메시지를 다르게 표시
+                submode = getattr(self, "measure_submode", "distance")
+                if submode == "radius":
+                    self.statusBar().showMessage("치수 측정(R): Shift+좌클릭으로 3점을 선택하여 원 측정", 3000)
+                else:
+                    self.statusBar().showMessage("치수 측정(D): Shift+좌클릭으로 두 점을 선택", 3000)
+            except Exception as e:
+                print(f"치수 측정 모드 활성화 오류: {e}")
+                import traceback
+                traceback.print_exc()
+                self.measure_mode_active = False
+        else:
+            # 측정 모드 비활성화
+            self.measure_mode_active = False
+            try:
+                self.plotter.disable_picking()
+                if hasattr(self, '_measure_mouse_observer'):
+                    try:
+                        self.plotter.iren.RemoveObserver(self._measure_mouse_observer)
+                    except:
+                        pass
+                    del self._measure_mouse_observer
+                # 이벤트 필터 제거
+                if hasattr(self, '_measure_event_filter_installed') and self._measure_event_filter_installed:
+                    try:
+                        if hasattr(self.plotter, 'interactor') and self.plotter.interactor is not None:
+                            self.plotter.interactor.removeEventFilter(self)
+                    except:
+                        pass
+                    self._measure_event_filter_installed = False
+            except:
+                pass
+            
+            # 호버 타이머 정리
+            if hasattr(self, 'measure_hover_timer') and self.measure_hover_timer is not None:
+                self.measure_hover_timer.stop()
+                self.measure_hover_timer = None
+            
+            # 미리보기 제거
+            self._clear_snap_preview()
+            
+            # 기존 측정 결과 제거
+            self._clear_measurements()
+            self.statusBar().showMessage("치수 측정 모드 종료", 2000)
+
+    def _on_measure_tool_clicked(self, tool: str) -> None:
+        """
+        치수 측정 툴 버튼(거리/반경/지름) 클릭 처리.
+
+        요구사항:
+            - 세 버튼 중 하나만 선택되도록 유지(독점)
+            - 이미 선택된 버튼을 다시 클릭하면 "측정 모드 종료"(전체 해제)
+
+        Args:
+            tool: "distance" | "radius" | "diameter"
+        """
+        # 방어: UI가 아직 생성되지 않았으면 종료
+        if not hasattr(self, "measure_btn"):
+            return
+
+        buttons = {
+            "distance": getattr(self, "measure_btn", None),
+            "radius": getattr(self, "measure_radius_btn", None),
+        }
+        clicked_btn = buttons.get(tool)
+        if clicked_btn is None:
+            return
+
+        # 현재 상태(클릭 직후의 checked 상태)
+        is_now_checked = bool(clicked_btn.isChecked())
+
+        if not is_now_checked:
+            # 선택된 버튼을 "다시 클릭해서 해제"한 경우 -> 측정 모드 종료
+            for b in buttons.values():
+                if b is not None:
+                    b.blockSignals(True)
+                    b.setChecked(False)
+                    b.blockSignals(False)
+            self.measure_submode = "distance"
+            self.toggle_measure_mode(False)
+            return
+
+        # 새 툴 선택: 다른 버튼은 해제하고, 측정 모드 ON + 서브모드 설정
+        for k, b in buttons.items():
+            if b is None:
+                continue
+            if k == tool:
+                continue
+            b.blockSignals(True)
+            b.setChecked(False)
+            b.blockSignals(False)
+
+        self.measure_submode = tool
+
+        # 툴 전환 시, 이전 측정 진행 상태(1점 찍힌 상태 등)로 인한 혼선을 방지
+        try:
+            self.measure_points = []
+            self._clear_snap_preview()
+        except Exception:
+            pass
+
+        # NOTE:
+        #   - 이미 측정 모드가 켜져 있다면(toggle_measure_mode(True) 재호출) 기존 결과가 지워지므로,
+        #     "툴 전환"은 모드를 유지하고 안내 메시지만 갱신합니다.
+        if getattr(self, "measure_mode_active", False):
+            try:
+                if tool == "radius":
+                    self.statusBar().showMessage("치수 측정(R): Shift+좌클릭으로 원/홀(모서리) 클릭", 2500)
+                elif tool == "diameter":
+                    self.statusBar().showMessage("치수 측정(Φ): Shift+좌클릭으로 원/홀(모서리) 클릭", 2500)
+                else:
+                    self.statusBar().showMessage("치수 측정(D): Shift+좌클릭으로 두 점을 선택", 2500)
+            except Exception:
+                pass
+            return
+
+        self.toggle_measure_mode(True)
+
+    def _on_measure_mouse_click(self, obj, event):
+        """
+        치수 측정 모드에서 마우스 클릭 이벤트를 처리하는 함수.
+        스냅 기능을 포함하여 가장 가까운 특정 지점을 선택합니다.
+        
+        Args:
+            obj: VTK 이벤트 객체
+            event: VTK 이벤트
+        """
+        if not self.measure_mode_active:
+            return
+        
+        import numpy as np
+        import pyvista as pv
+        import vtk
+        
+        try:
+            # 마우스 클릭 위치를 3D 좌표로 변환
+            click_pos = self.plotter.iren.GetEventPosition()
+            
+            # 피커 생성 및 설정
+            picker = vtk.vtkCellPicker()
+            picker.SetTolerance(0.001)
+            
+            # 화면 좌표를 월드 좌표로 변환
+            renderer = self.plotter.renderer
+            picker.Pick(click_pos[0], click_pos[1], 0, renderer)
+            
+            # 선택된 점의 3D 좌표 가져오기
+            picked_point = picker.GetPickPosition()
+            if picked_point is None or len(picked_point) != 3:
+                # 피커가 실패한 경우, enable_point_picking을 사용
+                try:
+                    # PyVista의 enable_point_picking을 일시적으로 사용
+                    self.plotter.enable_point_picking(
+                        callback=lambda point: self._on_measure_point_picked_with_snap(point),
+                        show_message=False,
+                        left_clicking=True
+                    )
+                    # 한 번만 사용하고 비활성화
+                    QtCore.QTimer.singleShot(100, lambda: self.plotter.disable_picking())
+                except:
+                    pass
+                return
+            
+            point = np.array(picked_point)
+            
+            # 스냅 기능 적용: 가장 가까운 스냅 포인트 찾기
+            snapped_point = self._find_nearest_snap_point(point)
+            
+            # 점을 리스트에 추가
+            self.measure_points.append(snapped_point.copy())
+            
+            # 두 점이 선택되면 거리 계산 및 표시
+            if len(self.measure_points) == 2:
+                p1, p2 = self.measure_points[0], self.measure_points[1]
+                
+                # 축 거리 계산
+                delta = p2 - p1
+                delta_x_mm = delta[0] * 1000.0
+                delta_y_mm = delta[1] * 1000.0
+                delta_z_mm = delta[2] * 1000.0
+                
+                # 전체 거리 계산 (유클리드 거리)
+                distance = np.linalg.norm(delta)
+                distance_mm = distance * 1000.0
+                
+                # 두 점 사이의 선 그리기 (항상 위에 표시되도록)
+                try:
+                    line = pv.Line(p1, p2)
+                    line_actor = self.plotter.add_mesh(
+                        line,
+                        color="red",
+                        line_width=3,
+                        name=f"measure_line_{len(self.measure_actors)}",
+                        render_lines_as_tubes=True,  # 튜브로 렌더링하여 더 잘 보이게
+                    )
+                    # 선이 항상 위에 표시되도록 Z-order 조정
+                    if hasattr(line_actor, 'GetProperty'):
+                        line_actor.GetProperty().SetRenderLinesAsTubes(True)
+                        # Depth peeling 비활성화하여 선이 항상 위에 표시되도록
+                        line_actor.GetProperty().SetDepthTest(False)
+                    self.measure_actors.append(line_actor)
+                    
+                    # 중간 지점에 거리 텍스트 표시 (축 거리 + 전체 거리)
+                    mid_point = (p1 + p2) / 2
+                    label_anchor = self._label_anchor_for_measurement(mid_point)
+                    label_text = f"Δx: {delta_x_mm:.2f}mm\nΔy: {delta_y_mm:.2f}mm\nΔz: {delta_z_mm:.2f}mm\nTotal: {distance_mm:.2f}mm"
+                    
+                    # 텍스트 표시 (R값과 동일한 스타일: cyan, font_size=12)
+                    text_actor = self.plotter.add_point_labels(
+                        [label_anchor],
+                        [label_text],
+                        font_size=12,
+                        always_visible=True,
+                        text_color="cyan",
+                        point_color="cyan",
+                        point_size=5,
+                        name=f"measure_text_{len(self.measure_actors)}"
+                    )
+                    self.measure_actors.append(text_actor)
+                    
+                    # 상태바에 거리 표시
+                    self.statusBar().showMessage(
+                        f"측정 완료: {distance_mm:.2f} mm (Δx: {delta_x_mm:.2f}, Δy: {delta_y_mm:.2f}, Δz: {delta_z_mm:.2f} mm)", 
+                        5000
+                    )
+                    
+                    # 다음 측정을 위해 점 리스트 초기화
+                    self.measure_points = []
+                    
+                    # 렌더링 업데이트
+                    self.plotter.render()
+                except Exception as e:
+                    print(f"측정 결과 표시 오류: {e}")
+                    self.measure_points = []
+            elif len(self.measure_points) == 1:
+                self.statusBar().showMessage("두 번째 점을 클릭하세요", 2000)
+        except Exception as e:
+            print(f"마우스 클릭 처리 오류: {e}")
+
+
+    def _on_measure_mouse_move_qt(self, event):
+        """
+        측정 모드에서 마우스 이동 이벤트를 처리하는 함수 (PySide6 이벤트).
+        마우스가 특정 위치에 1초 이상 머물면 스냅 포인트를 미리보기로 표시합니다.
+        
+        Args:
+            event: PySide6 QMouseEvent
+        """
+        if not self.measure_mode_active:
+            return
+        
+        try:
+            # 호버 이벤트가 실제로 들어오는지 사용자가 즉시 알 수 있도록 1회만 표시
+            if not getattr(self, "_measure_hover_seen", False):
+                self._measure_hover_seen = True
+                try:
+                    self.statusBar().showMessage("호버 감지 중... (1초 정지 시 스냅 미리보기)", 2000)
+                except Exception:
+                    pass
+
+            # 마우스 위치 가져오기 (위젯 좌표)
+            mouse_pos = event.position().toPoint()
+            
+            # 마지막 마우스 위치와 비교하여 같은 위치인지 확인
+            if self.measure_last_mouse_pos is not None:
+                if (abs(mouse_pos.x() - self.measure_last_mouse_pos.x()) < 3 and 
+                    abs(mouse_pos.y() - self.measure_last_mouse_pos.y()) < 3):
+                    # 같은 위치에 있으면 타이머가 이미 시작되었을 수 있음
+                    return
+            
+            # 마우스 위치 업데이트
+            self.measure_last_mouse_pos = mouse_pos
+            
+            # 기존 타이머 취소
+            if self.measure_hover_timer is not None:
+                self.measure_hover_timer.stop()
+            
+            # 미리보기 제거
+            self._clear_snap_preview()
+            
+            # 새로운 타이머 시작
+            self.measure_hover_timer = QtCore.QTimer(self)
+            self.measure_hover_timer.setSingleShot(True)
+            self.measure_hover_timer.timeout.connect(
+                lambda: self._show_snap_preview_qt(mouse_pos)
+            )
+            self.measure_hover_timer.start(self.measure_hover_delay)
+        
+        except Exception as e:
+            print(f"마우스 이동 처리 오류: {e}")
+
+    def _show_snap_preview_qt(self, widget_pos):
+        """
+        스냅 포인트 미리보기를 표시합니다 (PySide6 좌표 사용).
+        
+        Args:
+            widget_pos: 위젯 좌표 (QPoint)
+        """
+        if not self.measure_mode_active:
+            return
+        
+        import numpy as np
+        import pyvista as pv
+        
+        try:
+            # 모서리 표시 음영(Feature edges)이 보이는 상태에서만 미리보기 제공
+            if not self._is_feature_edges_visible():
+                self._clear_snap_preview()
+                return
+
+            # 기존 미리보기 제거
+            self._clear_snap_preview()
+
+            # 1) 우선 feature_edges 라인에서만 픽킹(엣지 기반 스냅 정확도 향상)
+            raw_point = self._pick_world_point_from_feature_edges(widget_pos)
+            picked_from_edges = raw_point is not None
+            # 2) 실패하면 일반 픽킹으로 폴백
+            if raw_point is None:
+                raw_point = self._pick_world_point_generic(widget_pos)
+            if raw_point is None:
+                return
+
+            point = np.array(raw_point, dtype=float)
+
+            # 규칙 기반 스냅 포인트 선택
+            snapped_point, kind, dist = self._select_snap_point_on_edges(point)
+            if snapped_point is None:
+                # 어떤 후보도 반경 내에 없으면 RAW 포인트만 표시(호버는 동작함을 보여줌)
+                # NOTE: 모델 단위(meter) 기준으로 미리보기 구 크기를 조정합니다.
+                # 기존 0.5mm(0.0005m)는 잘 안 보인다는 피드백이 있어 2.5mm로 확대합니다.
+                preview_radius_m = 0.0025
+                sphere_raw = pv.Sphere(radius=preview_radius_m, center=point)
+                self.measure_snap_preview_raw_actor = self.plotter.add_mesh(
+                    sphere_raw, color="gray", opacity=0.35, name="snap_preview_raw"
+                )
+                self.plotter.render()
+                return
+
+            # RAW 포인트(회색) + 스냅 포인트(색상) 동시 표시 -> 차이 체감 가능
+            preview_radius_m = 0.0025
+            sphere_raw = pv.Sphere(radius=preview_radius_m, center=point)
+            self.measure_snap_preview_raw_actor = self.plotter.add_mesh(
+                sphere_raw, color="gray", opacity=0.35, name="snap_preview_raw"
+            )
+
+            sphere = pv.Sphere(radius=preview_radius_m, center=snapped_point)
+
+            color_map = {
+                "end": "red",
+                "mid": "lime",
+                "cen": "cyan",
+                "near": "yellow",
+            }
+            color = color_map.get(kind, "yellow")
+
+            self.measure_snap_preview_actor = self.plotter.add_mesh(
+                sphere,
+                color=color,
+                opacity=0.7,
+                name="snap_preview",
+            )
+            self.plotter.render()
+
+            # 상태바에 현재 스냅 결과를 표시(스냅/호버 구분 용)
+            try:
+                dist_mm = float(dist) * 1000.0 if dist is not None else 0.0
+                src = "EDGE" if picked_from_edges else "SURF"
+                self.statusBar().showMessage(
+                    f"호버 스냅: {kind}  (거리 {dist_mm:.2f}mm, 픽={src})",
+                    1200,
+                )
+            except Exception:
+                pass
+        
+        except Exception as e:
+            print(f"스냅 포인트 미리보기 표시 오류: {e}")
+
+    def _clear_snap_preview(self):
+        """
+        스냅 포인트 미리보기를 제거합니다.
+        """
+        try:
+            if hasattr(self, 'measure_snap_preview_actor') and self.measure_snap_preview_actor is not None:
+                try:
+                    self.plotter.remove_actor(self.measure_snap_preview_actor)
+                except:
+                    pass
+                self.measure_snap_preview_actor = None
+            if hasattr(self, 'measure_snap_preview_raw_actor') and self.measure_snap_preview_raw_actor is not None:
+                try:
+                    self.plotter.remove_actor(self.measure_snap_preview_raw_actor)
+                except:
+                    pass
+                self.measure_snap_preview_raw_actor = None
+            self.plotter.render()
+        except Exception as e:
+            print(f"스냅 포인트 미리보기 제거 오류: {e}")
+
+    def _pick_world_point_from_feature_edges(self, widget_pos):
+        """
+        feature_edges(actor)에서만 픽킹하여 월드 좌표를 얻습니다.
+
+        Returns:
+            (np.ndarray | None): 픽 성공 시 3D 좌표
+        """
+        import numpy as np
+        import vtk
+
+        try:
+            if not hasattr(self, "plotter") or self.plotter is None:
+                return None
+            actor = getattr(self.plotter.renderer, "actors", {}).get("feature_edges")
+            if actor is None:
+                return None
+
+            picker = vtk.vtkCellPicker()
+            picker.SetTolerance(0.01)  # 화면 비율 기반(조금 넉넉하게)
+            picker.PickFromListOn()
+            picker.InitializePickList()
+            picker.AddPickList(actor)
+
+            renderer = self.plotter.renderer
+
+            interactor_h = 0
+            try:
+                interactor_h = int(self.plotter.interactor.height())
+            except Exception:
+                interactor_h = 0
+            x = int(widget_pos.x())
+            y = int(widget_pos.y())
+            y_vtk = int(interactor_h - y - 1)
+            if interactor_h > 0:
+                y_vtk = max(0, min(interactor_h - 1, y_vtk))
+            else:
+                y_vtk = max(0, y_vtk)
+
+            picker.Pick(x, y_vtk, 0, renderer)
+            if picker.GetCellId() < 0:
+                return None
+
+            picked = picker.GetPickPosition()
+            if picked is None or len(picked) != 3:
+                return None
+            
+            # 픽된 위치가 카메라에서 너무 멀리 떨어져 있지 않은지 확인
+            camera = self.plotter.camera
+            camera_pos = np.array(camera.position)
+            picked_np = np.array(picked, dtype=float)
+            dist_to_camera = np.linalg.norm(picked_np - camera_pos)
+            
+            # 카메라에서 10m 이상 떨어진 경우는 무효로 간주
+            if dist_to_camera > 10.0:
+                return None
+            
+            return picked_np
+        except Exception:
+            return None
+
+    def _pick_world_point_generic(self, widget_pos):
+        """일반(surface 포함) 픽킹으로 월드 좌표를 얻습니다."""
+        import numpy as np
+        import vtk
+
+        try:
+            if not hasattr(self, "plotter") or self.plotter is None:
+                return None
+            picker = vtk.vtkCellPicker()
+            picker.SetTolerance(0.01)
+            renderer = self.plotter.renderer
+
+            interactor_h = 0
+            try:
+                interactor_h = int(self.plotter.interactor.height())
+            except Exception:
+                interactor_h = 0
+            x = int(widget_pos.x())
+            y = int(widget_pos.y())
+            y_vtk = int(interactor_h - y - 1)
+            if interactor_h > 0:
+                y_vtk = max(0, min(interactor_h - 1, y_vtk))
+            else:
+                y_vtk = max(0, y_vtk)
+
+            picker.Pick(x, y_vtk, 0, renderer)
+            if picker.GetCellId() < 0:
+                return None
+            
+            # 실제로 셀이 픽되었는지 확인 (GetPickPosition이 유효한 위치를 반환하는지)
+            picked = picker.GetPickPosition()
+            if picked is None or len(picked) != 3:
+                return None
+            
+            # 픽된 위치가 카메라에서 너무 멀리 떨어져 있지 않은지 확인
+            # (vtkCellPicker가 셀을 픽하지 못한 경우 카메라 방향으로 멀리 떨어진 위치를 반환할 수 있음)
+            camera = self.plotter.camera
+            camera_pos = np.array(camera.position)
+            picked_np = np.array(picked, dtype=float)
+            dist_to_camera = np.linalg.norm(picked_np - camera_pos)
+            
+            # 카메라에서 10m 이상 떨어진 경우는 무효로 간주
+            if dist_to_camera > 10.0:
+                return None
+            
+            return picked_np
+        except Exception:
+            return None
+
+    def _pick_world_point_generic_with_polydata(self, widget_pos):
+        """
+        일반(surface 포함) 픽킹으로 월드 좌표와 대상 vtkPolyData를 얻습니다.
+
+        Why:
+            - 코너 라운드(필렛)는 feature_edges에 잡히지 않는 경우가 많습니다.
+            - 이 경우 "표면 포인트 기반 반경 추정"이 필요하므로, 클릭된 표면 메시(vtkPolyData)를 함께 가져옵니다.
+
+        Returns:
+            tuple[np.ndarray | None, object | None]:
+                (picked_point_np, vtkPolyData or None)
+        """
+        import numpy as np
+        import vtk
+
+        try:
+            if not hasattr(self, "plotter") or self.plotter is None:
+                return None, None
+            picker = vtk.vtkCellPicker()
+            picker.SetTolerance(0.01)
+            renderer = self.plotter.renderer
+
+            interactor_h = 0
+            try:
+                interactor_h = int(self.plotter.interactor.height())
+            except Exception:
+                interactor_h = 0
+            x = int(widget_pos.x())
+            y = int(widget_pos.y())
+            y_vtk = int(interactor_h - y - 1)
+            if interactor_h > 0:
+                y_vtk = max(0, min(interactor_h - 1, y_vtk))
+            else:
+                y_vtk = max(0, y_vtk)
+
+            picker.Pick(x, y_vtk, 0, renderer)
+            if picker.GetCellId() < 0:
+                return None, None
+            picked = picker.GetPickPosition()
+            if picked is None or len(picked) != 3:
+                return None, None
+
+            poly = None
+            try:
+                actor = picker.GetActor()
+                if actor is not None:
+                    mapper = actor.GetMapper()
+                    if mapper is not None:
+                        poly = mapper.GetInput()
+            except Exception:
+                poly = None
+
+            return np.array(picked, dtype=float), poly
+        except Exception:
+            return None, None
+
+    # =====================================================================
+    # 3D 스냅(모서리 표시 음영의 feature edges 기반)
+    # =====================================================================
+    def _is_feature_edges_visible(self) -> bool:
+        """
+        현재 3D 뷰어가 '모서리 표시 음영' 상태인지 판단합니다.
+
+        NOTE:
+            ViewportManager가 feature_edges actor의 visibility를 토글하므로,
+            실제로 라인이 보이는 상태에서만 스냅을 수행하도록 제한합니다.
+        """
+        try:
+            if not hasattr(self, "plotter") or self.plotter is None:
+                return False
+            actor = getattr(self.plotter.renderer, "actors", {}).get("feature_edges")
+            if actor is None:
+                return False
+            return bool(actor.GetVisibility())
+        except Exception:
+            return False
+
+    def _get_feature_edges_polydata(self):
+        """
+        렌더러에 올라가 있는 feature edges 라인의 vtkPolyData를 가져옵니다.
+
+        Returns:
+            vtk.vtkPolyData | None
+        """
+        try:
+            if not hasattr(self, "plotter") or self.plotter is None:
+                return None
+            actor = getattr(self.plotter.renderer, "actors", {}).get("feature_edges")
+            if actor is None:
+                return None
+            mapper = actor.GetMapper()
+            if mapper is None:
+                return None
+            poly = mapper.GetInput()
+            if poly is None:
+                return None
+            # 라인(엣지) 데이터가 있어야 함
+            if hasattr(poly, "GetNumberOfLines") and poly.GetNumberOfLines() <= 0:
+                return None
+            return poly
+        except Exception:
+            return None
+
+    def _compute_visible_bounds_diag_m(self) -> float:
+        """
+        현재 3D 렌더러의 가시 객체 bounds로부터 대각선 길이를 계산합니다(단위: meter 가정).
+
+        Why:
+            - 라벨 오프셋/표면 반경 추정의 탐색 반경을 "모델 크기"에 비례하여 자동 조절하기 위함입니다.
+
+        Returns:
+            float: 대각선 길이(m). 계산 실패 시 1.0을 반환합니다.
+        """
+        import numpy as np
+
+        try:
+            if not hasattr(self, "plotter") or self.plotter is None or self.plotter.renderer is None:
+                return 1.0
+            b = self.plotter.renderer.ComputeVisiblePropBounds()
+            if not b or len(b) != 6:
+                return 1.0
+            dx = float(b[1] - b[0])
+            dy = float(b[3] - b[2])
+            dz = float(b[5] - b[4])
+            diag = float(np.sqrt(dx * dx + dy * dy + dz * dz))
+            if not np.isfinite(diag) or diag <= 0:
+                return 1.0
+            return diag
+        except Exception:
+            return 1.0
+
+    def _offset_point_toward_camera(self, point_np, offset_m: float):
+        """
+        라벨/텍스트 앵커가 물체 내부로 들어가 가려지는 현상을 줄이기 위해,
+        카메라 방향으로 포인트를 살짝 당깁니다.
+
+        Args:
+            point_np: (3,) 월드 좌표
+            offset_m: meter 단위 오프셋
+
+        Returns:
+            np.ndarray: 오프셋된 월드 좌표
+        """
+        import numpy as np
+
+        if not hasattr(self, "plotter") or self.plotter is None:
+            return np.asarray(point_np, dtype=float)
+        try:
+            cam_pos = np.asarray(self.plotter.camera.position, dtype=float).reshape(3)
+            p = np.asarray(point_np, dtype=float).reshape(3)
+            v = p - cam_pos
+            n = float(np.linalg.norm(v))
+            if n <= 1e-9:
+                return p
+            # NOTE:
+            #   카메라가 매우 가까운 상황에서 offset을 크게 주면 포인트가 카메라 뒤/near clip으로 넘어가
+            #   라벨이 아예 렌더링되지 않는 문제가 발생할 수 있습니다.
+            #   따라서 offset은 "카메라-포인트 거리"의 일부(20%)를 상한으로 제한합니다.
+            offset_m = float(min(float(offset_m), 0.2 * n))
+            v_hat = v / n
+            return p - v_hat * float(offset_m)  # 카메라 쪽으로 이동
+        except Exception:
+            return np.asarray(point_np, dtype=float)
+
+    def _label_anchor_for_measurement(self, point_np):
+        """
+        측정 라벨이 항상 잘 보이도록, 모델 크기에 비례한 오프셋을 적용한 앵커 포인트를 반환합니다.
+
+        Args:
+            point_np: (3,) 월드 좌표
+
+        Returns:
+            np.ndarray: 라벨 앵커 포인트
+        """
+        import numpy as np
+
+        diag = self._compute_visible_bounds_diag_m()
+        # 3D 모델 단위가 meter인 경우를 가정하고, 2%를 기본으로 사용하되 상/하한을 둡니다.
+        LABEL_OFFSET_MIN_M = 0.002  # 2mm
+        LABEL_OFFSET_MAX_M = 0.02   # 20mm
+        offset_m = float(max(LABEL_OFFSET_MIN_M, min(LABEL_OFFSET_MAX_M, 0.02 * diag)))
+        return np.asarray(self._offset_point_toward_camera(point_np, offset_m), dtype=float)
+
+    def _unique_points(self, pts, decimals: int = 6):
+        """부동소수점 좌표를 반올림하여 중복 점을 제거합니다."""
+        import numpy as np
+
+        if pts is None or len(pts) == 0:
+            return np.empty((0, 3), dtype=float)
+        key = np.round(np.asarray(pts, dtype=float), decimals=decimals)
+        _, idx = np.unique(key, axis=0, return_index=True)
+        idx = np.sort(idx)
+        return np.asarray(pts, dtype=float)[idx]
+
+    def _build_point_locator(self, points_np):
+        """
+        numpy 포인트 배열로 vtkStaticPointLocator를 생성합니다.
+
+        Returns:
+            (vtkPolyData, vtkStaticPointLocator)
+        """
+        import vtk
+        import numpy as np
+
+        pts = np.asarray(points_np, dtype=float)
+        vtk_points = vtk.vtkPoints()
+        vtk_points.SetNumberOfPoints(len(pts))
+        for i, p in enumerate(pts):
+            vtk_points.SetPoint(i, float(p[0]), float(p[1]), float(p[2]))
+
+        poly = vtk.vtkPolyData()
+        poly.SetPoints(vtk_points)
+
+        locator = vtk.vtkStaticPointLocator()
+        locator.SetDataSet(poly)
+        locator.BuildLocator()
+        return poly, locator
+
+    def _extract_edge_snap_points(self, edge_poly):
+        """
+        feature edges(polyline)에서 End/Mid/Cen 후보 점을 추출합니다.
+
+        Assumption:
+            - edge_poly는 vtkPolyData이며 Lines에 polyline cell이 들어있습니다.
+            - End: 각 polyline의 시작/끝 점
+            - Mid: 각 polyline의 중간 인덱스 점(곡선도 대략적인 중간점)
+            - Cen: 닫힌 polyline(시작/끝이 거의 같은 경우)의 점 평균(대략 중심)
+        """
+        import numpy as np
+        import vtk
+
+        endpoints = []
+        midpoints = []
+        centers = []
+
+        if edge_poly is None:
+            return (
+                np.empty((0, 3), dtype=float),
+                np.empty((0, 3), dtype=float),
+                np.empty((0, 3), dtype=float),
+            )
+
+        pts_vtk = edge_poly.GetPoints()
+        lines = edge_poly.GetLines()
+        if pts_vtk is None or lines is None:
+            return (
+                np.empty((0, 3), dtype=float),
+                np.empty((0, 3), dtype=float),
+                np.empty((0, 3), dtype=float),
+            )
+
+        id_list = vtk.vtkIdList()
+        lines.InitTraversal()
+
+        # meter 단위에서 "거의 같은 점" 판단 (0.1mm 수준으로 완화)
+        closed_tol = 1e-4
+
+        while lines.GetNextCell(id_list):
+            n = id_list.GetNumberOfIds()
+            if n < 2:
+                continue
+
+            first_id = id_list.GetId(0)
+            last_id = id_list.GetId(n - 1)
+            p0 = np.array(pts_vtk.GetPoint(first_id), dtype=float)
+            p1 = np.array(pts_vtk.GetPoint(last_id), dtype=float)
+
+            endpoints.append(p0)
+            endpoints.append(p1)
+
+            mid_id = id_list.GetId(n // 2)
+            pm = np.array(pts_vtk.GetPoint(mid_id), dtype=float)
+            midpoints.append(pm)
+
+            # 닫힌 라인(loop)인 경우 중심점 후보 추가
+            if np.linalg.norm(p0 - p1) <= closed_tol and n >= 6:
+                loop_pts = np.array(
+                    [pts_vtk.GetPoint(id_list.GetId(i)) for i in range(n)], dtype=float
+                )
+                centers.append(loop_pts.mean(axis=0))
+
+        return (
+            np.asarray(endpoints, dtype=float),
+            np.asarray(midpoints, dtype=float),
+            np.asarray(centers, dtype=float),
+        )
+
+    def _select_snap_point_on_edges(self, world_point):
+        """
+        규칙 기반 스냅 포인트 선택기.
+
+        Rules:
+            1) 스냅 후보는 feature edges(모서리 표시 음영의 라인) 기반으로 제한한다.
+               - End, Mid, Near(라인 위 최근접점), Center(닫힌 루프의 중심)만 사용
+            2) 우선순위는 End → Mid (→ Center) 이다.
+               - Near는 End/Mid(그리고 Center)가 반경 내에 없을 때만 사용한다.
+
+        Returns:
+            (snapped_point: np.ndarray, kind: str, dist: float) or (None, None, None)
+        """
+        import numpy as np
+        import vtk
+        import math
+
+        if world_point is None:
+            return None, None, None
+
+        if not self._is_feature_edges_visible():
+            return None, None, None
+
+        cache = getattr(self, "_snap_edge_cache", None)
+        if not cache:
+            return None, None, None
+
+        radius = float(getattr(self, "measure_snap_distance", 0.005))
+        p = np.asarray(world_point, dtype=float)
+
+        want_end = bool(getattr(self, "snap_endpoint_cb", None) and self.snap_endpoint_cb.isChecked())
+        want_mid = bool(getattr(self, "snap_midpoint_cb", None) and self.snap_midpoint_cb.isChecked())
+        want_cen = bool(getattr(self, "snap_center_cb", None) and self.snap_center_cb.isChecked())
+        want_near = bool(getattr(self, "snap_near_cb", None) and self.snap_near_cb.isChecked())
+
+        def _nearest_from_point_cache(point_cache):
+            if not point_cache:
+                return None, None
+            pts = point_cache.get("points")
+            locator = point_cache.get("locator")
+            if pts is None or locator is None or len(pts) == 0:
+                return None, None
+
+            id_list = vtk.vtkIdList()
+            locator.FindPointsWithinRadius(radius, p, id_list)
+            n = id_list.GetNumberOfIds()
+            if n <= 0:
+                return None, None
+
+            # 후보들 중 실제 거리 기준 최단 선택
+            best_dist = float("inf")
+            best_pt = None
+            for i in range(n):
+                pid = id_list.GetId(i)
+                cand = pts[pid]
+                d = float(np.linalg.norm(p - cand))
+                if d < best_dist:
+                    best_dist = d
+                    best_pt = cand
+            return best_pt, best_dist
+
+        # 1) End
+        if want_end:
+            pt, dist = _nearest_from_point_cache(cache.get("end"))
+            if pt is not None:
+                return np.asarray(pt, dtype=float), "end", float(dist)
+
+        # 2) Mid
+        if want_mid:
+            pt, dist = _nearest_from_point_cache(cache.get("mid"))
+            if pt is not None:
+                return np.asarray(pt, dtype=float), "mid", float(dist)
+
+        # 3) Center
+        if want_cen:
+            pt, dist = _nearest_from_point_cache(cache.get("cen"))
+            if pt is not None:
+                return np.asarray(pt, dtype=float), "cen", float(dist)
+
+        # 4) Near: End/Mid/Cen이 반경 내에 없을 때만
+        if want_near:
+            locator = cache.get("cell_locator")
+            if locator is None:
+                return None, None, None
+
+            closest = [0.0, 0.0, 0.0]
+            cell_id = vtk.mutable(0)
+            sub_id = vtk.mutable(0)
+            dist2 = vtk.mutable(0.0)
+            locator.FindClosestPoint(p, closest, cell_id, sub_id, dist2)
+            d = math.sqrt(float(dist2))
+            if d <= radius:
+                return np.asarray(closest, dtype=float), "near", float(d)
+
+        return None, None, None
+
+    def _on_measure_point_picked_with_snap(self, point):
+        """
+        PyVista의 enable_point_picking에서 호출되는 콜백 함수.
+        스냅 기능을 적용합니다.
+        
+        Args:
+            point: 선택된 3D 좌표
+        """
+        import numpy as np
+        
+        if not self.measure_mode_active:
+            return
+        
+        # 점을 numpy array로 변환
+        if not isinstance(point, np.ndarray):
+            point = np.array(point)
+        
+        # 미리보기 제거
+        self._clear_snap_preview()
+        
+        # 호버 타이머 취소
+        if self.measure_hover_timer is not None:
+            self.measure_hover_timer.stop()
+            self.measure_hover_timer = None
+        
+        # 스냅 기능 적용: 가장 가까운 스냅 포인트 찾기
+        snapped_point = self._find_nearest_snap_point(point)
+        
+        # 점을 리스트에 추가
+        self.measure_points.append(snapped_point.copy())
+        
+        # 두 점이 선택되면 거리 계산 및 표시
+        if len(self.measure_points) == 2:
+            p1, p2 = self.measure_points[0], self.measure_points[1]
+            
+            # 축 거리 계산
+            delta = p2 - p1
+            delta_x_mm = delta[0] * 1000.0
+            delta_y_mm = delta[1] * 1000.0
+            delta_z_mm = delta[2] * 1000.0
+            
+            # 전체 거리 계산 (유클리드 거리)
+            distance = np.linalg.norm(delta)
+            distance_mm = distance * 1000.0
+            
+            # 두 점 사이의 선 그리기 (항상 위에 표시되도록)
+            try:
+                import pyvista as pv
+                line = pv.Line(p1, p2)
+                line_actor = self.plotter.add_mesh(
+                    line,
+                    color="red",
+                    line_width=3,
+                    name=f"measure_line_{len(self.measure_actors)}",
+                    render_lines_as_tubes=True,  # 튜브로 렌더링하여 더 잘 보이게
+                )
+                # 선이 항상 위에 표시되도록 Z-order 조정
+                if hasattr(line_actor, 'GetProperty'):
+                    line_actor.GetProperty().SetRenderLinesAsTubes(True)
+                    # Depth test 비활성화하여 선이 항상 위에 표시되도록
+                    line_actor.GetProperty().SetDepthTest(False)
+                self.measure_actors.append(line_actor)
+                
+                # 중간 지점에 거리 텍스트 표시 (축 거리 + 전체 거리)
+                mid_point = (p1 + p2) / 2
+                label_anchor = self._label_anchor_for_measurement(mid_point)
+                label_text = f"Δx: {delta_x_mm:.2f}mm\nΔy: {delta_y_mm:.2f}mm\nΔz: {delta_z_mm:.2f}mm\nTotal: {distance_mm:.2f}mm"
+                
+                # 텍스트 표시 (R값과 동일한 스타일: cyan, font_size=12)
+                text_actor = self.plotter.add_point_labels(
+                    [label_anchor],
+                    [label_text],
+                    font_size=12,
+                    always_visible=True,
+                    text_color="cyan",
+                    point_color="cyan",
+                    point_size=5,
+                    name=f"measure_text_{len(self.measure_actors)}"
+                )
+                self.measure_actors.append(text_actor)
+                
+                # 상태바에 거리 표시
+                self.statusBar().showMessage(
+                    f"측정 완료: {distance_mm:.2f} mm (Δx: {delta_x_mm:.2f}, Δy: {delta_y_mm:.2f}, Δz: {delta_z_mm:.2f} mm)", 
+                    5000
+                )
+                
+                # 다음 측정을 위해 점 리스트 초기화
+                self.measure_points = []
+                
+                # 렌더링 업데이트
+                self.plotter.render()
+            except Exception as e:
+                print(f"측정 결과 표시 오류: {e}")
+                self.measure_points = []
+        elif len(self.measure_points) == 1:
+            self.statusBar().showMessage("두 번째 점을 클릭하세요", 2000)
+
+    def _add_measure_point_marker(self, point_np, kind: str | None = None):
+        """
+        측정 포인트 마커(구)를 3D 씬에 추가합니다.
+
+        Why:
+            - PyVista 기본 point picking 마커(핑크 점)는 원본 픽 좌표에 표시됩니다.
+            - 본 기능은 "스냅된 좌표"에 측정 포인트가 표시되어야 사용자가 신뢰할 수 있습니다.
+
+        Args:
+            point_np: 월드 좌표 (numpy array shape=(3,))
+            kind: 스냅 종류(end/mid/cen/near). 없으면 기본 색상을 사용합니다.
+        """
+        import numpy as np
+        import pyvista as pv
+
+        if not hasattr(self, "plotter") or self.plotter is None:
+            return
+
+        try:
+            p = np.asarray(point_np, dtype=float).reshape(3)
+
+            # NOTE: 모델 단위(meter) 기준. 2.5mm는 사용자 피드백으로 "눈에 잘 보이는" 크기였습니다.
+            MEASURE_POINT_RADIUS_M = 0.0025
+
+            color_map = {
+                "end": "red",
+                "mid": "lime",
+                "cen": "cyan",
+                "near": "yellow",
+            }
+            # 측정 포인트는 사용자가 "찍힌 점"으로 인지하기 쉬운 색(마젠타)을 기본값으로 사용
+            color = color_map.get(kind, "magenta")
+
+            sphere = pv.Sphere(radius=MEASURE_POINT_RADIUS_M, center=p)
+            actor = self.plotter.add_mesh(
+                sphere,
+                color=color,
+                opacity=0.9,
+                name=f"measure_point_{len(getattr(self, 'measure_actors', []))}",
+            )
+            self.measure_actors.append(actor)
+        except Exception as e:
+            print(f"측정 포인트 마커 추가 오류: {e}")
+
+    def _on_measure_r_mode_toggled(self, checked: bool) -> None:
+        """
+        R(반경) 측정 서브모드 토글 슬롯.
+
+        Args:
+            checked: True면 radius 모드, False면 distance 모드
+        """
+        self.measure_submode = "radius" if checked else "distance"
+
+        # 측정 모드가 켜져 있을 때만 사용자 안내를 갱신
+        if getattr(self, "measure_mode_active", False):
+            if self.measure_submode == "radius":
+                self.statusBar().showMessage("치수 측정(R): Shift+좌클릭으로 원/홀(모서리) 클릭", 2500)
+            else:
+                self.statusBar().showMessage("치수 측정(D): Shift+좌클릭으로 두 점을 선택", 2500)
+
+    def _on_measure_mouse_click_qt(self, event) -> None:
+        """
+        측정 모드에서 마우스 클릭(QMouseEvent)을 처리합니다.
+
+        핵심 동작:
+            - feature_edges 우선 픽킹 -> 실패 시 일반 픽킹으로 폴백
+            - 스냅 규칙(End > Mid > Center > Near)을 적용하여 최종 좌표를 확정
+            - 확정된 스냅 좌표에 "측정 포인트 마커"를 표시
+        """
+        import numpy as np
+        import pyvista as pv
+
+        if not getattr(self, "measure_mode_active", False):
+            return
+
+        if not hasattr(self, "plotter") or self.plotter is None:
+            return
+
+        try:
+            # 호버 미리보기 제거 및 타이머 정리 (클릭 확정 시에는 미리보기 필요 없음)
+            self._clear_snap_preview()
+            if getattr(self, "measure_hover_timer", None) is not None:
+                try:
+                    self.measure_hover_timer.stop()
+                except Exception:
+                    pass
+                self.measure_hover_timer = None
+
+            widget_pos = event.position().toPoint()
+
+            raw_point = None
+            picked_from_edges = False
+            if self._is_feature_edges_visible():
+                raw_point = self._pick_world_point_from_feature_edges(widget_pos)
+                picked_from_edges = raw_point is not None
+            if raw_point is None:
+                raw_point = self._pick_world_point_generic(widget_pos)
+            if raw_point is None:
+                self.statusBar().showMessage("표면을 선택할 수 없습니다. 다시 시도하세요.", 2000)
+                return
+
+            raw_np = np.asarray(raw_point, dtype=float)
+            
+            # raw_point가 유효한지 확인 (카메라에서 너무 멀리 떨어진 경우 필터링)
+            camera = self.plotter.camera
+            camera_pos = np.array(camera.position)
+            dist_to_camera = np.linalg.norm(raw_np - camera_pos)
+            # 카메라에서 10m 이상 떨어진 경우는 무효로 간주 (일반적인 CAD 모델 크기 고려)
+            if dist_to_camera > 10.0:
+                self.statusBar().showMessage("표면을 선택할 수 없습니다. 다시 시도하세요.", 2000)
+                return
+
+            # 스냅 포인트 선택(반경 내에 없으면 raw 좌표를 사용)
+            snapped_point, kind, _dist = self._select_snap_point_on_edges(raw_np)
+            if snapped_point is not None:
+                final_point = np.asarray(snapped_point, dtype=float)
+                final_kind = kind
+            else:
+                # 스냅 포인트가 없으면 raw_point 사용 (하지만 raw_point가 유효한지 이미 확인함)
+                final_point = raw_np
+                final_kind = None
+            
+            # 디버깅: 최종 포인트 위치 확인
+            print(f"[DEBUG] 측정 포인트: raw={raw_np}, final={final_point}, snapped={snapped_point is not None}, kind={final_kind}")
+
+            # measure_actors 초기화 확인
+            if not hasattr(self, "measure_actors"):
+                self.measure_actors = []
+            
+            # 확정된 좌표(스냅 좌표)에 측정 포인트 마커 표시
+            try:
+                self._add_measure_point_marker(final_point, final_kind)
+            except Exception as marker_err:
+                print(f"[DEBUG] 마커 추가 오류: {marker_err}")
+                import traceback
+                traceback.print_exc()
+
+            # 내부 측정 포인트 리스트에 추가
+            if not hasattr(self, "measure_points"):
+                self.measure_points = []
+            
+            # 이미 두 점이 선택된 경우, 이전 측정을 초기화하고 새로 시작
+            if len(self.measure_points) >= 2:
+                self.measure_points = []
+            
+            self.measure_points.append(final_point.copy())
+
+            if len(self.measure_points) == 1:
+                self.statusBar().showMessage("두 번째 점을 클릭하세요", 2000)
+                try:
+                    self.plotter.render()
+                except Exception:
+                    pass
+                return
+
+            # 두 점이 선택된 경우에만 측정 수행
+            if len(self.measure_points) != 2:
+                print(f"[DEBUG] 측정 포인트 수가 2가 아님: {len(self.measure_points)}")
+                return
+
+            p1, p2 = self.measure_points[0], self.measure_points[1]
+            print(f"[DEBUG] 두 점 선택됨: p1={p1}, p2={p2}")
+            
+            # 축 거리 계산
+            delta = p2 - p1
+            delta_x_mm = delta[0] * 1000.0
+            delta_y_mm = delta[1] * 1000.0
+            delta_z_mm = delta[2] * 1000.0
+            
+            # 전체 거리 계산 (유클리드 거리)
+            distance_m = float(np.linalg.norm(delta))
+            distance_mm = distance_m * 1000.0  # 1m = 1000mm
+
+            # measure_actors 초기화 확인 (중복 체크)
+            if not hasattr(self, "measure_actors"):
+                self.measure_actors = []
+            
+            # 선 + 텍스트 표시 (선이 항상 위에 표시되도록)
+            try:
+                import pyvista as pv
+                line = pv.Line(p1, p2)
+                line_actor = self.plotter.add_mesh(
+                    line, 
+                    color="red", 
+                    line_width=3, 
+                    name=f"measure_line_{len(self.measure_actors)}",
+                    render_lines_as_tubes=True,  # 튜브로 렌더링하여 더 잘 보이게
+                )
+                # 선이 항상 위에 표시되도록 Z-order 조정
+                if hasattr(line_actor, 'GetProperty'):
+                    line_actor.GetProperty().SetRenderLinesAsTubes(True)
+                    # Depth test 비활성화하여 선이 항상 위에 표시되도록
+                    line_actor.GetProperty().SetDepthTest(False)
+                self.measure_actors.append(line_actor)
+            except Exception as line_err:
+                print(f"선 그리기 오류: {line_err}")
+                import traceback
+                traceback.print_exc()
+
+            mid_point = (p1 + p2) / 2
+            label_anchor = self._label_anchor_for_measurement(mid_point)
+            label_text = f"Δx: {delta_x_mm:.2f}mm\nΔy: {delta_y_mm:.2f}mm\nΔz: {delta_z_mm:.2f}mm\nTotal: {distance_mm:.2f}mm"
+            
+            # 텍스트 표시 (R값과 동일한 스타일: cyan, font_size=12)
+            try:
+                text_actor = self.plotter.add_point_labels(
+                    [label_anchor],
+                    [label_text],
+                    font_size=12,
+                    always_visible=True,
+                    text_color="cyan",
+                    point_color="cyan",
+                    point_size=5,
+                    name=f"measure_text_{len(self.measure_actors)}",
+                )
+                self.measure_actors.append(text_actor)
+            except Exception as text_err:
+                print(f"텍스트 표시 오류: {text_err}")
+                import traceback
+                traceback.print_exc()
+
+            # 상태바 메시지(픽 소스도 함께 표시하면 사용자가 디버깅에 도움)
+            src = "EDGE" if picked_from_edges else "SURF"
+            self.statusBar().showMessage(f"측정 완료: {distance_mm:.2f} mm (Δx: {delta_x_mm:.2f}, Δy: {delta_y_mm:.2f}, Δz: {delta_z_mm:.2f} mm, 픽={src})", 5000)
+
+            # 다음 측정을 위해 내부 점 리스트만 초기화 (마커/선/텍스트는 유지)
+            self.measure_points = []
+
+            try:
+                self.plotter.render()
+            except Exception:
+                pass
+            
+            # 측정 완료 후 즉시 리턴 (다음 클릭이 새로운 측정 시작)
+            return
+        except Exception as e:
+            print(f"측정 클릭 처리 오류: {e}")
+
+    def _fit_circle_from_3_points(self, p1, p2, p3):
+        """
+        3개의 3D 점으로부터 원을 계산합니다.
+        
+        방법:
+        1. 3점으로 평면 결정
+        2. 평면에 2D 좌표계 설정
+        3. 3점을 2D로 투영
+        4. 2D에서 원 계산
+        5. 원을 3D 좌표로 변환
+        
+        Args:
+            p1, p2, p3: 3D 점 (numpy array shape=(3,))
+            
+        Returns:
+            (center_3d, radius_m, normal, plane_origin) 또는 None
+        """
+        import numpy as np
+        
+        p1 = np.asarray(p1, dtype=float).reshape(3)
+        p2 = np.asarray(p2, dtype=float).reshape(3)
+        p3 = np.asarray(p3, dtype=float).reshape(3)
+        
+        # 일직선상에 있는지 확인 (각도 기준으로 판단)
+        v1 = p2 - p1
+        v2 = p3 - p1
+        v1_norm = np.linalg.norm(v1)
+        v2_norm = np.linalg.norm(v2)
+        
+        # 두 벡터의 크기가 0이면 오류
+        if v1_norm < 1e-10 or v2_norm < 1e-10:
+            return None
+        
+        # 정규화된 벡터로 각도 계산
+        v1_unit = v1 / v1_norm
+        v2_unit = v2 / v2_norm
+        
+        # 내적을 이용한 각도 계산 (cos(angle) = dot(v1_unit, v2_unit))
+        dot_product = np.clip(np.dot(v1_unit, v2_unit), -1.0, 1.0)
+        angle_rad = np.arccos(dot_product)
+        angle_deg = np.degrees(angle_rad)
+        
+        # 일직선 검사: 외적 크기가 상대적으로 매우 작은 경우만 일직선으로 판단
+        cross = np.cross(v1, v2)
+        cross_norm = np.linalg.norm(cross)
+        
+        # 외적 크기를 두 벡터의 평균 길이로 나눈 값 (sin(angle)에 비례)
+        avg_length = (v1_norm + v2_norm) / 2.0
+        relative_cross = cross_norm / avg_length if avg_length > 1e-10 else 0.0
+        
+        # 상대 외적이 매우 작으면 일직선 (약 0.1도 미만, sin(0.1°) ≈ 0.0017)
+        # 기준을 매우 엄격하게 설정하여 실제 일직선인 경우만 걸러냄
+        if relative_cross < 0.001:
+            return None
+        
+        # 3. 평면의 법선 벡터 계산 (일직선이 아니므로 cross는 0이 아님)
+        normal = cross / cross_norm
+        
+        # 4. 평면의 원점 (p1 사용)
+        plane_origin = p1.copy()
+        
+        # 5. 평면에 2D 좌표계 설정
+        # u: p1 -> p2 방향
+        u = v1 / np.linalg.norm(v1)
+        # v: normal과 u의 외적 (평면 내 수직 벡터)
+        v = np.cross(normal, u)
+        v = v / np.linalg.norm(v)
+        
+        # 6. 3점을 2D로 투영
+        def to_2d(p3d):
+            rel = p3d - plane_origin
+            return np.array([np.dot(rel, u), np.dot(rel, v)])
+        
+        q1 = to_2d(p1)
+        q2 = to_2d(p2)
+        q3 = to_2d(p3)
+        
+        # 7. 2D에서 원 계산 (3점으로 원의 중심과 반경 계산)
+        # 3점이 만드는 원의 중심은 두 수직 이등분선의 교점
+        mid12 = (q1 + q2) / 2.0
+        mid23 = (q2 + q3) / 2.0
+        dir12 = q2 - q1
+        dir23 = q3 - q2
+        
+        # 수직 벡터
+        perp12 = np.array([-dir12[1], dir12[0]])
+        perp23 = np.array([-dir23[1], dir23[0]])
+        
+        # 두 수직 이등분선의 교점 계산
+        # mid12 + t * perp12 = mid23 + s * perp23
+        # t * perp12 - s * perp23 = mid23 - mid12
+        A = np.column_stack([perp12, -perp23])
+        b = mid23 - mid12
+        
+        try:
+            ts = np.linalg.solve(A, b)
+            t = ts[0]
+            center_2d = mid12 + t * perp12
+        except np.linalg.LinAlgError:
+            # 수치 오류 시 대체 방법: 외심 계산
+            # 외심은 세 변의 수직 이등분선의 교점
+            # 더 안정적인 방법 사용
+            a = np.linalg.norm(q2 - q3)
+            b = np.linalg.norm(q3 - q1)
+            c = np.linalg.norm(q1 - q2)
+            s = (a + b + c) / 2.0
+            area = np.sqrt(s * (s - a) * (s - b) * (s - c))
+            if area < 1e-10:
+                return None
+            
+            # 외심 좌표
+            center_2d = (a * q1 + b * q2 + c * q3) / (a + b + c)
+        
+        # 8. 반경 계산
+        radius_2d = np.linalg.norm(q1 - center_2d)
+        
+        # 9. 2D 중심을 3D로 변환
+        center_3d = plane_origin + center_2d[0] * u + center_2d[1] * v
+        
+        return (center_3d, radius_2d, normal, plane_origin)
+    
+    def _on_measure_radius_click_qt(self, event) -> None:
+        """
+        3포인트 원 측정 방식으로 R(반경) 또는 Ø(지름)을 측정합니다.
+        
+        P1, P2, P3를 순서대로 클릭하여 원을 결정합니다.
+        
+        Args:
+            event: PySide6 QMouseEvent
+        """
+        import numpy as np
+        import pyvista as pv
+
+        if not getattr(self, "measure_mode_active", False):
+            return
+        if not hasattr(self, "plotter") or self.plotter is None:
+            return
+
+        try:
+            # 미리보기 제거/타이머 정리
+            self._clear_snap_preview()
+            if getattr(self, "measure_hover_timer", None) is not None:
+                try:
+                    self.measure_hover_timer.stop()
+                except Exception:
+                    pass
+                self.measure_hover_timer = None
+
+            # 스냅 캐시가 없으면 준비(가벼운 1회성)
+            if getattr(self, "_snap_edge_cache", None) is None:
+                try:
+                    self._calculate_snap_points(self.plotter)
+                except Exception:
+                    pass
+
+            widget_pos = event.position().toPoint()
+
+            # 클릭 지점 월드 좌표(엣지 우선 픽킹)
+            raw_point = None
+            if self._is_feature_edges_visible():
+                raw_point = self._pick_world_point_from_feature_edges(widget_pos)
+
+            # 표면 기반 폴백
+            if raw_point is None:
+                try:
+                    surface_point, _ = self._pick_world_point_generic_with_polydata(widget_pos)
+                    if surface_point is not None:
+                        raw_point = surface_point
+                except Exception:
+                    pass
+
+            if raw_point is None:
+                return
+
+            # 스냅 포인트 찾기
+            snapped_point = self._find_nearest_snap_point(raw_point)
+            if snapped_point is None:
+                snapped_point = raw_point.copy()
+            
+            clicked_point = np.asarray(snapped_point, dtype=float).reshape(3)
+            
+            # measure_points 리스트 초기화 (없으면)
+            if not hasattr(self, "measure_points"):
+                self.measure_points = []
+            
+            # 포인트 추가
+            self.measure_points.append(clicked_point.copy())
+            
+            # P1, P2, P3 표시
+            point_num = len(self.measure_points)
+            if point_num == 1:
+                # P1 표시
+                self._add_measure_point_marker(clicked_point, "end")
+                try:
+                    self.statusBar().showMessage("P1 선택됨. P2를 선택하세요.", 2000)
+                except Exception:
+                    pass
+            elif point_num == 2:
+                # P2 표시
+                self._add_measure_point_marker(clicked_point, "mid")
+                try:
+                    self.statusBar().showMessage("P2 선택됨. P3를 선택하세요.", 2000)
+                except Exception:
+                    pass
+            elif point_num == 3:
+                # P3 표시
+                self._add_measure_point_marker(clicked_point, "cen")
+                
+                # 3점으로 원 계산
+                p1, p2, p3 = self.measure_points[0], self.measure_points[1], self.measure_points[2]
+                result = self._fit_circle_from_3_points(p1, p2, p3)
+                
+                if result is None:
+                    # 오류: 너무 가깝거나 일직선
+                    self.measure_points = []  # 리셋
+                    self._clear_measurements()  # 기존 마커 제거
+                    try:
+                        # 팝업 창으로 오류 메시지 표시
+                        msg_box = QtWidgets.QMessageBox(self)
+                        msg_box.setIcon(QtWidgets.QMessageBox.Warning)
+                        msg_box.setWindowTitle("측정 오류")
+                        msg_box.setText("3점이 일직선상에 있습니다.")
+                        msg_box.setInformativeText("원을 결정할 수 없습니다. 다시 선택해주세요.")
+                        msg_box.setStandardButtons(QtWidgets.QMessageBox.Ok)
+                        msg_box.exec()
+                    except Exception:
+                        pass
+                    return
+                
+                center_3d, radius_m, normal, plane_origin = result
+                radius_mm = float(radius_m) * 1000.0
+                dia_mm = radius_mm * 2.0
+                
+                # 원 그리기 (평면에 원 생성)
+                # 평면의 u, v 벡터 계산
+                v1 = p2 - p1
+                u = v1 / np.linalg.norm(v1)
+                v = np.cross(normal, u)
+                v = v / np.linalg.norm(v)
+                
+                # 원을 3D로 그리기 (원주를 여러 점으로 표현)
+                num_points = 64
+                circle_points = []
+                for i in range(num_points + 1):
+                    angle = 2.0 * np.pi * i / num_points
+                    offset_2d = radius_m * np.array([np.cos(angle), np.sin(angle)])
+                    point_3d = center_3d + offset_2d[0] * u + offset_2d[1] * v
+                    circle_points.append(point_3d)
+                
+                # 원을 폴리라인으로 그리기
+                circle_poly = pv.PolyData(circle_points)
+                circle_poly.lines = [num_points + 1] + list(range(num_points + 1))
+                circle_actor = self.plotter.add_mesh(
+                    circle_poly,
+                    color="cyan",
+                    line_width=3,
+                    name=f"measure_circle_{len(self.measure_actors)}",
+                )
+                self.measure_actors.append(circle_actor)
+                
+                # 중심 마커
+                self._add_measure_point_marker(center_3d, "cen")
+                
+                # 라벨 표시 (Rx(Ø2x) 형식)
+                label = f"R{radius_mm:.2f}mm (Ø{dia_mm:.2f}mm)"
+                
+                # 라벨 위치 (중심에서 약간 위로)
+                label_offset = normal * (radius_m * 0.3)  # 평면 위로 약간
+                label_pos = center_3d + label_offset
+                label_anchor = self._label_anchor_for_measurement(label_pos)
+                
+                text_actor = self.plotter.add_point_labels(
+                    [label_anchor],
+                    [label],
+                    font_size=12,
+                    always_visible=True,
+                    text_color="cyan",
+                    point_color="cyan",
+                    point_size=5,
+                    name=f"measure_r_text_{len(self.measure_actors)}",
+                )
+                self.measure_actors.append(text_actor)
+                
+                # 측정 완료 메시지
+                try:
+                    self.statusBar().showMessage(f"R 측정 완료: {radius_mm:.2f} mm (Ø {dia_mm:.2f} mm)", 5000)
+                except Exception:
+                    pass
+                
+                # 포인트 리스트 초기화 (다음 측정을 위해)
+                self.measure_points = []
+                
+            elif point_num > 3:
+                # 3개 초과 시 리셋
+                self.measure_points = []
+                self._clear_measurements()
+                try:
+                    self.statusBar().showMessage("3포인트 측정을 다시 시작합니다.", 2000)
+                except Exception:
+                    pass
+                return
+
+            try:
+                self.plotter.render()
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"R 측정 처리 오류: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _fit_circle_from_feature_edges(self, seed_point_np):
+        """
+        feature_edges에서 seed 점이 속한 '연결 컴포넌트(루프 후보)'를 추출한 뒤 원을 피팅합니다.
+
+        Note:
+            - hole의 원형 엣지는 보통 다른 엣지와 연결되지 않는 독립 컴포넌트인 경우가 많아,
+              연결 컴포넌트 추출만으로도 충분히 잘 동작합니다.
+            - 만약 다른 라인과 연결된 큰 컴포넌트가 잡히면 피팅 오차(RMS)가 커져서 자동으로 실패 처리됩니다.
+
+        Args:
+            seed_point_np: 클릭한 월드 좌표 (numpy array shape=(3,))
+
+        Returns:
+            (center3, radius_m, point_on_edge, rms_m, src) 또는 None
+            - src: "loop" | "local"
+        """
+        import numpy as np
+        import vtk
+        # NOTE:
+        #   일부 환경에서는 IDE/정적 분석기가 `vtk.util.numpy_support` 경로를 제대로 인식하지 못합니다.
+        #   VTK 9+ 표준 모듈 경로인 `vtkmodules.util.numpy_support`를 사용합니다.
+        from vtkmodules.util.numpy_support import vtk_to_numpy
+
+        def _fit_tol_m(radius_m: float) -> float:
+            """
+            원 피팅 허용 오차(meter).
+
+            Why:
+                - 작은 홀(예: 6~10mm)은 0.5mm 허용 오차가 너무 커서,
+                  클릭 위치/혼입 점에 따라 값이 흔들릴 수 있습니다.
+                - 본 앱은 '간단 확인' 용도지만, 같은 홀은 같은 값이 나와야 하므로
+                  작은 반경에서는 더 타이트하게 제한합니다.
+            """
+            r = float(radius_m)
+            return max(0.00015, min(0.0008, 0.01 * r))  # 0.15mm ~ 0.8mm, 또는 반경의 1%
+
+        cache = getattr(self, "_snap_edge_cache", None)
+        if not cache:
+            return None
+
+        edge_poly = cache.get("edge_poly")
+        locator = cache.get("cell_locator")
+        if edge_poly is None or locator is None:
+            return None
+
+        p = np.asarray(seed_point_np, dtype=float).reshape(3)
+
+        # 1) seed 주변에서 edge_poly의 가장 가까운 점/셀 찾기
+        closest = [0.0, 0.0, 0.0]
+        cell_id = vtk.mutable(0)
+        sub_id = vtk.mutable(0)
+        dist2 = vtk.mutable(0.0)
+        locator.FindClosestPoint(p, closest, cell_id, sub_id, dist2)
+
+        # 2) 1차 시도: 연결 영역(루프 후보) 추출 후 원 피팅
+        # Why:
+        #   - 홀(원형 엣지)은 보통 독립 컴포넌트라, connectivity 기반이 빠르고 정확합니다.
+        fit = None
+        try:
+            conn = vtk.vtkPolyDataConnectivityFilter()
+            conn.SetInputData(edge_poly)
+            conn.SetExtractionModeToClosestPointRegion()
+            conn.SetClosestPoint(float(closest[0]), float(closest[1]), float(closest[2]))
+            conn.Update()
+            region = conn.GetOutput()
+            if region is not None and region.GetNumberOfPoints() >= 8:
+                # region 내 라인들을 polyline으로 정리한 뒤,
+                # "원형으로 가장 잘 맞는" polyline을 선택합니다.
+                stripper = vtk.vtkStripper()
+                stripper.SetInputData(region)
+                stripper.Update()
+                stripped = stripper.GetOutput()
+
+                best = None  # (center3, radius_m, point_on_edge, rms_m)
+                if stripped is not None and stripped.GetNumberOfCells() > 0:
+                    for cid in range(int(stripped.GetNumberOfCells())):
+                        cell = stripped.GetCell(cid)
+                        if cell is None:
+                            continue
+                        ids = cell.GetPointIds()
+                        if ids is None or int(ids.GetNumberOfIds()) < 8:
+                            continue
+                        pts = []
+                        for i in range(int(ids.GetNumberOfIds())):
+                            pid = int(ids.GetId(i))
+                            pt = stripped.GetPoint(pid)
+                            if pt is not None:
+                                pts.append([pt[0], pt[1], pt[2]])
+                        if len(pts) < 8:
+                            continue
+                        pts = np.asarray(pts, dtype=float)
+                        pts = self._unique_points(pts, decimals=6)
+                        if len(pts) < 8:
+                            continue
+                        if len(pts) > 3000:
+                            step = max(1, len(pts) // 1500)
+                            pts = pts[::step]
+
+                        # seed(클릭)와 너무 먼 polyline은 배제 (동일 region에 다른 루프가 섞인 경우 방지)
+                        try:
+                            dmin = float(np.min(np.linalg.norm(pts - p.reshape(1, 3), axis=1)))
+                            if dmin > max(0.02, 10.0 * self.measure_snap_distance):
+                                continue
+                        except Exception:
+                            pass
+
+                        circle = self._fit_circle_3d(pts)
+                        if circle is None:
+                            continue
+                        center3, radius_m, rms_m = circle
+                        if radius_m <= 0:
+                            continue
+
+                        tol_m = _fit_tol_m(radius_m)
+                        if float(rms_m) > tol_m:
+                            continue
+
+                        cand = (
+                            np.asarray(center3, dtype=float),
+                            float(radius_m),
+                            np.asarray(closest, dtype=float),
+                            float(rms_m),
+                        )
+                        if best is None or cand[3] < best[3]:
+                            best = cand
+
+                if best is None:
+                    # 폴리라인 기반이 실패하면 region 전체 포인트로 한 번 더 시도(이전 로직 유지)
+                    pts_vtk = region.GetPoints()
+                    if pts_vtk is not None:
+                        pts = vtk_to_numpy(pts_vtk.GetData())
+                        if pts is not None and len(pts) >= 8:
+                            pts = np.asarray(pts, dtype=float)
+                            if len(pts) > 4000:
+                                step = max(1, len(pts) // 2000)
+                                pts = pts[::step]
+                            pts = self._unique_points(pts, decimals=6)
+                            if len(pts) >= 8:
+                                circle = self._fit_circle_3d(pts)
+                                if circle is not None:
+                                    center3, radius_m, rms_m = circle
+                                    if radius_m > 0 and float(rms_m) <= _fit_tol_m(radius_m):
+                                        best = (
+                                            np.asarray(center3, dtype=float),
+                                            float(radius_m),
+                                            np.asarray(closest, dtype=float),
+                                            float(rms_m),
+                                        )
+
+                fit = best
+        except Exception:
+            # connectivity 기반은 실패해도 폴백이 있으므로 조용히 진행합니다.
+            fit = None
+
+        if fit is not None:
+            return (*fit, "loop")
+
+        # 3) 2차 폴백: 클릭 지점 주변(로컬) 점만 모아서 원 피팅
+        # Why:
+        #   - 외곽 라운드(예: 판재 외곽 코너 R)는 "외곽 루프(직선+라운드)"로 모두 연결되어 있어,
+        #     connectivity로 뽑으면 직선 구간까지 섞여 피팅이 실패하기 쉽습니다.
+        #   - 사용자는 라운드의 '일부분'만 클릭하므로, 주변 점을 제한적으로 샘플링해서 피팅해야 합니다.
+        edge_points_np = cache.get("edge_points_np")
+        edge_point_locator = cache.get("edge_point_locator")
+        if edge_points_np is None or edge_point_locator is None:
+            return None
+
+        # 모델 스케일에 따라 탐색 반경을 적응적으로 결정합니다.
+        # - start: 모델 대각선의 1% 또는 5mm 중 큰 값
+        # - 확장: 점이 부족하거나 피팅 실패 시 점진적으로 확장
+        b = edge_poly.GetBounds()
+        diag = float(
+            np.sqrt((b[1] - b[0]) ** 2 + (b[3] - b[2]) ** 2 + (b[5] - b[4]) ** 2)
+        )
+        start_r = max(0.005, 0.01 * diag)  # meter 기준: 5mm 또는 diag의 1%
+        radii = [start_r, start_r * 1.7, start_r * 3.0, start_r * 5.0, start_r * 8.0]
+
+        best = None  # (center3, radius_m, point_on_edge, rms_m)
+        for search_r in radii:
+            id_list = vtk.vtkIdList()
+            edge_point_locator.FindPointsWithinRadius(float(search_r), closest, id_list)
+            n = int(id_list.GetNumberOfIds())
+            if n < 12:
+                continue
+
+            ids = [id_list.GetId(i) for i in range(n)]
+            pts = np.asarray(edge_points_np[ids], dtype=float)
+            if len(pts) > 6000:
+                step = max(1, len(pts) // 2500)
+                pts = pts[::step]
+
+            pts = self._unique_points(pts, decimals=6)
+            if len(pts) < 12:
+                continue
+
+            circle = self._fit_circle_3d(pts)
+            if circle is None:
+                continue
+
+            center3, radius_m, rms_m = circle
+            if radius_m <= 0:
+                continue
+
+            tol_m = _fit_tol_m(radius_m)
+            if float(rms_m) > tol_m:
+                continue
+
+            cand = (
+                np.asarray(center3, dtype=float),
+                float(radius_m),
+                np.asarray(closest, dtype=float),
+                float(rms_m),
+            )
+            # 더 작은 RMS를 선호 (라운드/홀 모두에서 자연스럽게 동작)
+            if best is None or cand[3] < best[3]:
+                best = cand
+
+            # 작은 반경에서 이미 잘 맞으면 바로 종료(불필요 확장 방지)
+            if float(rms_m) <= max(0.0003, 0.01 * float(radius_m)):
+                break
+
+        return (*best, "local") if best is not None else None
+
+    def _fit_radius_from_surface_neighborhood(self, seed_point_np, surface_polydata):
+        """
+        표면(메시) 포인트의 로컬 이웃을 이용해 원통(필렛/홀) 반경을 추정합니다.
+
+        핵심 아이디어:
+            - CAD 필렛/코너 라운드는 "날카로운 모서리"가 아니라서 feature_edges로 잡히지 않는 경우가 많습니다.
+            - 이런 경우 사용자가 클릭한 표면 주변 점들을 모아,
+              1) (개선) 표면 법선(normal) 분포로 원통 축(axis)을 추정하고
+              2) 축에 수직인 평면에서 원(단면)을 피팅하여 반경을 얻습니다.
+
+        Args:
+            seed_point_np: 클릭한 월드 좌표 (3,)
+            surface_polydata: 클릭된 표면의 vtkPolyData
+
+        Returns:
+            (center3, radius_m, point_on_surface, rms_m, src) 또는 None
+            - src: "surf"
+        """
+        import numpy as np
+        import vtk
+
+        if surface_polydata is None:
+            return None
+
+        try:
+            # 0) 캐시/로케이터 준비
+            key = id(surface_polydata)
+            mtime = int(surface_polydata.GetMTime())
+            cache = getattr(self, "_surface_point_locator_cache", {})
+            entry = cache.get(key)
+
+            from vtkmodules.util.numpy_support import vtk_to_numpy
+
+            if entry is None or int(entry.get("mtime", -1)) != mtime:
+                pts_vtk = surface_polydata.GetPoints()
+                if pts_vtk is None or pts_vtk.GetNumberOfPoints() < 20:
+                    return None
+                pts_np = vtk_to_numpy(pts_vtk.GetData())
+                if pts_np is None or len(pts_np) < 20:
+                    return None
+
+                # 표면 법선 계산(필렛/원통 축 추정용)
+                try:
+                    normals_f = vtk.vtkPolyDataNormals()
+                    normals_f.SetInputData(surface_polydata)
+                    normals_f.ComputePointNormalsOn()
+                    normals_f.ComputeCellNormalsOff()
+                    normals_f.SplittingOff()  # 불필요한 노멀 분할로 노이즈가 커지는 것을 방지
+                    normals_f.ConsistencyOn()
+                    normals_f.AutoOrientNormalsOn()
+                    normals_f.Update()
+                    poly_n = normals_f.GetOutput()
+                    n_vtk = poly_n.GetPointData().GetNormals() if poly_n is not None else None
+                    normals_np = vtk_to_numpy(n_vtk) if n_vtk is not None else None
+                except Exception:
+                    poly_n = surface_polydata
+                    normals_np = None
+
+                try:
+                    locator = vtk.vtkStaticPointLocator()
+                except Exception:
+                    locator = vtk.vtkPointLocator()
+                locator.SetDataSet(surface_polydata)
+                locator.BuildLocator()
+
+                entry = {
+                    "mtime": mtime,
+                    "points_np": np.asarray(pts_np, dtype=float),
+                    "locator": locator,
+                    "normals_np": np.asarray(normals_np, dtype=float) if normals_np is not None else None,
+                }
+                cache[key] = entry
+                self._surface_point_locator_cache = cache
+
+            pts_all = entry["points_np"]
+            locator = entry["locator"]
+            normals_all = entry.get("normals_np")
+
+            seed = np.asarray(seed_point_np, dtype=float).reshape(3)
+
+            # 1) 탐색 반경(모델 크기 기반)
+            diag = self._compute_visible_bounds_diag_m()
+            # NOTE:
+            #   기존 반경이 커서(3mm~) 주변 평면까지 섞이는 경우가 많았습니다.
+            #   필렛은 국소 곡면이므로 더 작은 반경부터 시작해 단계적으로 확장합니다.
+            start_r = max(0.0015, 0.002 * diag)  # 1.5mm 또는 diag의 0.2%
+            radii = [start_r, start_r * 1.8, start_r * 3.0, start_r * 4.8]
+
+            def _fit_tol_m(radius_m: float) -> float:
+                # 표면 기반은 노이즈가 더 있으므로 edges보다 약간 관대하되,
+                # 작은 홀은 여전히 타이트하게 유지합니다.
+                r = float(radius_m)
+                return max(0.0002, min(0.0012, 0.015 * r))  # 0.2mm~1.2mm, 또는 반경의 1.5%
+
+            def _circle_from_3pts(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray):
+                """
+                2D에서 3점으로 원을 계산합니다.
+                Returns: (cx, cy, r) 또는 None
+                """
+                import numpy as np
+
+                x1, y1 = float(p1[0]), float(p1[1])
+                x2, y2 = float(p2[0]), float(p2[1])
+                x3, y3 = float(p3[0]), float(p3[1])
+                a = x1 - x2
+                b = y1 - y2
+                c = x1 - x3
+                d = y1 - y3
+                e = (x1 * x1 - x2 * x2 + y1 * y1 - y2 * y2) / 2.0
+                f = (x1 * x1 - x3 * x3 + y1 * y1 - y3 * y3) / 2.0
+                det = a * d - b * c
+                if abs(det) < 1e-12:
+                    return None
+                cx = (d * e - b * f) / det
+                cy = (-c * e + a * f) / det
+                r = float(np.sqrt((x1 - cx) ** 2 + (y1 - cy) ** 2))
+                if not np.isfinite(r) or r <= 0:
+                    return None
+                return float(cx), float(cy), float(r)
+
+            def _circle_fit_lsq(x: np.ndarray, y: np.ndarray):
+                """LSQ circle fit. Returns (cx, cy, r, rms, coverage) or None."""
+                import numpy as np
+
+                x = np.asarray(x, dtype=float)
+                y = np.asarray(y, dtype=float)
+                if x.size < 8:
+                    return None
+                A_mat = np.c_[x, y, np.ones_like(x)]
+                b_vec = -(x * x + y * y)
+                sol, *_ = np.linalg.lstsq(A_mat, b_vec, rcond=None)
+                A_c, B_c, C_c = sol
+                cx = -0.5 * A_c
+                cy = -0.5 * B_c
+                r2 = cx * cx + cy * cy - C_c
+                if r2 <= 0:
+                    return None
+                r = float(np.sqrt(r2))
+                d = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+                rms = float(np.sqrt(np.mean((d - r) ** 2)))
+                twopi = float(2.0 * np.pi)
+                ang = np.arctan2(y - cy, x - cx)
+                ang = np.sort((ang + twopi) % twopi)
+                gaps = np.diff(np.r_[ang, ang[0] + twopi])
+                coverage = twopi - float(np.max(gaps)) if ang.size >= 3 else 0.0
+                return float(cx), float(cy), float(r), float(rms), float(coverage)
+
+            def _circle_fit_ransac(x: np.ndarray, y: np.ndarray, search_r: float):
+                """
+                RANSAC로 원 후보를 찾고, inlier로 LSQ 재피팅합니다.
+
+                Returns:
+                    (cx, cy, r, rms, coverage, n_inliers) 또는 None
+                """
+                import numpy as np
+
+                x0 = np.asarray(x, dtype=float)
+                y0 = np.asarray(y, dtype=float)
+                n = int(x0.size)
+                if n < 12:
+                    return None
+
+                pts2 = np.c_[x0, y0]
+
+                # inlier threshold: 0.25mm 또는 search_r의 3% (meter)
+                inlier_tol = float(max(0.00025, 0.03 * float(search_r)))
+
+                # iterations: 점이 적을수록 적게, 많을수록 조금 늘림(최대 220)
+                iters = int(min(220, max(80, 10 * int(np.sqrt(n)))))
+
+                best = None  # (n_in, rms, cx, cy, r, mask)
+                rng = np.random.default_rng()
+                for _ in range(iters):
+                    i1, i2, i3 = rng.choice(n, size=3, replace=False)
+                    c = _circle_from_3pts(pts2[i1], pts2[i2], pts2[i3])
+                    if c is None:
+                        continue
+                    cx, cy, r = c
+
+                    # 반경이 너무 작게 튀는 것을 방지(필렛은 이웃 반경보다 너무 작지 않음)
+                    if r < 0.12 * float(search_r):
+                        continue
+
+                    d = np.sqrt((x0 - cx) ** 2 + (y0 - cy) ** 2)
+                    resid = np.abs(d - r)
+                    mask = resid <= inlier_tol
+                    n_in = int(np.sum(mask))
+                    if n_in < 12:
+                        continue
+
+                    # 빠른 score: inlier 수 우선, rms는 대략치(인라이어만)
+                    rms = float(np.sqrt(np.mean((d[mask] - r) ** 2)))
+                    if best is None or n_in > best[0] or (n_in == best[0] and rms < best[1]):
+                        best = (n_in, rms, cx, cy, r, mask)
+
+                if best is None:
+                    return None
+
+                mask = best[5]
+                fit = _circle_fit_lsq(x0[mask], y0[mask])
+                if fit is None:
+                    return None
+                cx, cy, r, rms, coverage = fit
+
+                # 한 번 더 trimming (0.2mm 또는 반경의 2%)
+                d = np.sqrt((x0[mask] - cx) ** 2 + (y0[mask] - cy) ** 2)
+                resid = np.abs(d - r)
+                trim_tol = float(max(0.0002, 0.02 * r))
+                keep = resid <= trim_tol
+                if int(np.sum(keep)) >= 12 and int(np.sum(keep)) < int(np.sum(mask)):
+                    fit2 = _circle_fit_lsq(x0[mask][keep], y0[mask][keep])
+                    if fit2 is not None:
+                        cx, cy, r, rms, coverage = fit2
+                        mask2 = np.zeros_like(mask, dtype=bool)
+                        idx = np.flatnonzero(mask)
+                        mask2[idx[keep]] = True
+                        mask = mask2
+
+                return float(cx), float(cy), float(r), float(rms), float(coverage), int(np.sum(mask))
+
+            best = None
+            for search_r in radii:
+                id_list = vtk.vtkIdList()
+                locator.FindPointsWithinRadius(float(search_r), seed, id_list)
+                n = int(id_list.GetNumberOfIds())
+                if n < 12:
+                    continue
+
+                ids = [id_list.GetId(i) for i in range(n)]
+                pts = np.asarray(pts_all[ids], dtype=float)
+                if len(pts) > 8000:
+                    step = max(1, len(pts) // 3000)
+                    pts = pts[::step]
+
+                # 2) (개선) 법선 기반으로 축(axis) 추정
+                # Why:
+                #   원통 표면의 법선들은 '축에 수직인 평면' 위에 분포하므로,
+                #   법선 분포의 최소 분산 방향이 축(axis)에 해당합니다.
+                axis = None
+                if normals_all is not None and len(normals_all) == len(pts_all):
+                    nrm = np.asarray(normals_all[ids], dtype=float)
+                    # 너무 평면(법선 변화 거의 없음)인 경우는 제외
+                    try:
+                        nrm = nrm / np.maximum(1e-9, np.linalg.norm(nrm, axis=1, keepdims=True))
+                        # seed 주변의 법선과 너무 다른 점(다른 면) 제거: 85도 이내만 유지
+                        nearest_id = int(locator.FindClosestPoint(seed))
+                        seed_n = np.asarray(normals_all[nearest_id], dtype=float).reshape(3)
+                        seed_n = seed_n / max(1e-9, float(np.linalg.norm(seed_n)))
+                        dots = np.clip(nrm @ seed_n, -1.0, 1.0)
+                        keep = dots >= float(np.cos(np.deg2rad(85.0)))
+                        if int(np.sum(keep)) >= 12:
+                            nrm = nrm[keep]
+                            pts = pts[keep]
+                        # 법선 분포 SVD: 최소 singular 방향이 축 후보
+                        n_mean = nrm.mean(axis=0)
+                        Y = nrm - n_mean.reshape(1, 3)
+                        _, s, vh_n = np.linalg.svd(Y, full_matrices=False)
+                        # 평면성이 충분해야 축이 의미 있음: s[-1]가 s[-2]보다 충분히 작아야 함
+                        if len(s) >= 3 and float(s[-1]) < 0.35 * float(s[-2]) and float(s[0]) > 0.02:
+                            axis = np.asarray(vh_n[-1], dtype=float).reshape(3)
+                    except Exception:
+                        axis = None
+
+                # 법선 기반이 안 되면 최후 폴백: 점 PCA(기존 방식)
+                if axis is None:
+                    mean = pts.mean(axis=0)
+                    X = pts - mean
+                    try:
+                        _, _, vh = np.linalg.svd(X, full_matrices=False)
+                    except Exception:
+                        continue
+                    axis = np.asarray(vh[0], dtype=float).reshape(3)
+
+                axis_n = float(np.linalg.norm(axis))
+                if axis_n <= 1e-9:
+                    continue
+                axis = axis / axis_n
+
+                # 3) axis에 수직인 평면 basis(u,v) 구성
+                ref = np.array([1.0, 0.0, 0.0], dtype=float)
+                if abs(float(np.dot(axis, ref))) > 0.9:
+                    ref = np.array([0.0, 1.0, 0.0], dtype=float)
+                u = np.cross(axis, ref)
+                u_n = float(np.linalg.norm(u))
+                if u_n <= 1e-9:
+                    continue
+                u = u / u_n
+                v = np.cross(axis, u)
+
+                # 4) seed 기준으로 투영하여 2D circle fit
+                W = pts - seed.reshape(1, 3)
+                x = W @ u
+                y = W @ v
+                fit2d = _circle_fit_ransac(x, y, search_r=float(search_r))
+                if fit2d is None:
+                    continue
+                cx, cy, r, rms, coverage, n_in = fit2d
+                if not np.isfinite(r) or r <= 0:
+                    continue
+                # 표면 기반은 짧은 아크만 보이는 경우가 많아(필렛),
+                # edge 기반보다 조금 더 낮은 임계값을 사용합니다.
+                if coverage < float(np.deg2rad(15.0)):
+                    continue
+                if rms > _fit_tol_m(r):
+                    continue
+
+                # 너무 작은 값 튐 방지(완화된 기준): 탐색 반경 대비 지나치게 작은 반경은 보통 오검출입니다.
+                if float(r) < 0.12 * float(search_r):
+                    continue
+
+                center3 = seed + cx * u + cy * v
+                # 후보 선택: inlier 수/coverage를 우선하고, rms는 보조
+                cand = (
+                    np.asarray(center3, dtype=float),
+                    float(r),
+                    seed,
+                    float(rms),
+                    "surf",
+                    int(n_in),
+                    float(coverage),
+                )
+                if best is None:
+                    best = cand
+                else:
+                    # (1) inlier 수 큰 것, (2) coverage 큰 것, (3) rms 작은 것
+                    if cand[5] > best[5]:
+                        best = cand
+                    elif cand[5] == best[5] and cand[6] > best[6]:
+                        best = cand
+                    elif cand[5] == best[5] and cand[6] == best[6] and cand[3] < best[3]:
+                        best = cand
+
+            if best is None:
+                return None
+            # return signature: (center3, radius_m, point_on_surface, rms_m, src)
+            return best[0], best[1], best[2], best[3], best[4]
+        except Exception:
+            return None
+
+    def _fit_circle_3d(self, points_np):
+        """
+        3D 점군을 평면(PCA)으로 투영한 뒤 2D 원 피팅(least squares)으로 원을 추정합니다.
+
+        개선 포인트(중요):
+            - 외곽 라운드처럼 "직선+곡선이 섞인" 점 집합이 들어올 수 있습니다.
+            - 본 앱은 전문 측정이 아니라 "간단 확인" 용도이므로,
+              완벽한 기하 분해 대신 다음의 가벼운 안정화만 적용합니다.
+                1) 1차 피팅 후, 원에서 크게 벗어난 점(outlier)을 제거(2회 반복)
+                2) 너무 짧은 구간(거의 직선)로는 원이 불안정하므로, 각도 커버리지(arc coverage) 가드
+
+        Args:
+            points_np: (N, 3) numpy array
+
+        Returns:
+            (center3, radius_m, rms_m) 또는 None
+        """
+        import numpy as np
+
+        pts0 = np.asarray(points_np, dtype=float)
+        if pts0.ndim != 2 or pts0.shape[1] != 3 or len(pts0) < 3:
+            return None
+
+        def _fit_basic(pts_in: np.ndarray):
+            """내부용: 기본 PCA+LSQ 원 피팅(로버스트 처리 없음)."""
+            mean = pts_in.mean(axis=0)
+            X = pts_in - mean
+            _, _, vh = np.linalg.svd(X, full_matrices=False)
+            u = vh[0]
+            v = vh[1]
+
+            x = X @ u
+            y = X @ v
+
+            # 원 피팅: x^2 + y^2 + A x + B y + C = 0
+            A_mat = np.c_[x, y, np.ones_like(x)]
+            b_vec = -(x * x + y * y)
+            sol, *_ = np.linalg.lstsq(A_mat, b_vec, rcond=None)
+
+            A_c, B_c, C_c = sol
+            cx = -0.5 * A_c
+            cy = -0.5 * B_c
+            r2 = cx * cx + cy * cy - C_c
+            if r2 <= 0:
+                return None
+
+            r = float(np.sqrt(r2))
+            d = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+            rms = float(np.sqrt(np.mean((d - r) ** 2)))
+            center3 = mean + cx * u + cy * v
+            return {
+                "center3": np.asarray(center3, dtype=float),
+                "r": r,
+                "rms": rms,
+                "mean": mean,
+                "u": u,
+                "v": v,
+                "cx": float(cx),
+                "cy": float(cy),
+                "x": x,
+                "y": y,
+            }
+
+        # 1) 기본 피팅
+        try:
+            fit = _fit_basic(pts0)
+        except Exception:
+            return None
+        if fit is None:
+            return None
+
+        # 2) 간단 로버스트(outlier trimming) 1~2회 반복
+        # - 작은 홀에서 값이 흔들리는 현상을 줄이기 위해, 기존(0.5mm)보다 타이트한 기본값을 사용합니다.
+        pts = pts0
+        initial_n = len(pts0)
+        for _ in range(2):
+            r = float(fit["r"])
+            # 0.15mm 또는 반경의 2% 중 큰 값을 inlier 기준으로 사용 (meter)
+            tol = max(0.00015, 0.02 * r)
+            d = np.sqrt((fit["x"] - fit["cx"]) ** 2 + (fit["y"] - fit["cy"]) ** 2)
+            resid = np.abs(d - r)
+            inliers = resid <= tol
+            if int(np.sum(inliers)) < 8:
+                break
+            if int(np.sum(inliers)) == len(pts):
+                break
+            pts = pts[inliers]
+            try:
+                fit2 = _fit_basic(pts)
+            except Exception:
+                break
+            if fit2 is None:
+                break
+            fit = fit2
+
+        # 3) 아크 커버리지 가드(거의 직선 구간에 대한 오검출 방지)
+        # - 점이 직선에 가깝다면 원 반경이 비정상적으로 크게 나오거나, 각도 분포가 매우 좁게 나옵니다.
+        try:
+            angles = np.arctan2(fit["y"] - fit["cy"], fit["x"] - fit["cx"])
+            if angles.size >= 8:
+                twopi = float(2.0 * np.pi)
+                ang = np.sort((angles + twopi) % twopi)
+                gaps = np.diff(np.r_[ang, ang[0] + twopi])
+                coverage = twopi - float(np.max(gaps))
+                # 25도 미만이면 "원형으로 보기엔 너무 짧은 조각"으로 판단
+                if coverage < float(np.deg2rad(25.0)):
+                    return None
+        except Exception:
+            # 커버리지 계산 실패는 치명적이지 않으므로 통과(대신 rms/tol에서 걸러짐)
+            pass
+
+        # 4) outlier 제거 결과가 너무 과도하면 실패 처리
+        # - 연결 루프 전체가 섞인 경우, inlier가 극단적으로 적게 남는 경우가 있어 방지합니다.
+        if len(pts) < 8 or (len(pts) / max(1, initial_n)) < 0.08:
+            return None
+
+        return fit["center3"], float(fit["r"]), float(fit["rms"])
+
+    def _calculate_snap_points(self, plotter):
+        """
+        스냅 캐시를 준비합니다.
+
+        구현 의도(중요):
+            - 사용자 요구사항: "모서리 표시 음영"에서 보이는 모서리 라인(feature edges)만을
+              스냅 후보로 사용해야 함.
+            - 따라서 기존처럼 전체 메시 표면 점을 대상으로 스냅하는 방식은 사용하지 않음.
+
+        준비하는 데이터:
+            - End/Mid/Cen 후보 점 + vtkStaticPointLocator
+            - Near(라인 위 최근접점) 계산용 vtkCellLocator
+        
+        Args:
+            plotter: PyVista plotter 객체
+        """
+        import vtk
+        from vtkmodules.util.numpy_support import vtk_to_numpy
+        
+        try:
+            self._snap_edge_cache = None
+
+            if plotter is None or not hasattr(plotter, "renderer") or plotter.renderer is None:
+                return
+
+            edge_poly = self._get_feature_edges_polydata()
+            if edge_poly is None:
+                # 모서리 라인이 없으면 스냅 자체를 비활성화
+                print("스냅 준비 실패: feature_edges 라인을 찾지 못했습니다.")
+                return
+
+            end_pts, mid_pts, cen_pts = self._extract_edge_snap_points(edge_poly)
+            end_pts = self._unique_points(end_pts, decimals=6)
+            mid_pts = self._unique_points(mid_pts, decimals=6)
+            cen_pts = self._unique_points(cen_pts, decimals=6)
+
+            cache = {
+                "edge_poly": edge_poly,
+                "end": None,
+                "mid": None,
+                "cen": None,
+                "cell_locator": None,
+                # R(반경) 측정 폴백을 위한 "전체 엣지 점" 로케이터
+                # Why:
+                #   - 외곽 라운드(큰 외곽 루프)의 경우, connectivity filter로 뽑으면
+                #     직선+곡선이 한 컴포넌트로 섞여 원 피팅이 실패할 수 있습니다.
+                #   - 클릭 지점 주변(로컬) 점만 모아 피팅하는 폴백을 위해, 전체 점 로케이터를 준비합니다.
+                "edge_points_np": None,
+                "edge_point_locator": None,
+            }
+
+            if len(end_pts) > 0:
+                _, end_loc = self._build_point_locator(end_pts)
+                cache["end"] = {"points": end_pts, "locator": end_loc}
+
+            if len(mid_pts) > 0:
+                _, mid_loc = self._build_point_locator(mid_pts)
+                cache["mid"] = {"points": mid_pts, "locator": mid_loc}
+
+            if len(cen_pts) > 0:
+                _, cen_loc = self._build_point_locator(cen_pts)
+                cache["cen"] = {"points": cen_pts, "locator": cen_loc}
+
+            cell_locator = vtk.vtkCellLocator()
+            cell_locator.SetDataSet(edge_poly)
+            cell_locator.BuildLocator()
+            cache["cell_locator"] = cell_locator
+
+            # 전체 엣지 점 로케이터 준비 (R 측정 로컬 샘플링 폴백용)
+            try:
+                pts_vtk = edge_poly.GetPoints()
+                if pts_vtk is not None:
+                    pts_np = vtk_to_numpy(pts_vtk.GetData())
+                    cache["edge_points_np"] = pts_np
+
+                    try:
+                        edge_point_locator = vtk.vtkStaticPointLocator()
+                    except Exception:
+                        # 일부 VTK 빌드에서 vtkStaticPointLocator가 없을 수 있어 폴백합니다.
+                        edge_point_locator = vtk.vtkPointLocator()
+                    edge_point_locator.SetDataSet(edge_poly)
+                    edge_point_locator.BuildLocator()
+                    cache["edge_point_locator"] = edge_point_locator
+            except Exception:
+                # 폴백 준비 실패는 치명적이지 않음(홀/독립 루프는 connectivity로 처리 가능)
+                cache["edge_points_np"] = None
+                cache["edge_point_locator"] = None
+
+            self._snap_edge_cache = cache
+
+            print(
+                f"스냅 캐시 준비 완료: End={len(end_pts)}, Mid={len(mid_pts)}, Cen={len(cen_pts)}, Lines={edge_poly.GetNumberOfLines()}"
+            )
+        except Exception as e:
+            print(f"스냅 캐시 준비 오류: {e}")
+            import traceback
+
+            traceback.print_exc()
+            self._snap_edge_cache = None
+
+    def _find_nearest_snap_point(self, point):
+        """
+        클릭한 위치에서 가장 가까운 스냅 포인트를 찾습니다.
+        (feature edges 기반 규칙 적용)
+        
+        Args:
+            point: 클릭한 3D 좌표 (numpy array)
+            
+        Returns:
+            가장 가까운 스냅 포인트의 좌표 (numpy array)
+        """
+        import numpy as np
+
+        try:
+            snapped, _, _ = self._select_snap_point_on_edges(point)
+            if snapped is None:
+                return np.asarray(point, dtype=float)
+            return np.asarray(snapped, dtype=float)
+        except Exception:
+            return np.asarray(point, dtype=float)
+
+    def _on_snap_option_changed(self):
+        """
+        스냅 옵션이 변경되었을 때 호출되는 함수.
+        스냅 옵션은 "선택 로직"에만 영향을 주므로, 캐시를 매번 재계산하지 않습니다.
+        (대형 모델에서 옵션 토글이 느려지는 문제 방지)
+        """
+        try:
+            # 캐시가 아직 없으면(처음 진입 등) 한 번만 준비
+            if hasattr(self, "measure_mode_active") and self.measure_mode_active:
+                if getattr(self, "_snap_edge_cache", None) is None:
+                    QtCore.QTimer.singleShot(50, lambda: self._calculate_snap_points(self.plotter))
+
+            # 옵션이 바뀌면 현재 미리보기는 제거
+            self._clear_snap_preview()
+        except Exception as e:
+            print(f"스냅 옵션 변경 처리 오류: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _clear_measurements(self):
+        """
+        모든 측정 결과를 제거합니다.
+        """
+        if not hasattr(self, 'plotter') or self.plotter is None:
+            return
+        
+        if hasattr(self, 'measure_actors'):
+            for actor in self.measure_actors:
+                try:
+                    self.plotter.remove_actor(actor)
+                except:
+                    pass
+            self.measure_actors = []
+        
+        if hasattr(self, 'measure_points'):
+            self.measure_points = []
+        
+        try:
+            self.plotter.render()
+        except:
+            pass
 
     def _apply_initial_layout(self):
         try:
@@ -2872,10 +6055,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             int(self.height() * 0.30),  # Navigator 도크 높이
         ]
         self.resizeDocks([self.page_dock, self.navigator_dock], left_sizes, QtCore.Qt.Vertical)
-
-    # 스페셜함수 적용 함수 새로 생성. v2.95에서 함.
+    
     def set_individual_style(self):
-        """선택된 항목에 개별 서식을 적용하거나 해제합니다."""
+        """Set or edit custom style for the selected item."""
         row = self.table.currentRow()
         if row < 0:
             return
@@ -2886,43 +6068,101 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 return
         except (ValueError, AttributeError):
             return
+
         if target_item.custom_style:
-            # 이미 개별 서식이 있다면 -> 삭제 여부 확인
-            reply = QtWidgets.QMessageBox.question(
-                self,
-                "개별 서식 삭제",
-                f"{item_no}번에 설정된 개별 서식을 삭제하고 전체 서식으로 되돌리시겠습니까?",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                QtWidgets.QMessageBox.No,
-            )
-            if reply == QtWidgets.QMessageBox.Yes:
-                target_item.custom_style = None
-                self.load_page(self.cur_page_index)  # 화면 새로고침
+            title = "\uac1c\ubcc4 \uc11c\uc2dd \uc218\uc815"
+            prompt = f"{item_no}\ubc88\uc5d0 \uc774\ubbf8 \uac1c\ubcc4 \uc11c\uc2dd\uc774 \uc788\uc2b5\ub2c8\ub2e4. \uc218\uc815\ud558\uc2dc\uaca0\uc2b5\ub2c8\uae4c?"
+            base_style = copy.deepcopy(target_item.custom_style)
         else:
-            # 개별 서식이 없다면 -> 적용 여부 확인
-            reply = QtWidgets.QMessageBox.question(
-                self,
-                "개별 서식 지정",
-                f"{item_no}번에 개별 서식을 지정하시겠습니까?",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                QtWidgets.QMessageBox.No,
-            )
-            if reply == QtWidgets.QMessageBox.Yes:
-                # 현재 전역 스타일을 복사하여 초기값으로 사용
-                new_style = copy.deepcopy(self.style)
-                if self.open_label_settings(new_style):  # 사용자가 OK를 누르면
-                    target_item.custom_style = new_style
-                    self.load_page(self.cur_page_index)  # 화면 새로고침
-        self._set_dirty()
+            title = "\uac1c\ubcc4 \uc11c\uc2dd \uc9c0\uc815"
+            prompt = f"{item_no}\ubc88\uc5d0 \uac1c\ubcc4 \uc11c\uc2dd\uc744 \uc9c0\uc815\ud558\uc2dc\uaca0\uc2b5\ub2c8\uae4c?"
+            base_style = copy.deepcopy(self.style)
+
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            title,
+            prompt,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+
+        if self.open_label_settings(base_style):  # ???? OK? ???
+            target_item.custom_style = base_style
+            self.load_page(self.cur_page_index)  # ?? ????
+            self._set_dirty()
+
+    def clear_individual_style(self):
+        """Clear custom style for the selected item."""
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        try:
+            item_no = int(self.table.item(row, 0).text())
+            target_item = next((it for it in self.items if it.no == item_no), None)
+            if not target_item:
+                return
+        except (ValueError, AttributeError):
+            return
+
+        if not target_item.custom_style:
+            return
+
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "\uac1c\ubcc4 \uc11c\uc2dd \uc0ad\uc81c",
+            f"{item_no}\ubc88\uc5d0 \uc124\uc815\ub41c \uac1c\ubcc4 \uc11c\uc2dd\uc744 \uc0ad\uc81c\ud558\uace0 \uc804\uccb4 \uc11c\uc2dd\uc73c\ub85c \ub418\ub3cc\ub9ac\uc2dc\uaca0\uc2b5\ub2c8\uae4c?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if reply == QtWidgets.QMessageBox.Yes:
+            target_item.custom_style = None
+            self.load_page(self.cur_page_index)  # ?? ????
+            self._set_dirty()
+
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._position_integrated_control_panel()
+        self._position_axis_navigator()
 
     def eventFilter(self, watched, event):
         widget_3d = getattr(self, "widget_3d", None)
         if watched is widget_3d and event.type() == QtCore.QEvent.Resize:
             self._position_integrated_control_panel()
+            self._position_axis_navigator()
+        
+        # 측정 모드에서 3D 뷰어의 마우스 이동 이벤트 처리
+        if (self.measure_mode_active and 
+            hasattr(self, 'plotter') and 
+            self.plotter is not None and
+            hasattr(self.plotter, 'interactor') and
+            watched == self.plotter.interactor):
+            
+            if event.type() == QtCore.QEvent.MouseMove:
+                self._on_measure_mouse_move_qt(event)
+            elif event.type() == QtCore.QEvent.MouseButtonPress:
+                # NOTE:
+                #   - 기본 카메라 조작(회전/이동)을 방해하지 않기 위해,
+                #     측정 포인트 선택은 "Shift + 좌클릭"일 때만 처리합니다.
+                #   - Shift 없이 좌클릭은 VTK interactor로 그대로 전달되어야 합니다.
+                try:
+                    is_left = event.button() == QtCore.Qt.LeftButton
+                    is_shift = bool(event.modifiers() & QtCore.Qt.ShiftModifier)
+                    if is_left and is_shift:
+                        # 서브모드에 따라 거리(D) 또는 원형(R)을 수행
+                        submode = getattr(self, "measure_submode", "distance")
+                        if submode == "radius":
+                            self._on_measure_radius_click_qt(event)
+                        else:
+                            self._on_measure_mouse_click_qt(event)
+                        # 클릭 이벤트를 소비하여 "원본 픽 마커"가 찍히는 것을 방지
+                        # (Shift+좌클릭일 때만 소비)
+                        return True
+                except Exception:
+                    pass
+        
         return super().eventFilter(watched, event)
 
     def new_project(self):
@@ -2974,20 +6214,40 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 self.project_name = None
                 self.project_dir = None
                 self._update_window_title()
-
+    
     def _close_current_doc(self):
-        self.clear_highlight()
-        self.scene.clear()
+        """현재 문서를 닫고 관련 상태를 초기화합니다."""
+        try:
+            self.clear_highlight()
+        except Exception as e:
+            print(f"_close_current_doc: clear_highlight 오류: {e}")
+        
+        # scene이 존재하는지 확인 후 clear
+        if hasattr(self, 'scene') and self.scene is not None:
+            try:
+                self.scene.clear()
+            except Exception as e:
+                print(f"_close_current_doc: scene.clear() 오류: {e}")
+        
         self._preview_ellipse = None
         self._preview_text = None
+        
         try:
             if self.doc is not None:
                 self.doc.close()
-        except:
-            pass
+        except Exception as e:
+            print(f"_close_current_doc: doc.close() 오류: {e}")
+        
         self.doc = None
-        self._update_page_navigation_ui()  # <-- 이 줄을 추가하세요
-        self._clear_thumbnails()  # <-- 이 줄을 추가하세요
+        try:
+            self._update_page_navigation_ui()
+        except Exception as e:
+            print(f"_close_current_doc: _update_page_navigation_ui 오류: {e}")
+        
+        try:
+            self._clear_thumbnails()
+        except Exception as e:
+            print(f"_close_current_doc: _clear_thumbnails 오류: {e}")
 
     def _reset_all_tables(self):
         """넘버링 테이블과 스탬프 테이블을 모두 초기화합니다."""
@@ -3001,7 +6261,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         finally:
             self.table.blockSignals(False)
             self.stamp_table.blockSignals(False)
-
+    
     def _reset_state_for_new(self):
         """새 프로젝트를 위해 모든 상태 변수를 기본값으로 초기화합니다."""
         # 넘버링 관련 초기화
@@ -3038,7 +6298,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_undo_redo_hint()
         self._update_status()
         self._update_stamp_button_icon()
-
+    
     def open_project_dialog(self):
         # ===== ▼▼▼ 수정 시작 ▼▼▼ =====
         if not self._maybe_save(
@@ -3051,7 +6311,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if path:
             self.open_project(path)
         # ===== ▲▲▲ 수정 끝 ▲▲▲ =====
-
+        
     def open_project(self, path):
         try:
             # 1. 파일을 먼저 열고 모든 데이터를 메모리로 읽어들입니다.
@@ -3071,7 +6331,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._reset_all_tables()
         self._reset_state_for_new()
         # 3. 읽어들인 데이터로 프로그램 상태를 하나씩 복원합니다.
-        self.doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        self.doc = pdfium.PdfDocument(pdf_bytes)
         self.numbering_mode = meta.get("numbering_mode", "global")
         self.cur_page_index = 0  # <<--- [수정 2] 항상 첫 페이지(인덱스 0)로 시작
         self.render_scale = int(meta.get("render_scale", 2))
@@ -3082,6 +6342,13 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             if "custom_style" in m and m["custom_style"]:
                 custom_style = LabelStyle()
                 custom_style.from_dict(m["custom_style"])
+            x_values = m.get("x_values", ["", "", "", "", ""]) 
+            if not isinstance(x_values, list):
+                x_values = ["", "", "", "", ""]
+            if len(x_values) < 5:
+                x_values = x_values + [""] * (5 - len(x_values))
+            elif len(x_values) > 5:
+                x_values = x_values[:5]
             it = MarkItem(
                 no=float(m["no"]),
                 page_index=int(m["page_index"]),
@@ -3092,6 +6359,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 tol_minus=normalize_signed_text(m.get("tol_minus", "")),
                 custom_style=custom_style,
                 viewport_parameters=m.get("viewport_parameters", ""),
+                x_values=x_values,
             )  # 3D 뷰포트 파라메터 복원
             self.items.append(it)
         self.registered_stamps = meta.get("registered_stamps", {})
@@ -3108,10 +6376,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     self.model_path = os.path.join(temp_dir, f"tsn_temp_{original_filename}")
                     with open(self.model_path, "wb") as f:
                         f.write(model_bytes)
+                    self._ensure_3d_backend()
                     self.start_loading_3d.emit(self.model_path)
             else:
                 self.model_path = model_path_info
                 if os.path.exists(self.model_path):
+                    self._ensure_3d_backend()
                     self.start_loading_3d.emit(self.model_path)
                 else:
                     self.statusBar().showMessage(
@@ -3124,6 +6394,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.project_dir = os.path.dirname(path)
         # 이 함수가 PDF 뷰어, 테이블, 썸네일 등 모든 것을 화면에 다시 그립니다.
         self.load_page(self.cur_page_index)  # <<--- [수정 1] 화면을 먼저 로드
+        # ▼▼▼ [수정] 프로젝트 열 때 흐름도 시작/끝점이 제대로 표시되도록 흐름도를 다시 그립니다 ▼▼▼
+        if self.flow_view_enabled:
+            self._update_flow_view()
+        # ▲▲▲ 여기까지 추가 ▲▲▲
         self._set_dirty(False)
         self._update_window_title()
         self._update_undo_redo_hint()
@@ -3131,6 +6405,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_page_navigation_ui()
         self._populate_thumbnails()
         self._update_stamp_button_icon()
+        # [수정] 프로젝트 로드 시 테이블 강제 갱신 (리스트 안보임 현상 수정)
+        if hasattr(self, "table_manager"):
+            self.table_manager._force_refresh_table()
+
         # 6. [수정 1] 모든 화면이 로드된 후, 마지막으로 다음 번호 지정 대화상자 호출
         if self.numbering_mode == "global":
             if self.items:
@@ -3149,7 +6427,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 self.next_no = float(new_next_no) if ok else float(suggested_no)
             else:
                 self.next_no = 1.0
-
+        
     def save_project(self) -> bool:
         print(f"[save_project] 저장 시작")
         if self.doc is None:
@@ -3178,7 +6456,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         )
         print(f"[save_project] 저장 완료")
         return True
-
+    
     def save_project_as(self) -> bool:
         print(f"[save_project_as] 다른 이름으로 저장 시작")
         if self.doc is None:
@@ -3223,10 +6501,70 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         )
         print(f"[save_project_as] 저장 완료")
         return True
+    
+    def open_autosave_settings(self):
+        settings = AutoSaveDialog.get_settings_dialog(
+            parent=self,
+            enabled=self.autosave_enabled,
+            interval_min=self.autosave_interval_min,
+            save_option=self.autosave_save_option,
+        )
+        if not settings:
+            return
+        self._apply_autosave_settings(**settings)
 
-    # 스페셜 서식 적용 위해 교체 v2.95에서...
-    # main.py의 PdfAnnotator 클래스 내부
-    # main.py의 PdfAnnotator 클래스 내부
+    def _set_numbering_shape(self, shape_name):
+        """넘버링 외곽 형상을 변경하고 화면을 갱신합니다."""
+        self.style.shape = shape_name
+        # 프리뷰 아이템 레퍼런스 초기화 (Scene이 클리어되면 무효화되므로)
+        self._preview_ellipse = None
+        self._preview_text = None
+        
+        self.load_page(self.cur_page_index)
+        self._set_dirty()
+        
+        # 현재 모드가 넘버링 모드라면 프리뷰 복구 시도 (선택적)
+        if self.active_mode == "numbering":
+             self.preview_mode = "preview"
+
+    def _apply_autosave_settings(self, enabled: bool, interval_min: int, save_option: str):
+        self.autosave_enabled = bool(enabled)
+        self.autosave_interval_min = max(1, int(interval_min))
+        self.autosave_save_option = save_option if save_option in ("link", "embed") else "link"
+        if self.autosave_enabled:
+            self.autosave_timer.start(self.autosave_interval_min * 60 * 1000)
+            autosave_name = self._format_autosave_filename()
+            self.statusBar().showMessage(
+                f"Auto save enabled ({self.autosave_interval_min} min, {autosave_name})", 3000
+            )
+        else:
+            self.autosave_timer.stop()
+            self.statusBar().showMessage("Auto save disabled", 3000)
+
+    def _format_autosave_filename(self) -> str:
+        project_name = self.project_name or "project"
+        timestamp = datetime.now().strftime("%Y%m%d-%H:%M").replace(":", "-")
+        return f"Autosave[{project_name}]savetime({timestamp}).tsn"
+
+    def _get_autosave_path(self) -> str:
+        base_dir = self.project_dir or os.getcwd()
+        return os.path.join(base_dir, self._format_autosave_filename())
+
+    def _run_autosave(self):
+        if not self.autosave_enabled:
+            return
+        if self.doc is None:
+            return
+        path = self._get_autosave_path()
+        try:
+            self._sync_items_from_table()
+            if self._write_tsn(path, self.autosave_save_option):
+                self.statusBar().showMessage(
+                    f"Auto save complete: {os.path.basename(path)}", 2000
+                )
+        except Exception as e:
+            print(f"[autosave] ??: {e}")
+
     def _write_tsn(self, path, save_option="link"):
         """
         프로젝트를 .tsn 파일로 저장합니다.
@@ -3238,31 +6576,42 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         Returns:
             bool: 저장 성공 여부
         """
+        import tempfile
+
         try:
             # 경로 검증
             if not path:
                 raise ValueError("저장 경로가 지정되지 않았습니다.")
-            
+
             # 절대 경로로 변환 (상대 경로 문제 방지)
             path = os.path.abspath(path)
             print(f"[저장 시작] 경로: {path}")
-            
+
             # 디렉토리가 없으면 생성
             dir_path = os.path.dirname(path)
             if dir_path and not os.path.exists(dir_path):
                 print(f"[저장] 디렉토리 생성: {dir_path}")
                 os.makedirs(dir_path, exist_ok=True)
-            
-            # 기존 파일이 있으면 백업 (선택사항)
-            if os.path.exists(path):
-                print(f"[저장] 기존 파일 발견: {path}")
-            
-            # PDF 데이터 준비
-            pdf_bytes = self.doc.tobytes()
+
+            # PDF 데이터 준비 (pypdfium2는 tobytes()가 없으므로 임시 파일 사용)
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                    tmp_path = tmp_file.name
+                self.doc.save(tmp_path)
+                with open(tmp_path, "rb") as f:
+                    pdf_bytes = f.read()
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
+
             if not pdf_bytes:
                 raise ValueError("PDF 데이터가 비어있습니다.")
             print(f"[저장] PDF 데이터 크기: {len(pdf_bytes)} bytes")
-            
+
             # 아이템 데이터 준비
             items_data = []
             for it in self.items:
@@ -3275,11 +6624,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     "tol_plus": it.tol_plus,
                     "tol_minus": it.tol_minus,
                     "viewport_parameters": it.viewport_parameters,  # 3D 뷰포트 파라메터 추가
+                    "x_values": getattr(it, 'x_values', ["", "", "", "", ""]),
                 }
                 if it.custom_style:
                     item_dict["custom_style"] = it.custom_style.to_dict()
                 items_data.append(item_dict)
-            
+
             # 메타데이터 준비
             meta = {
                 "app": APP_NAME,
@@ -3304,53 +6654,42 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     "rotation_max": self.stamp_rotation_max,
                 },
             }
+
             if save_option == "embed" and self.model_path and os.path.exists(self.model_path):
                 meta["3d_model_path"] = f"embedded:{os.path.basename(self.model_path)}"
             else:
                 meta["3d_model_path"] = self.model_path
-            
+
             # ZIP 파일로 저장
             print(f"[저장] ZIP 파일 생성 시작: {path}")
-            try:
-                with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                    print(f"[저장] ZIP 파일 열기 성공")
-                    meta_json = json.dumps(meta, ensure_ascii=False, indent=2)
-                    print(f"[저장] 메타데이터 크기: {len(meta_json)} bytes")
-                    zf.writestr(TSN_META_NAME, meta_json)
-                    print(f"[저장] 메타데이터 쓰기 완료: {TSN_META_NAME}")
-                    zf.writestr(TSN_PDF_NAME, pdf_bytes)
-                    print(f"[저장] PDF 쓰기 완료: {TSN_PDF_NAME}")
-                    if save_option == "embed" and self.model_path and os.path.exists(self.model_path):
-                        zf.write(self.model_path, arcname="model.data")
-                        print(f"[저장] 3D 모델 임베드 완료: {self.model_path}")
-                print(f"[저장] ZIP 파일 닫기 완료")
-            except Exception as zip_error:
-                print(f"[저장 오류] ZIP 파일 생성 중 예외 발생: {zip_error}")
-                print(traceback.format_exc())
-                raise
-            
+            with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                meta_json = json.dumps(meta, ensure_ascii=False, indent=2)
+                zf.writestr(TSN_META_NAME, meta_json)
+                zf.writestr(TSN_PDF_NAME, pdf_bytes)
+                if save_option == "embed" and self.model_path and os.path.exists(self.model_path):
+                    zf.write(self.model_path, arcname="model.data")
+
             # 파일이 실제로 생성되었는지 확인
             if not os.path.exists(path):
                 raise IOError(f"파일 저장 후 확인 실패: {path}")
-            
+
             # 파일 크기 확인 (최소한의 검증)
             file_size = os.path.getsize(path)
             if file_size == 0:
                 raise IOError(f"저장된 파일이 비어있습니다: {path}")
-            
+
             print(f"[저장 성공] 프로젝트 저장 완료: {path} (크기: {file_size} bytes)")
             return True
-            
         except Exception as e:
             error_msg = f"프로젝트 저장 중 오류 발생:\n{str(e)}\n\n{traceback.format_exc()}"
             print(error_msg)
             QtWidgets.QMessageBox.critical(
                 self,
                 "저장 오류",
-                f"프로젝트 저장에 실패했습니다.\n\n{str(e)}\n\n자세한 내용은 콘솔을 확인하세요."
+                f"프로젝트 저장에 실패했습니다.\n\n{str(e)}\n\n자세한 내용은 콘솔을 확인하세요.",
             )
             return False
-
+    
     def import_pdf(self):
         # ▼▼▼ [핵심] 문서가 열려있지 않을 때의 로직을 완전히 변경합니다. ▼▼▼
         if not self.doc:
@@ -3376,8 +6715,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 reply = QtWidgets.QMessageBox.question(
                     self,
                     "새로 불러오기",
-                    "기존 작업을 모두 닫고 새 PDF로 작업을 다시 시작하시겠습니까?\n(모든 넘버링 정보가 삭제됩니다.)",
-                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                                                   "기존 작업을 모두 닫고 새 PDF로 작업을 다시 시작하시겠습니까?\n(모든 넘버링 정보가 삭제됩니다.)",
+                                                   QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
                     QtWidgets.QMessageBox.No,
                 )
                 if reply == QtWidgets.QMessageBox.No:
@@ -3394,25 +6733,51 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
     def import_pdf_from_path(self, path):
         # 이 함수는 이제 '새 집을 짓는' 역할에만 집중합니다.
+        print(f"[DEBUG] import_pdf_from_path 시작: path={path}")
+        print(f"[DEBUG] import_pdf_from_path: scene 존재={hasattr(self, 'scene')}, view 존재={hasattr(self, 'view')}")
+        
         try:
-            self.doc = fitz.open(path)
+            print(f"[DEBUG] import_pdf_from_path: pdfium.PdfDocument 호출 전")
+            # 파일명 인코딩 문제를 방지하기 위해 파일을 바이너리로 읽어서 전달
+            try:
+                with open(path, 'rb') as f:
+                    pdf_bytes = f.read()
+                self.doc = pdfium.PdfDocument(pdf_bytes)
+            except (UnicodeEncodeError, OSError) as encoding_error:
+                # 바이너리 읽기 실패 시 경로 문자열로 직접 시도
+                print(f"[DEBUG] 바이너리 읽기 실패, 경로로 직접 시도: {encoding_error}")
+                self.doc = pdfium.PdfDocument(path)
+            print(f"[DEBUG] import_pdf_from_path: PDF 열기 성공, 페이지 수={len(self.doc)}")
         except Exception as e:
+            import traceback
+            print(f"[DEBUG] import_pdf_from_path: PDF 열기 오류: {e}")
+            traceback.print_exc()
             _log_error(self, "PDF 열기 오류", e)
             self.doc = None  # 오류 시 doc 객체 확실히 비우기
             self._update_page_navigation_ui()
             self._clear_thumbnails()
             return
+
         # ▼▼▼ [핵심 수정] 페이지 수와 상관없이 항상 넘버링 방식을 물어봅니다. ▼▼▼
+        print(f"[DEBUG] import_pdf_from_path: NumberingModeDialog 표시 전")
         dialog = NumberingModeDialog(self)
         if dialog.exec():
             self.numbering_mode = dialog.choice
+            print(f"[DEBUG] import_pdf_from_path: 넘버링 모드 선택됨: {self.numbering_mode}")
         else:
+            print(f"[DEBUG] import_pdf_from_path: 넘버링 모드 선택 취소")
             # 사용자가 넘버링 방식 선택을 취소하면, 문서 로드를 중단합니다.
             self._close_current_doc()
             return
         # ▲▲▲ 여기까지 수정 ▲▲▲
-        self.cb_separate_numbering.setChecked(self.numbering_mode == "page_specific")
-        self.cb_separate_numbering.setEnabled(False)  # 한번 선택하면 프로젝트 내에서 변경 불가
+            
+        try:
+            if hasattr(self, "cb_separate_numbering"):
+                self.cb_separate_numbering.setChecked(self.numbering_mode == "page_specific")
+                self.cb_separate_numbering.setEnabled(False)  # 한번 선택하면 프로젝트 내에서 변경 불가
+        except Exception as e:
+            print(f"[DEBUG] 체크박스 설정 오류: {e}")
+        
         # 새 PDF의 정보를 기반으로 프로젝트 기본 정보 설정
         if not self.project_name:
             self.project_name = os.path.splitext(os.path.basename(path))[0]
@@ -3420,19 +6785,129 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.pdf_path = path
         self.cur_page_index = 0
         self._set_dirty(True)
-        self.load_page(self.cur_page_index)
-        self._populate_thumbnails()
-        self._update_window_title()
-
+        print(f"[DEBUG] import_pdf_from_path: 프로젝트 정보 설정 완료, load_page 호출 전")
+        
+        try:
+            print(f"[DEBUG] import_pdf_from_path: load_page({self.cur_page_index}) 호출")
+            self.load_page(self.cur_page_index)
+            print(f"[DEBUG] import_pdf_from_path: load_page 완료")
+        except Exception as e:
+            import traceback
+            print(f"[DEBUG] import_pdf_from_path - load_page 오류: {e}")
+            traceback.print_exc()
+            _log_error(self, "PDF 페이지 로드 오류", e)
+            self._close_current_doc()
+            return
+        
+        try:
+            print(f"[DEBUG] import_pdf_from_path: _populate_thumbnails 호출 전")
+            self._populate_thumbnails()
+            print(f"[DEBUG] import_pdf_from_path: _populate_thumbnails 완료")
+        except Exception as e:
+            import traceback
+            print(f"[DEBUG] 썸네일 생성 오류: {e}")
+            traceback.print_exc()
+            _log_error(self, "썸네일 생성 오류", e)
+            # 썸네일 오류는 치명적이지 않으므로 계속 진행
+        
+        try:
+            print(f"[DEBUG] import_pdf_from_path: _update_window_title 호출 전")
+            self._update_window_title()
+            print(f"[DEBUG] import_pdf_from_path: _update_window_title 완료")
+        except Exception as e:
+            import traceback
+            print(f"[DEBUG] 윈도우 제목 업데이트 오류: {e}")
+            traceback.print_exc()
+    
+        print(f"[DEBUG] import_pdf_from_path: 모든 작업 완료")
+   
     def _render_factor_for_scale(self, s: float) -> int:
         return 2 if s < 1.6 else (4 if s < 3.2 else 6)
-
+    
     # 줌인시 갑자기 화면이 튀는걸 방지하기 위해 코드 교체됨. v2.94에서...
     def _maybe_rerender_for_zoom(self, s: float):
         if not self.auto_highres or not self.doc:
             return
+        # 렌더링 중이면 완전히 무시 (중복 호출 방지)
+        if self._is_rerendering:
+            return
+        
+        # 빠른 스크롤 감지 (0.5초 내 3회 이상 호출 시 재렌더링 건너뛰기)
+        import time
+        current_time = time.time()
+        if current_time - self._last_zoom_time < 0.5:
+            self._zoom_call_count += 1
+            if self._zoom_call_count >= 3:
+                # 빠른 스크롤 중이므로 재렌더링 완전히 건너뛰기
+                if self._zoom_rerender_timer:
+                    self._zoom_rerender_timer.stop()
+                    self._zoom_rerender_timer.deleteLater()
+                    self._zoom_rerender_timer = None
+                return
+        else:
+            # 0.5초 이상 경과했으면 카운터 리셋
+            self._zoom_call_count = 0
+        
+        self._last_zoom_time = current_time
+        
         desired = self._render_factor_for_scale(s)
         if desired != self.render_scale:
+            # 디바운싱: 짧은 시간 내 여러 번 호출되는 것을 방지
+            # 빠른 스크롤 시 메모리 과다 사용 방지를 위해 시간을 더 늘림
+            if self._zoom_rerender_timer:
+                self._zoom_rerender_timer.stop()
+                self._zoom_rerender_timer.deleteLater()
+            
+            self._zoom_rerender_timer = QtCore.QTimer()
+            self._zoom_rerender_timer.setSingleShot(True)
+            # 최신 desired 값을 캡처하기 위해 클로저 사용
+            current_desired = desired
+            self._zoom_rerender_timer.timeout.connect(
+                lambda: self._do_rerender_for_zoom(s, current_desired)
+            )
+            # 디바운싱 시간을 2000ms로 증가 (빠른 스크롤 대응)
+            self._zoom_rerender_timer.start(2000)
+    
+    def _do_rerender_for_zoom(self, s: float, desired: int):
+        """실제 재렌더링을 수행합니다."""
+        # 다시 한번 체크 (타이머가 실행되는 동안 상태가 변경되었을 수 있음)
+        if self._is_rerendering or not self.auto_highres or not self.doc:
+            return
+        
+        # 빠른 스크롤 중인지 다시 확인
+        import time
+        current_time = time.time()
+        if current_time - self._last_zoom_time < 0.5 and self._zoom_call_count >= 3:
+            # 여전히 빠른 스크롤 중이면 건너뛰기
+            return
+        
+        # 현재 render_scale과 desired가 여전히 다른지 확인
+        # (타이머 대기 중에 이미 변경되었을 수 있음)
+        current_desired = self._render_factor_for_scale(s)
+        if current_desired == self.render_scale:
+            return  # 이미 올바른 스케일이면 렌더링 불필요
+        
+        # 큰 이미지의 경우 재렌더링을 더 보수적으로 처리
+        if hasattr(self, '_page_pix') and self._page_pix:
+            try:
+                pixmap = self._page_pix.pixmap()
+                if not pixmap.isNull():
+                    # 이미지가 큰 경우 (예: 4000x4000 이상) 재렌더링 제한
+                    if pixmap.width() > 4000 or pixmap.height() > 4000:
+                        # 큰 이미지는 스케일 변경이 2배 이상일 때만 재렌더링
+                        scale_ratio = current_desired / self.render_scale
+                        if abs(scale_ratio - 1.0) < 1.0:  # 2배 미만 변경은 건너뛰기
+                            return
+                        # 또는 매우 큰 이미지(6000x6000 이상)는 완전히 건너뛰기
+                        if pixmap.width() > 6000 or pixmap.height() > 6000:
+                            return
+            except Exception:
+                pass
+        
+        # 렌더링 중 플래그 설정
+        self._is_rerendering = True
+        
+        try:
             # --- 수정 시작: 화면 점프 방지 로직 ---
             # 1. 이미지를 교체하기 전, 현재 화면의 중심 좌표를 기억합니다.
             # 뷰포트(보이는 영역)의 중심점을 씬(전체 도면)의 좌표로 변환합니다.
@@ -3440,60 +6915,210 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 현재 배율 기준으로 '정규화된' 좌표를 계산해 둡니다. (비율 좌표)
             normalized_x = center_point_before.x() / self.render_scale
             normalized_y = center_point_before.y() / self.render_scale
-            # 2. 새로운 해상도로 이미지를 다시 렌더링합니다.
-            self.render_scale = desired
+            
+            # 2. 이전 QPixmap 명시적 삭제 (메모리 해제)
+            if self._page_pix:
+                try:
+                    # QGraphicsPixmapItem의 pixmap을 명시적으로 삭제
+                    old_pixmap = self._page_pix.pixmap()
+                    if not old_pixmap.isNull():
+                        # QPixmap의 내부 데이터를 명시적으로 해제
+                        old_pixmap.detach()
+                    # scene에서 제거
+                    if self.scene:
+                        self.scene.removeItem(self._page_pix)
+                    self._page_pix = None
+                except Exception:
+                    pass
+            
+            # 3. 가비지 컬렉션 강제 실행 (메모리 해제 촉진)
+            import gc
+            gc.collect()
+            
+            # 4. 새로운 해상도로 이미지를 다시 렌더링합니다.
+            self.render_scale = current_desired
             self.load_page(self.cur_page_index)
-            # 3. 새 이미지에 맞게 기억해 둔 중심점의 좌표를 다시 계산합니다.
+            
+            # 5. 새 이미지에 맞게 기억해 둔 중심점의 좌표를 다시 계산합니다.
             new_center_x = normalized_x * self.render_scale
             new_center_y = normalized_y * self.render_scale
-            # 4. 뷰를 새로운 중심점으로 즉시 이동시킵니다.
+            # 6. 뷰를 새로운 중심점으로 즉시 이동시킵니다.
             self.view.centerOn(QtCore.QPointF(new_center_x, new_center_y))
             # --- 수정 끝 ---
-
+        except Exception as e:
+            import traceback
+            print(f"[DEBUG] _do_rerender_for_zoom 오류: {e}")
+            traceback.print_exc()
+            _log_error(self, "줌 재렌더링 오류", e)
+        finally:
+            # 렌더링 완료 플래그 해제
+            self._is_rerendering = False
+            
     def load_page(self, index: int):
+        print(f"[DEBUG] load_page 시작: index={index}, doc 존재={self.doc is not None}")
+        
         if not self.doc:
+            print(f"[DEBUG] load_page: doc이 None이므로 종료")
             return
-        index = max(0, min(index, len(self.doc) - 1))
-        self.cur_page_index = index
-        page = self.doc[index]
-        pix = page.get_pixmap(matrix=fitz.Matrix(self.render_scale, self.render_scale), alpha=False)
-        img = QtGui.QImage(
-            pix.samples, pix.width, pix.height, pix.stride, QtGui.QImage.Format_RGB888
-        )
-        pm = QtGui.QPixmap.fromImage(img.copy())
-        self.scene.clear()
-        # ▼▼▼ [결정적 수정] 파괴된 객체에 대한 참조를 여기서 모두 초기화합니다. ▼▼▼
-        self._preview_ellipse = None
-        self._preview_text = None
-        self._stamp_preview_item = None
-        # ▲▲▲ 여기까지 3줄 추가 ▲▲▲
-        self._stamp_graphics_items.clear()
-        self._clear_stamp_highlight()
-        self._page_pix = self.scene.addPixmap(pm)
-        self.view.setSceneRect(pm.rect())
-        if self.view_show_numbering:
-            for it in self.items:
-                if it.page_index == index:
-                    self._draw_label(it)
-        if self.view_show_stamps:
-            for st in self.stamps:
-                if st.page_index == index:
-                    self._draw_stamp(st)
-        if self.flow_view_enabled:
-            self._draw_flow_elements()
-        self._preview_ellipse = None
-        self._preview_text = None
-        self._on_zoom_changed(self.view._scale())
-        self._reapply_highlight_from_selection(same_page_only=True)
-        self._update_page_navigation_ui()
-        self._update_thumbnail_selection()
-        self._refresh_table_view()
-        self._refresh_stamp_table()
-        # [핵심 수정] UI 업데이트를 바로 호출하지 않고, 0초 뒤에 실행하도록 예약합니다.
-        QtCore.QTimer.singleShot(0, self._sync_ui_to_current_mode)
-        # ▼▼▼ 여기에 이 한 줄을 추가! ▼▼▼
-        self.view.setFocus()
+        
+        # scene과 view가 제대로 초기화되었는지 확인
+        if not hasattr(self, 'scene') or self.scene is None:
+            print(f"[DEBUG] load_page 오류: scene이 초기화되지 않았습니다.")
+            return
+        if not hasattr(self, 'view') or self.view is None:
+            print(f"[DEBUG] load_page 오류: view가 초기화되지 않았습니다.")
+            return
+        
+        print(f"[DEBUG] load_page: scene/view 검증 완료, 페이지 로드 시작")
+        
+        try:
+            print(f"[DEBUG] load_page: 인덱스 계산 전, len(doc)={len(self.doc)}")
+            index = max(0, min(index, len(self.doc) - 1))
+            self.cur_page_index = index
+            print(f"[DEBUG] load_page: get_page 호출 전, index={index}")
+            page = self.doc.get_page(index)
+            print(f"[DEBUG] load_page: get_page 완료. page={page}")
+            
+            # --- Safe Rendering Logic Start ---
+            # 고해상도 PDF 크래시 방지를 위한 안전 렌더링 로직
+            # 제한 설정: 가로/세로 최대 10,000픽셀, 또는 총 픽셀 수 80,000,000 (약 320MB Raw RGBA)
+            MAX_DIM = 10000
+            MAX_PIXELS = 80_000_000
+            
+            w_pt = page.get_width()
+            h_pt = page.get_height()
+            print(f"[DEBUG] load_page: 원본 크기(pt) = {w_pt}x{h_pt}, 현재 배율={self.render_scale}")
+            
+            target_w = w_pt * self.render_scale
+            target_h = h_pt * self.render_scale
+            print(f"[DEBUG] load_page: 목표 렌더링 크기(px) = {target_w}x{target_h}")
+            
+            actual_scale = self.render_scale
+            
+            if target_w > MAX_DIM or target_h > MAX_DIM or (target_w * target_h) > MAX_PIXELS:
+                print(f"[DEBUG] load_page: 안전 렌더링 트리거됨! (제한 초과)")
+                # 안전한 스케일 계산
+                scale_w = MAX_DIM / w_pt
+                scale_h = MAX_DIM / h_pt
+                
+                # 픽셀 수 제한에 따른 스케일
+                # (w * s) * (h * s) = MAX_PIXELS  =>  s^2 = MAX_PIXELS / (w * h)
+                import math
+                scale_p = math.sqrt(MAX_PIXELS / (w_pt * h_pt))
+                
+                safe_scale = min(scale_w, scale_h, scale_p)
+                print(f"[DEBUG] load_page: 계산된 안전 스케일={safe_scale}")
+                
+                # 기존 요청 스케일보다 작을 때만 적용
+                if safe_scale < self.render_scale:
+                    print(f"[WARNING] Safe Rendering Triggered: Requested {int(target_w)}x{int(target_h)} -> Scaling down to safe limit.")
+                    actual_scale = safe_scale
+                    self.statusBar().showMessage(f"⚠️ 메모리 보호를 위해 해상도가 자동 조정되었습니다. ({self.render_scale:.2f} -> {actual_scale:.2f})", 5000)
 
+            # --- Safe Rendering Logic End ---
+
+            # 1. pypdfium2 렌더링 (메모리)
+            bitmap = None
+            try:
+                print(f"[DEBUG] load_page: page.render 호출 시작 (scale={actual_scale})")
+                bitmap = page.render(scale=actual_scale)
+                print(f"[DEBUG] load_page: page.render 완료")
+            except Exception as render_error:
+                print(f"[DEBUG] load_page: render 오류: {render_error}")
+                _log_error(self, "페이지 렌더링 오류", render_error)
+                return
+            
+            # 2. Bitmap -> QImage -> QPixmap 변환 (메모리 내 처리, Disk I/O 제거)
+            pm = None
+            try:
+                # 헬퍼 함수를 사용하여 직접 QImage로 변환
+                img = _pil_to_qimage(bitmap)
+                if img.isNull():
+                    raise ValueError("Converted QImage is null")
+                
+                pm = QtGui.QPixmap.fromImage(img)
+                if pm.isNull():
+                    raise ValueError("Converted QPixmap is null")
+                    
+                # print(f"[DEBUG] load_page: 메??  변환 성공, size={pm.width()}x{pm.height()}")
+            except Exception as e:
+                import traceback
+                print(f"[DEBUG] load_page: 이미지 변환 실패: {e}")
+                traceback.print_exc()
+                _log_error(self, "페이지 이미지 변환 실패", e)
+                return
+            finally:
+                # 비트맵 메모리 해제
+                if bitmap:
+                    try:
+                        bitmap.close()  # pypdfium2 객체 해제
+                    except Exception:
+                        pass
+
+            # 3. Scene 업데이트
+            # 이전 QPixmap 아이템 제거 (메모리 해제)
+            if self._page_pix:
+                try:
+                    if self.scene:
+                        self.scene.removeItem(self._page_pix)
+                    # 명시적 detach/gc.collect() 제거 -> Python GC에 위임
+                    self._page_pix = None
+                except Exception:
+                    pass
+            
+            self.scene.clear()
+            
+            # 파괴된 객체 참조 초기화
+            self._preview_ellipse = None
+            self._preview_text = None
+            self._stamp_preview_item = None
+            self._clear_detail_box()
+            self._stamp_graphics_items.clear()
+            self._clear_stamp_highlight()
+            
+            # 새 Pixmap 추가
+            self._page_pix = self.scene.addPixmap(pm)
+            # Z값을 가장 아래로
+            self._page_pix.setZValue(-1000)
+            
+            # 씬 크기 설정
+            rect = QtCore.QRectF(0, 0, pm.width(), pm.height())
+            self.scene.setSceneRect(rect)
+            
+            # 4. 아이템 다시 그리기
+            # print(f"[DEBUG] load_page: 아이템 리스트 순회 시작, 개수={len(self.items)}")
+            
+            # (최적화) 현재 페이지의 아이템만 필터링
+            current_page_items = [it for it in self.items if it.page_index == index]
+            
+            for it in current_page_items:
+                self._draw_label(it)
+                
+            # 스탬프 다시 그리기
+            current_page_stamps = [st for st in self.stamps if st.page_index == index]
+            for st in current_page_stamps:
+                self._draw_stamp(st)
+
+            # 흐름도 선 그리기 (전체 페이지 대상일 수 있으므로 로직 유지하되 필요시 최적화)
+            if self.flow_view_enabled:
+                 self._update_flow_view() # 전체 다시 그리기
+            
+            # 하이라이트/선택 상태 복구
+            self._reapply_highlight_from_selection(same_page_only=True)
+            
+            # 미리보기 모드라면 커서 다시 활성화 (이동 시 생성됨)
+            if self.active_mode == "numbering" and self.preview_mode == "preview":
+                self._preview_ellipse = None # 확실히 초기화
+            
+            # print(f"[DEBUG] load_page 완료")
+            
+        except Exception as e:
+            import traceback
+            print(f"[DEBUG] load_page 전체 오류: {e}")
+            traceback.print_exc()
+            _log_error(self, "페이지 로드 오류", e)
+
+    
     def go_prev(self):
         if self.doc and self.cur_page_index > 0:
             self.load_page(self.cur_page_index - 1)
@@ -3501,6 +7126,160 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def go_next(self):
         if self.doc and self.cur_page_index < len(self.doc) - 1:
             self.load_page(self.cur_page_index + 1)
+
+    # ===== ▼▼▼ 탭 전환 핸들러 추가 ▼▼▼ =====
+    def _on_tab_changed(self, index: int):
+        """탭이 전환될 때 호출되는 핸들러"""
+        # 3D 뷰어 탭(인덱스 1)이 활성화되면 2D 뷰어를 숨기고 3D 뷰어를 보이도록 함
+        if index == 1:  # 3D View 탭
+            if hasattr(self, 'view'):
+                self.view.hide()
+            if hasattr(self, 'widget_3d'):
+                self.widget_3d.show()
+                # 3D 뷰어가 제대로 렌더링되도록 강제 업데이트
+                if hasattr(self, 'plotter') and self.plotter:
+                    self.plotter.render()
+        else:  # 2D View 탭
+            if hasattr(self, 'view'):
+                self.view.show()
+            if hasattr(self, 'widget_3d'):
+                self.widget_3d.hide()
+    # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
+    
+    # ===== ▼▼▼ 뷰어 레이아웃 전환 함수 추가 ▼▼▼ =====
+    def _set_viewer_layout(self, mode: str):
+        """
+        뷰어 레이아웃 모드를 설정합니다. (중앙 뷰어 영역만 변경, 도크 위젯은 유지)
+        
+        Args:
+            mode: "tab" (탭 모드), "horizontal_split" (가로 2분할), "vertical_split" (세로 2분할)
+        """
+        if not hasattr(self, 'view') or not hasattr(self, 'widget_3d'):
+            return
+        
+        # 위젯이 유효한지 확인
+        try:
+            if not self.view or not self.widget_3d:
+                return
+        except RuntimeError:
+            return  # 위젯이 이미 삭제된 경우
+        
+        # 현재 모드와 동일하면 아무것도 하지 않음
+        if hasattr(self, 'viewer_layout_mode') and self.viewer_layout_mode == mode:
+            return
+        
+        self.viewer_layout_mode = mode
+        
+        # 기존 위젯들을 부모에서 안전하게 분리
+        view_widget = self.view
+        widget_3d = self.widget_3d
+        
+        # viewer_container_layout의 기존 위젯 제거 (위젯은 삭제하지 않음)
+        # 먼저 레이아웃에서 모든 아이템을 제거
+        while self.viewer_container_layout.count() > 0:
+            item = self.viewer_container_layout.takeAt(0)
+            if item and item.widget():
+                container_widget = item.widget()
+                # 컨테이너 위젯(탭 위젯이나 스플리터) 안의 위젯들을 먼저 제거
+                if isinstance(container_widget, QtWidgets.QTabWidget):
+                    # 탭 위젯에서 모든 탭 제거
+                    while container_widget.count() > 0:
+                        container_widget.removeTab(0)
+                elif isinstance(container_widget, QtWidgets.QSplitter):
+                    # 스플리터에서 모든 위젯 제거 (QSplitter에는 removeWidget이 없으므로 setParent 사용)
+                    while container_widget.count() > 0:
+                        child = container_widget.widget(0)
+                        if child:
+                            child.setParent(None)  # 부모를 None으로 설정하면 자동으로 splitter에서 제거됨
+                # 컨테이너 위젯을 레이아웃에서 제거
+                container_widget.setParent(None)
+        
+        # 위젯이 이미 다른 부모에 있으면 제거 (안전하게)
+        def safe_remove_from_parent(widget):
+            """위젯을 부모에서 안전하게 제거"""
+            if not widget:
+                return
+            try:
+                parent = widget.parent()
+                if not parent:
+                    return
+                if isinstance(parent, QtWidgets.QTabWidget):
+                    # 탭에서 제거
+                    for i in range(parent.count()):
+                        if parent.widget(i) == widget:
+                            parent.removeTab(i)
+                            break
+                elif isinstance(parent, QtWidgets.QSplitter):
+                    # 스플리터에서 제거 (QSplitter에는 removeWidget이 없으므로 setParent 사용)
+                    widget.setParent(None)  # 부모를 None으로 설정하면 자동으로 splitter에서 제거됨
+                elif isinstance(parent, QtWidgets.QWidget):
+                    # 일반 위젯의 레이아웃에서 제거
+                    layout = parent.layout()
+                    if layout:
+                        layout.removeWidget(widget)
+            except (RuntimeError, AttributeError):
+                pass  # 이미 삭제되었거나 접근 불가
+        
+        # 위젯들을 부모에서 제거
+        safe_remove_from_parent(view_widget)
+        safe_remove_from_parent(widget_3d)
+        
+        if mode == "tab":
+            # 탭 모드: QTabWidget 사용
+            if not hasattr(self, 'tab_widget') or self.tab_widget is None:
+                self.tab_widget = QtWidgets.QTabWidget()
+            # 기존 탭 제거 (혹시 모를 경우를 대비)
+            while self.tab_widget.count() > 0:
+                self.tab_widget.removeTab(0)
+            # 위젯이 유효한지 다시 확인 후 추가
+            try:
+                self.tab_widget.addTab(view_widget, "2D View")
+                self.tab_widget.addTab(widget_3d, "3D View")
+            except RuntimeError:
+                return  # 위젯이 삭제된 경우
+            # 시그널 연결 (중복 방지)
+            try:
+                self.tab_widget.currentChanged.disconnect(self._on_tab_changed)
+            except:
+                pass
+            self.tab_widget.currentChanged.connect(self._on_tab_changed)
+            self.viewer_container_layout.addWidget(self.tab_widget)
+            
+        elif mode == "horizontal_split":
+            # 가로 2분할: 좌우로 나눔
+            splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+            try:
+                splitter.addWidget(view_widget)
+                splitter.addWidget(widget_3d)
+            except RuntimeError:
+                return  # 위젯이 삭제된 경우
+            splitter.setSizes([500, 500])  # 50:50 비율
+            self.viewer_container_layout.addWidget(splitter)
+            # 두 뷰어 모두 표시
+            view_widget.show()
+            widget_3d.show()
+            
+        elif mode == "vertical_split":
+            # 세로 2분할: 상하로 나눔
+            splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+            try:
+                splitter.addWidget(view_widget)
+                splitter.addWidget(widget_3d)
+            except RuntimeError:
+                return  # 위젯이 삭제된 경우
+            splitter.setSizes([400, 400])  # 50:50 비율
+            self.viewer_container_layout.addWidget(splitter)
+            # 두 뷰어 모두 표시
+            view_widget.show()
+            widget_3d.show()
+        
+        # 3D 뷰어가 보일 때 렌더링
+        if mode != "tab" and hasattr(self, 'plotter') and self.plotter:
+            try:
+                self.plotter.render()
+            except:
+                pass
+    # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
 
     # ===== ▼▼▼ 아래 4개 함수를 여기에 새로 추가해주세요 ▼▼▼ =====
     def _go_to_page_from_spinbox(self, page_num):
@@ -3559,39 +7338,85 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.thumbnail_widgets = []
 
     def _populate_thumbnails(self):
-        # 기존 썸네일 싹 정리
-        self._clear_thumbnails()
-        if not getattr(self, "doc", None):
-            return
-        # 방어: 누락 필드가 있어도 죽지 않도록
-        if not hasattr(self, "thumbnail_widgets"):
-            self.thumbnail_widgets = []
-        page_count = 0
+        print(f"[DEBUG] _populate_thumbnails 시작")
         try:
-            page_count = len(self.doc)
-        except Exception:
-            # 페이지 수 조회 실패 시 조용히 중단
-            return
-        for i in range(page_count):
+            # 기존 썸네일 싹 정리
+            self._clear_thumbnails()
+            if not getattr(self, "doc", None):
+                print(f"[DEBUG] _populate_thumbnails: doc이 None이므로 종료")
+                return
+            # 방어: 누락 필드가 있어도 죽지 않도록
+            if not hasattr(self, "thumbnail_widgets"):
+                self.thumbnail_widgets = []
+            if not hasattr(self, "thumbnail_layout"):
+                print(f"[DEBUG] _populate_thumbnails: thumbnail_layout이 없으므로 종료")
+                return
+            page_count = 0
             try:
-                page = self.doc.load_page(i)
-                # 썸네일은 너무 무겁지 않게 기본 DPI 또는 작은 사이즈로 생성
-                pix = page.get_pixmap(clip=page.bound(), dpi=72)
-                qimg = QtGui.QImage(
-                    pix.samples, pix.width, pix.height, pix.stride, QtGui.QImage.Format_RGB888
-                )
-                q_pixmap = QtGui.QPixmap.fromImage(qimg)
-                thumbnail = ThumbnailLabel(i, q_pixmap)
-                thumbnail.clicked.connect(self.load_page)
-                self.thumbnail_layout.addWidget(thumbnail)
-                self.thumbnail_widgets.append(thumbnail)
-            except Exception:
-                # 개별 페이지 렌더 실패는 건너뜁니다. (한 장 때문에 전체가 멈추지 않게)
-                continue
-        # 스페이서(스트레치) 추가 — 이제 _clear_thumbnails가 안전하게 처리합니다.
-        self.thumbnail_layout.addStretch(1)
-        # 현재 페이지 하이라이트 및 가시화
-        self._update_thumbnail_selection()
+                page_count = len(self.doc)
+                print(f"[DEBUG] _populate_thumbnails: 페이지 수={page_count}")
+            except Exception as e:
+                print(f"[DEBUG] _populate_thumbnails: 페이지 수 조회 실패: {e}")
+                # 페이지 수 조회 실패 시 조용히 중단
+                return
+            for i in range(page_count):
+                try:
+                    print(f"[DEBUG] _populate_thumbnails: 페이지 {i} 처리 시작")
+                    page = self.doc.get_page(i)
+                    # 썸네일은 처음부터 작은 스케일로 렌더링 (메모리 문제 방지)
+                    # scale=0.3 정도면 썸네일로 충분하며, 메모리 사용량도 크게 줄어듭니다
+                    thumb_scale = 0.3
+                    print(f"[DEBUG] _populate_thumbnails: 페이지 {i} render 시작 (scale={thumb_scale})")
+                    pil_img = page.render(scale=thumb_scale)
+                    print(f"[DEBUG] _populate_thumbnails: 페이지 {i} render 완료")
+                    qimg = _pil_to_qimage(pil_img)
+                    print(f"[DEBUG] _populate_thumbnails: 페이지 {i} QImage 변환 완료, size={qimg.width()}x{qimg.height()}")
+                    # QImage가 유효한지 확인
+                    if qimg.isNull():
+                        print(f"[DEBUG] _populate_thumbnails: 페이지 {i} QImage가 null")
+                        continue
+                    
+                    # QPixmap 생성 시 예외 처리 강화
+                    q_pixmap = None
+                    try:
+                        print(f"[DEBUG] _populate_thumbnails: 페이지 {i} QPixmap.fromImage 호출 전")
+                        q_pixmap = QtGui.QPixmap.fromImage(qimg)
+                        print(f"[DEBUG] _populate_thumbnails: 페이지 {i} QPixmap.fromImage 호출 완료")
+                        if q_pixmap.isNull():
+                            print(f"[DEBUG] _populate_thumbnails: 페이지 {i} QPixmap이 null")
+                            continue
+                        print(f"[DEBUG] _populate_thumbnails: 페이지 {i} QPixmap 생성 완료, size={q_pixmap.width()}x{q_pixmap.height()}")
+                    except Exception as pixmap_error:
+                        import traceback
+                        print(f"[DEBUG] _populate_thumbnails: 페이지 {i} QPixmap 생성 실패: {pixmap_error}")
+                        traceback.print_exc()
+                        continue
+                    
+                    # QPixmap이 None이면 건너뛰기
+                    if q_pixmap is None:
+                        print(f"[DEBUG] _populate_thumbnails: 페이지 {i} QPixmap이 None")
+                        continue
+                    thumbnail = ThumbnailLabel(i, q_pixmap)
+                    thumbnail.clicked.connect(self.load_page)
+                    self.thumbnail_layout.addWidget(thumbnail)
+                    self.thumbnail_widgets.append(thumbnail)
+                    print(f"[DEBUG] _populate_thumbnails: 페이지 {i} 썸네일 추가 완료")
+                except Exception as e:
+                    import traceback
+                    print(f"[DEBUG] _populate_thumbnails: 페이지 {i} 처리 오류: {e}")
+                    traceback.print_exc()
+                    # 개별 페이지 렌더 실패는 건너뜁니다. (한 장 때문에 전체가 멈추지 않게)
+                    continue
+            # 스페이서(스트레치) 추가 — 이제 _clear_thumbnails가 안전하게 처리합니다.
+            self.thumbnail_layout.addStretch(1)
+            # 현재 페이지 하이라이트 및 가시화
+            self._update_thumbnail_selection()
+            print(f"[DEBUG] _populate_thumbnails: 모든 작업 완료")
+        except Exception as e:
+            import traceback
+            print(f"[DEBUG] _populate_thumbnails: 치명적 오류: {e}")
+            traceback.print_exc()
+            # 썸네일 생성 실패는 치명적이지 않으므로 조용히 종료
 
     def _update_thumbnail_selection(self):
         if not getattr(self, "thumbnail_widgets", None):
@@ -3687,11 +7512,21 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 1. 사격 모드는 최상단에서 처리 (기존과 동일)
         if self.shooting_mode:
             # ▼▼▼ [핵심] 비어있던 사격 모드 로직을 복원합니다. ▼▼▼
+            # 리소스가 로드되지 않았으면 로드 시도
+            if not self._shooting_resources_loaded:
+                self._load_shooting_resources()
+            
             try:
                 if self.sound_effect:
                     self.sound_effect.play()
             except Exception as e:
                 print(f"사운드 재생 오류: {e}")
+            
+            # 리소스 안전성 체크
+            if not self.bullet_hole_pixmaps:
+                print("Warning: bullet_hole_pixmaps not loaded")
+                return
+            
             pm = random.choice(self.bullet_hole_pixmaps)
             scaled_pm = pm.scaled(
                 128, 128, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
@@ -3710,6 +7545,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             return
             # ▲▲▲ 여기까지 복원 ▲▲▲
         # 2. 현재 활성 모드에 따라 작업 결정
+        if self.active_mode == "view":
+            return
+
         if self.active_mode == "numbering":
             pdf_xy = self.view_to_pdf(scene_pos)
             if self.insert_mode:
@@ -3758,7 +7596,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     tol_minus=normalize_signed_text(m_val),
                 )
             if not is_separate_mode:
-                self.next_no = float(cur_no + 1)
+                 self.next_no = float(cur_no + 1)
             self.items.append(it)  # 상태 리스트에 추가
             # ▼▼▼ [핵심 추가] 행동을 역사에 기록합니다. ▼▼▼
             action = {"type": "add_numbering", "item": it}
@@ -3822,8 +7660,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self._refresh_stamp_table()
             self._set_dirty()
             self._update_undo_redo_hint()
-
-    # 탄피생성
+    
+    # 탄피생성    
     def _spawn_shell(self, origin: QtCore.QPointF):
         """사격 시 한 발당 탄피 1개 생성."""
         if not self.shell_pixmaps:
@@ -3906,7 +7744,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.shell_items = alive
         if not self.shell_items:
             self._shell_timer.stop()
-
+    
     def clear_bullet_holes(self):
         # ... (기존 혈흔 정리)
         for s in getattr(self, "shell_items", []):
@@ -3915,14 +7753,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             except Exception:
                 pass
         self.shell_items = []
-
+        
     # 총알구멍 삭제 함수 v3.33에서...
     def clear_bullet_holes(self):
         """화면에 있는 모든 총알 구멍 잔상을 제거합니다."""
         for item in self.bullet_hole_items:
             self.scene.removeItem(item)
         self.bullet_hole_items.clear()
-
+    
     def _draw_flow_elements(self):
         """(주석 추가됨) 아이콘과 텍스트 라벨을 포함한 흐름도를 그립니다."""
         items_on_page = [it for it in self.items if it.page_index == self.cur_page_index]
@@ -3980,7 +7818,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 self.flow_items.append(circle_item)
             # "none"일 경우 아무것도 그리지 않음
             # ▲▲▲ 여기까지 교체 ▲▲▲
-
+            
         def draw_marker_icon(item, pixmap):
             scaled_pixmap = pixmap.scaled(
                 QtCore.QSize(48, 48), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
@@ -4072,7 +7910,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 next_item = all_sorted_items[i + 1] if i < len(all_sorted_items) - 1 else None
                 if next_item and next_item.page_index == current_item.page_index:
                     draw_arrow_line(current_item, next_item)
-
+    
     def _update_flow_view(self):
         """기존 흐름도를 지우고, 현재 상태에 맞춰 새로 그립니다."""
         # 1. 기록부에 있는 모든 흐름도 아이템을 화면에서 삭제
@@ -4096,22 +7934,496 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         style = it.custom_style if it.custom_style else self.style
         pt = self.pdf_to_view(*it.pdf_point)
         r = style.radius_view_px
-        ellipse = self.scene.addEllipse(
-            pt.x() - r,
-            pt.y() - r,
-            2 * r,
-            2 * r,
-            pen=QtGui.QPen(style.stroke_color, style.stroke_width),
-            brush=self._ellipse_brush(style),
-        )  # _ellipse_brush도 style을 받도록 수정 필요
+        
+        pen = QtGui.QPen(style.stroke_color, style.stroke_width)
+        brush = self._ellipse_brush(style)
+        
+        shape_type = getattr(style, "shape", "circle")
+        
+        if shape_type == "circle":
+            shape_item = self.scene.addEllipse(
+                pt.x() - r,
+                pt.y() - r,
+                2 * r,
+                2 * r,
+                pen=pen,
+                brush=brush,
+            )
+        elif shape_type == "rectangle":
+            # 정사각형 형태로 그림
+            shape_item = self.scene.addRect(
+                pt.x() - r,
+                pt.y() - r,
+                2 * r,
+                2 * r,
+                pen=pen,
+                brush=brush,
+            )
+        elif shape_type == "triangle":
+            # 정삼각형 (윗변이 평평한 역삼각형 말고 정방향 삼각형)
+            # 중심 (0,0) 기준
+            # Top: (0, -r)
+            # Bottom Left: (-r * sin(60), r * cos(60)) -> (-r * 0.866, r * 0.5)
+            # Bottom Right: (r * 0.866, r * 0.5)
+            # 원에 내접하는 정삼각형 좌표 계산
+            p1 = QtCore.QPointF(pt.x(), pt.y() - r)
+            p2 = QtCore.QPointF(pt.x() - r * 0.866, pt.y() + r * 0.5)
+            p3 = QtCore.QPointF(pt.x() + r * 0.866, pt.y() + r * 0.5)
+            poly = QtGui.QPolygonF([p1, p2, p3])
+            shape_item = self.scene.addPolygon(poly, pen=pen, brush=brush)
+        elif shape_type == "star":
+            # 5각 별
+            # 외부 반지름 r, 내부 반지름 r * 0.4
+            points = []
+            import math
+            inner_r = r * 0.4
+            # -90도(12시 방향)부터 시작
+            angle = -90
+            for _ in range(5):
+                # Outer point
+                rad = math.radians(angle)
+                points.append(QtCore.QPointF(pt.x() + r * math.cos(rad), pt.y() + r * math.sin(rad)))
+                angle += 36
+                # Inner point
+                rad = math.radians(angle)
+                points.append(QtCore.QPointF(pt.x() + inner_r * math.cos(rad), pt.y() + inner_r * math.sin(rad)))
+                angle += 36
+            
+            poly = QtGui.QPolygonF(points)
+            shape_item = self.scene.addPolygon(poly, pen=pen, brush=brush)
+        elif shape_type == "none":
+            # 외곽선 없음 (투명한 사각형을 그려서 클릭 영역만 확보하거나, 아예 안 그림)
+            # 텍스트만 보이면 되므로 여기서는 아무것도 안 그리거나 투명 객체 생성
+            # 단, z-ordering이나 참조를 위해 투명 아이템을 하나 만들면 좋음.
+            shape_item = self.scene.addEllipse(
+                pt.x() - r, pt.y() - r, 2 * r, 2 * r,
+                pen=QtGui.QPen(QtCore.Qt.NoPen),
+                brush=QtCore.Qt.NoBrush
+            )
+        else:
+            # 기본값 circle
+            shape_item = self.scene.addEllipse(
+                pt.x() - r,
+                pt.y() - r,
+                2 * r,
+                2 * r,
+                pen=pen,
+                brush=brush,
+            )
+
         txt = self.scene.addText(
             self._format_no(it.no), QtGui.QFont("Arial", style.font_size_view_px, QtGui.QFont.Bold)
         )
         txt.setDefaultTextColor(style.text_color)
         br = txt.boundingRect()
         txt.setPos(pt.x() - br.width() / 2, pt.y() - br.height() / 2)
-        ellipse.setZValue(2)
+        
+        # shape_item이 None일 수 있는 경우(else문 등) 대비
+        if shape_item:
+            shape_item.setZValue(2)
         txt.setZValue(2)
+
+    def _detail_view_active(self) -> bool:
+        return bool(getattr(self, "cb_detail_view", None) and self.cb_detail_view.isChecked())
+
+    def _detail_show_x_values(self) -> bool:
+        return bool(getattr(self, "cb_inspection_values", None) and self.cb_inspection_values.isChecked())
+
+    def _on_detail_view_toggled(self, checked: bool):
+        if hasattr(self, "cb_inspection_values"):
+            self.cb_inspection_values.setEnabled(self._detail_view_active())
+        if not self._detail_view_active():
+            self._clear_detail_box()
+        elif self._detail_box_item is not None:
+            self._show_detail_box(self._detail_box_item)
+
+    def _clear_detail_box(self):
+        for item in getattr(self, "_detail_box_items", []):
+            try:
+                self.scene.removeItem(item)
+            except Exception:
+                pass
+        self._detail_box_items = []
+        self._detail_box_item = None
+        self._detail_box_rect = None
+        self._detail_box_text = None
+
+    def _find_item_at_scene_pos(self, scene_pos: QtCore.QPointF) -> Optional[MarkItem]:
+        if not self.doc:
+            return None
+        for it in self.items:
+            if it.page_index != self.cur_page_index:
+                continue
+            style = it.custom_style if it.custom_style else self.style
+            pt = self.pdf_to_view(*it.pdf_point)
+            dx = scene_pos.x() - pt.x()
+            dy = scene_pos.y() - pt.y()
+            if (dx * dx + dy * dy) <= (style.radius_view_px ** 2):
+                return it
+        return None
+
+    def _get_selected_detail_item(self) -> Optional[MarkItem]:
+        if not getattr(self, "table", None):
+            return None
+        row = -1
+        ranges = self.table.selectedRanges()
+        if ranges:
+            row = ranges[0].topRow()
+        else:
+            row = self.table.currentRow()
+        if row < 0:
+            return None
+        try:
+            return self.table_manager._get_target_item(row)
+        except Exception:
+            return None
+
+    def _get_detail_bounds(self, it: MarkItem):
+        base = to_float_or_none(it.value)
+        if base is None:
+            return None
+        tol_plus = to_float_or_none(it.tol_plus)
+        tol_minus = to_float_or_none(it.tol_minus)
+        if tol_plus is None and tol_minus is None:
+            return None
+        if tol_plus is None:
+            tol_plus = 0.0
+        if tol_minus is None:
+            tol_minus = 0.0
+        min_val = base + tol_minus
+        max_val = base + tol_plus
+        if min_val > max_val:
+            min_val, max_val = max_val, min_val
+        return min_val, max_val
+
+    def _detail_value_color(self, value: str, bounds) -> str:
+        if not bounds:
+            return "#000000"
+        v = to_float_or_none(value)
+        if v is None:
+            return "#000000"
+        min_val, max_val = bounds
+        return "#1e88e5" if min_val <= v <= max_val else "#e53935"
+
+    def _build_detail_html(self, it: MarkItem) -> str:
+        no_str = self._format_no(it.no)
+        dim_text = dim_format(it.dim_type, it.value)
+        header = f"{no_str} {dim_text}".strip()
+        html = "<div style='font-family:Arial; font-size:10pt;'>"
+        html += f"<div><b>{header}</b></div>"
+        html += "<table style='border-collapse:collapse;margin-top:4px;'>"
+
+        def row(label, value, color=None):
+            value_text = value or ""
+            if color:
+                value_text = f"<span style='color:{color};'>{value_text}</span>"
+            html_row = (
+                "<tr>"
+                f"<td style='border:1px solid #333;padding:2px 6px;background:#f5f5f5;'>{label}</td>"
+                f"<td style='border:1px solid #333;padding:2px 6px;'>{value_text}</td>"
+                "</tr>"
+            )
+            return html_row
+
+        html += row("Dim", dim_text)
+        html += row("Max", it.tol_plus)
+        html += row("Min", it.tol_minus)
+        if self._detail_show_x_values():
+            bounds = self._get_detail_bounds(it)
+            labels = ["x<sub>1</sub>", "x<sub>2</sub>", "x<sub>3</sub>", "x<sub>4</sub>", "x<sub>5</sub>"]
+            x_values = list(getattr(it, "x_values", ["", "", "", "", ""]))
+            if len(x_values) < 5:
+                x_values += [""] * (5 - len(x_values))
+            for label, val in zip(labels, x_values[:5]):
+                color = self._detail_value_color(val, bounds)
+                html += row(label, val, color)
+        html += "</table></div>"
+        return html
+    def _position_detail_box(self, it: MarkItem, padding: int = 6):
+        if not self._detail_box_rect or not self._detail_box_text:
+            return
+        style = it.custom_style if it.custom_style else self.style
+        anchor = self.pdf_to_view(*it.pdf_point)
+        text_rect = self._detail_box_text.boundingRect()
+        box_w = text_rect.width() + padding * 2
+        box_h = text_rect.height() + padding * 2
+        offset_x = style.radius_view_px + 12
+        box_x = anchor.x() + offset_x
+        box_y = anchor.y() - box_h / 2
+        view_rect = self.view.mapToScene(self.view.viewport().rect()).boundingRect()
+        if box_x + box_w > view_rect.right():
+            box_x = anchor.x() - offset_x - box_w
+        if box_x < view_rect.left():
+            box_x = view_rect.left() + 4
+        if box_y < view_rect.top():
+            box_y = view_rect.top() + 4
+        if box_y + box_h > view_rect.bottom():
+            box_y = view_rect.bottom() - box_h - 4
+        self._detail_box_rect.setRect(box_x, box_y, box_w, box_h)
+        self._detail_box_text.setPos(box_x + padding, box_y + padding)
+
+    def _show_detail_box(self, it: MarkItem):
+        show_x = self._detail_show_x_values()
+        if self._detail_box_item is it and self._detail_box_show_x == show_x:
+            if self._detail_box_text is not None:
+                self._detail_box_text.setHtml(self._build_detail_html(it))
+            self._position_detail_box(it)
+            return
+        self._clear_detail_box()
+        html = self._build_detail_html(it)
+        text_item = QtWidgets.QGraphicsTextItem()
+        text_item.setHtml(html)
+        text_item.setZValue(9001)
+        text_item.setDefaultTextColor(QtGui.QColor("black"))
+        self.scene.addItem(text_item)
+        rect_item = self.scene.addRect(0, 0, 10, 10, QtGui.QPen(QtGui.QColor("#333333"), 1),
+                                       QtGui.QBrush(QtGui.QColor(255, 255, 255, 235)))
+        rect_item.setZValue(9000)
+        self._detail_box_items = [rect_item, text_item]
+        self._detail_box_item = it
+        self._detail_box_show_x = show_x
+        self._detail_box_rect = rect_item
+        self._detail_box_text = text_item
+        self._position_detail_box(it)
+
+    def _update_detail_box_for_scene_pos(self, scene_pos: QtCore.QPointF):
+        if not self._detail_view_active() or self.active_mode != "view":
+            if self._detail_box_item is not None:
+                self._clear_detail_box()
+            return
+        hover_item = self._find_item_at_scene_pos(scene_pos)
+        if hover_item:
+            self._show_detail_box(hover_item)
+        else:
+            self._clear_detail_box()
+
+    def _export_table_to_excel(self):
+        if not getattr(self, "table", None):
+            return
+        if self.table.rowCount() == 0:
+            QtWidgets.QMessageBox.information(self, "내보내기", "내보낼 데이터가 없습니다.")
+            return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "내보내기", "", "Excel Files (*.xlsx)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        headers = []
+        for c in range(self.table.columnCount()):
+            header_item = self.table.horizontalHeaderItem(c)
+            headers.append(header_item.text() if header_item else f"Column{c + 1}")
+        rows = []
+        for r in range(self.table.rowCount()):
+            row = []
+            for c in range(self.table.columnCount()):
+                item = self.table.item(r, c)
+                row.append(item.text() if item else "")
+            rows.append(row)
+        try:
+            df = pd.DataFrame(rows, columns=headers)
+            df.to_excel(path, index=False)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, "내보내기 오류", f"엑셀 파일로 내보내기에 실패했습니다.\n{e}"
+            )
+            return
+        QtWidgets.QMessageBox.information(self, "내보내기", "내보내기가 완료되었습니다.")
+
+    def _import_table_from_excel(self):
+        if not getattr(self, "table", None):
+            return
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "가져오기", "", "Excel Files (*.xlsx *.xls)"
+        )
+        if not path:
+            return
+        try:
+            from openpyxl import load_workbook
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, "가져오기 오류", f"엑셀 처리 모듈을 불러오지 못했습니다.\n{e}"
+            )
+            return
+        try:
+            wb = load_workbook(path, data_only=True)
+            ws = wb.active
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, "가져오기 오류", f"엑셀 파일을 불러오지 못했습니다.\n{e}"
+            )
+            return
+        if ws.max_column != self.table.columnCount():
+            QtWidgets.QMessageBox.warning(
+                self, "가져오기 오류", "형식이 맞지 않아 임포트 할 수 없습니다."
+            )
+            return
+
+        def cell_text(value) -> str:
+            if value is None:
+                return ""
+            text = str(value).strip()
+            return text
+
+        def format_number(value: float, number_format: str) -> str:
+            fmt = (number_format or "").strip()
+            if not fmt or fmt.lower() == "general" or fmt == "@":
+                if isinstance(value, float) and value.is_integer():
+                    return str(int(value))
+                return str(value)
+            sections = fmt.split(";")
+            section_index = 0
+            if value < 0 and len(sections) > 1:
+                section_index = 1
+            elif value == 0 and len(sections) > 2:
+                section_index = 2
+            section = sections[section_index]
+            # Remove color codes like [Red]
+            if "[" in section and "]" in section:
+                import re
+                section = re.sub(r"\[[^\]]+\]", "", section)
+            use_comma = "," in section
+            decimals = 0
+            mandatory = 0
+            optional = 0
+            if "." in section:
+                after = section.split(".", 1)[1]
+                for ch in after:
+                    if ch == "0":
+                        mandatory += 1
+                        decimals += 1
+                    elif ch == "#":
+                        optional += 1
+                        decimals += 1
+                    else:
+                        break
+            abs_value = abs(value) if value < 0 else value
+            fmt_str = f"{{:{',' if use_comma else ''}.{decimals}f}}"
+            text = fmt_str.format(abs_value if section_index == 1 else value)
+            if optional > 0 and "." in text:
+                int_part, frac = text.split(".", 1)
+                frac_trim = frac.rstrip("0")
+                if len(frac_trim) < mandatory:
+                    frac_trim = frac[:mandatory]
+                text = f"{int_part}.{frac_trim}" if frac_trim else int_part
+            section = section.strip()
+            if section.startswith("(") and section.endswith(")"):
+                text = f"({text})"
+            elif section.startswith("+"):
+                if not text.startswith("+"):
+                    text = f"+{text}"
+            elif section.startswith("-") and not text.startswith("-"):
+                text = f"-{text}"
+            return text
+
+        def format_cell(cell) -> str:
+            if cell is None or cell.value is None:
+                return ""
+            value = cell.value
+            if isinstance(value, str):
+                return value.strip()
+            if isinstance(value, (int, float)):
+                return format_number(float(value), cell.number_format)
+            return str(value).strip()
+
+        rows = []
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column):
+            rows.append([format_cell(cell) for cell in row])
+        if not rows:
+            QtWidgets.QMessageBox.warning(
+                self, "가져오기 오류", "형식이 맞지 않아 임포트 할 수 없습니다."
+            )
+            return
+        data_rows = rows[1:]
+
+        def normalize_no(value):
+            text = cell_text(value)
+            if text == "":
+                return ""
+            v = to_float_or_none(text)
+            if v is None:
+                return text
+            if abs(v - round(v)) < 1e-9:
+                return int(round(v))
+            return round(v, 6)
+
+        def ensure_signed(text: str) -> str:
+            raw = text.strip()
+            if raw == "":
+                return ""
+            if raw[0] in "+-":
+                return raw
+            return f"+{raw}" if to_float_or_none(raw) is not None else raw
+
+        table_nos = []
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 0)
+            table_nos.append(normalize_no(item.text() if item else ""))
+        import_nos = [normalize_no(row[0] if row else "") for row in data_rows]
+        if len(import_nos) != len(table_nos) or import_nos != table_nos:
+            QtWidgets.QMessageBox.warning(
+                self, "가져오기 오류", "형식이 맞지 않아 임포트 할 수 없습니다."
+            )
+            return
+
+        self.table.blockSignals(True)
+        try:
+            for r in range(self.table.rowCount()):
+                target_item = self.table_manager._get_target_item(r)
+                if not target_item:
+                    continue
+                row_values = data_rows[r] if r < len(data_rows) else []
+                if len(row_values) < self.table.columnCount():
+                    row_values += [""] * (self.table.columnCount() - len(row_values))
+
+                dim_type_val = row_values[1].strip()
+                if dim_type_val in DIM_TYPES:
+                    target_item.dim_type = dim_type_val
+                else:
+                    dim_type_val = target_item.dim_type
+
+                dim_text = row_values[2].strip()
+                target_item.value = (
+                    strip_prefix_for_value(target_item.dim_type, dim_text) if dim_text else ""
+                )
+
+                max_text = ensure_signed(row_values[3])
+                min_text = ensure_signed(row_values[4])
+                target_item.tol_plus = max_text
+                target_item.tol_minus = min_text
+
+                x_values = []
+                for c in range(5, 10):
+                    x_values.append(row_values[c].strip() if c < len(row_values) else "")
+                target_item.x_values = x_values
+
+                viewport_text = row_values[10].strip()
+                target_item.viewport_parameters = viewport_text
+
+                for c in range(1, self.table.columnCount()):
+                    text = row_values[c]
+                    if c == 1:
+                        text = dim_type_val
+                    elif c == 3:
+                        text = max_text
+                    elif c == 4:
+                        text = min_text
+                    item = self.table.item(r, c)
+                    if item is None:
+                        item = QtWidgets.QTableWidgetItem()
+                        item.setTextAlignment(QtCore.Qt.AlignCenter)
+                        if c == 10:
+                            item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
+                        self.table.setItem(r, c, item)
+                    item.setText(text)
+                self.table_manager._refresh_x_value_colors(r, target_item)
+        finally:
+            self.table.blockSignals(False)
+
+        self._set_dirty()
+        self._update_flow_view()
+        QtWidgets.QMessageBox.information(self, "가져오기", "가져오기가 완료되었습니다.")
 
     def _append_table_row(self, it: MarkItem):
         """Append new row to table. (TableManager delegation)"""
@@ -4120,11 +8432,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def _format_3d_parameter(self, viewport_parameters: str) -> str:
         """3D 뷰포트 파라메터를 (x, y, z, distance) 형태로 포맷팅합니다. (TableManager로 위임)"""
         return self.table_manager._format_3d_parameter(viewport_parameters)
-
+    
     def on_table_cell_clicked(self, row: int, col: int):
         """테이블 셀 클릭 이벤트 처리. (TableManager로 위임)"""
         return self.table_manager.on_table_cell_clicked(row, col)
-
+    
     def on_table_selection_changed(self):
         """테이블 선택 변경 이벤트 처리. (TableManager로 위임)"""
         return self.table_manager.on_table_selection_changed()
@@ -4132,11 +8444,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def _highlight_from_row(self, row: int):
         """Highlight item from table row. (TableManager delegation)"""
         return self.table_manager._highlight_from_row(row)
-
+        
     def _highlight_by_no(self, no: int):
         """Highlight item by number. (TableManager delegation)"""
         return self.table_manager._highlight_by_no(no)
-
+        
     def _clear_highlight(self):
         if getattr(self, "_highlight_ellipse", None):
             try:
@@ -4145,11 +8457,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 pass
             self._highlight_ellipse = None
         self._highlight_item_no = None
+        self._clear_detail_box()
 
     def on_table_item_changed(self, qitem: QtWidgets.QTableWidgetItem):
         """테이블 아이템 변경 이벤트 처리. (TableManager로 위임)"""
         return self.table_manager.on_table_item_changed(qitem)
-
+        
     def _sync_highlight_from_table(self):
         """테이블에서 하이라이트 동기화. (TableManager로 위임)"""
         return self.table_manager._sync_highlight_from_table()
@@ -4157,7 +8470,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def _apply_highlight_from_table(self):
         """Apply highlight from table selection. (TableManager delegation)"""
         return self.table_manager._apply_highlight_from_table()
-
+    
     def highlight_label(self, it: MarkItem):
         if not it:
             return
@@ -4180,7 +8493,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         ell.setZValue(9999)
         self._highlight_ellipse = ell
         self._highlight_item_no = it.no
-
+        # 화면 중앙으로 이동 (줌 유지)
+        self.view.centerOn(ell)
+    
     def clear_highlight(self):
         if self._highlight_ellipse:
             try:
@@ -4189,15 +8504,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 pass
             self._highlight_ellipse = None
         self._highlight_item_no = None
-
-    def clear_highlight(self):
-        if self._highlight_ellipse:
-            try:
-                self.scene.removeItem(self._highlight_ellipse)
-            except Exception:
-                pass
-            self._highlight_ellipse = None
-        self._highlight_item_no = None
+        self._clear_detail_box()
 
     def clear_selection_and_highlight(self):
         """테이블의 선택 상태와 화면의 하이라이트를 모두 해제합니다."""
@@ -4218,9 +8525,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.highlight_label(it)
 
     def _shortcut_toggle_edit(self):
-        # 단축키(Ctrl+E)가 툴바의 '에디트' 액션을 토글하도록 변경
+    # 단축키(Ctrl+E)가 툴바의 '에디트' 액션을 토글하도록 변경
         self.action_edit.toggle()
-
+    
     def on_scene_moved(self, scene_pos: QtCore.QPointF):
         if self._preview_ellipse:
             self._preview_ellipse.hide()
@@ -4230,6 +8537,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self._stamp_preview_item.hide()
         if self.shooting_mode:
             return
+        self._update_detail_box_for_scene_pos(scene_pos)
         # 2. 넘버링 모드일 때의 미리보기 로직
         if self.active_mode == "numbering" and self.doc:
             if self.preview_mode == "preview":
@@ -4278,28 +8586,61 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 3) 커서 위치 = 중심
             self._stamp_preview_item.setPos(scene_pos)
             self._stamp_preview_item.show()
-
+        
+    # 프리뷰 제대로 안되서 수정. v30.2에서...
     # 프리뷰 제대로 안되서 수정. v30.2에서...
     def _create_preview_items(self):
         r = self.style.radius_view_px
         pen = QtGui.QPen(self.style.stroke_color)
         pen.setWidth(self.style.stroke_width)
-        self._preview_ellipse = self.scene.addEllipse(
-            -r, -r, 2 * r, 2 * r, pen=pen, brush=self._ellipse_brush(self.style)
-        )
+        brush = self._ellipse_brush(self.style)
+        
+        shape_type = getattr(self.style, "shape", "circle")
+        
+        if shape_type == "circle":
+            self._preview_ellipse = self.scene.addEllipse(-r, -r, 2 * r, 2 * r, pen=pen, brush=brush)
+        elif shape_type == "rectangle":
+            self._preview_ellipse = self.scene.addRect(-r, -r, 2 * r, 2 * r, pen=pen, brush=brush)
+        elif shape_type == "triangle":
+            p1 = QtCore.QPointF(0, -r)
+            p2 = QtCore.QPointF(-r * 0.866, r * 0.5)
+            p3 = QtCore.QPointF(r * 0.866, r * 0.5)
+            poly = QtGui.QPolygonF([p1, p2, p3])
+            self._preview_ellipse = self.scene.addPolygon(poly, pen=pen, brush=brush)
+        elif shape_type == "star":
+            points = []
+            import math
+            inner_r = r * 0.4
+            angle = -90
+            for _ in range(5):
+                rad = math.radians(angle)
+                points.append(QtCore.QPointF(r * math.cos(rad), r * math.sin(rad)))
+                angle += 36
+                rad = math.radians(angle)
+                points.append(QtCore.QPointF(inner_r * math.cos(rad), inner_r * math.sin(rad)))
+                angle += 36
+            poly = QtGui.QPolygonF(points)
+            self._preview_ellipse = self.scene.addPolygon(poly, pen=pen, brush=brush)
+        elif shape_type == "none":
+            self._preview_ellipse = self.scene.addEllipse(-r, -r, 2 * r, 2 * r, pen=QtGui.QPen(QtCore.Qt.NoPen), brush=QtCore.Qt.NoBrush)
+        else:
+            self._preview_ellipse = self.scene.addEllipse(-r, -r, 2 * r, 2 * r, pen=pen, brush=brush)
+            
         self._preview_ellipse.setOpacity(0.6)
         self._preview_ellipse.setZValue(10_000)
+        
         font = QtGui.QFont("Arial", self.style.font_size_view_px, QtGui.QFont.Bold)
         self._preview_text = self.scene.addText("", font)
         self._preview_text.setDefaultTextColor(self.style.text_color)
         self._preview_text.setOpacity(0.6)
         self._preview_text.setZValue(10_001)
-
+        
     def _move_preview_items(self, p: QtCore.QPointF):
-        r = self.style.radius_view_px
-        self._preview_ellipse.setRect(p.x() - r, p.y() - r, 2 * r, 2 * r)
-        br = self._preview_text.boundingRect()
-        self._preview_text.setPos(p.x() - br.width() / 2, p.y() - br.height() / 2)
+        if self._preview_ellipse:
+            self._preview_ellipse.setPos(p)
+        if self._preview_text:
+            br = self._preview_text.boundingRect()
+            self._preview_text.setPos(p.x() - br.width() / 2, p.y() - br.height() / 2)
 
     def _force_refresh_table(self):
         """Force refresh table with new format. (TableManager delegation)"""
@@ -4308,7 +8649,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def _refresh_table_view(self):
         """Refresh table view based on checkbox state. (TableManager delegation)"""
         return self.table_manager._refresh_table_view()
-
+    
     def _update_undo_redo_hint(self):
         undo_tooltip = "실행 취소"
         if self.undo_stack:
@@ -4324,7 +8665,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.action_redo.setToolTip(redo_tooltip)
         self.action_undo.setEnabled(bool(self.undo_stack))
         self.action_redo.setEnabled(bool(self.redo_stack))
-
+    
     def undo(self):
         if not self.undo_stack:
             return
@@ -4349,7 +8690,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_undo_redo_hint()
         self._update_status()
         self._set_dirty()
-
+    
     def redo(self):
         if not self.redo_stack:
             return
@@ -4371,7 +8712,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_undo_redo_hint()
         self._update_status()
         self._set_dirty()
-
+    
     def insert_excel_style(self):
         if self.table.currentRow() < 0:
             QtWidgets.QMessageBox.information(
@@ -4404,7 +8745,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self, "작업 완료", f"'{target_no:g}'번 위치부터 번호가 1씩 밀려났습니다."
         )
         self._set_dirty()
-
+    
     # 꼬임방지 수정.
     def insert_precision_style(self):
         if self.table.currentRow() < 0:
@@ -4441,7 +8782,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         )
         self.view.setCursor(QtCore.Qt.CrossCursor)
         self._refresh_preview_text()
-
+    
     def delete_items(self):
         """선택한 항목을 삭제합니다. 현재 보이는 목록을 기준으로 안전하게 작동합니다."""
         selected_rows = sorted(list(set(index.row() for index in self.table.selectedIndexes())))
@@ -4473,7 +8814,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         QtWidgets.QMessageBox.information(
             self, "삭제 완료", f"{len(items_to_delete_ids)}개 항목을 삭제했습니다."
         )
-
+    
     def _refresh_preview_text(self):
         if self._preview_text:
             if self.insert_mode:
@@ -4518,7 +8859,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # ===== ▼▼▼ 수정: 반올림하여 부동소수점 오차 제거 ▼▼▼ =====
             return round(spinbox.value(), 2), True
         return 0.0, False
-
+    
     def execute_item_insertion(self, pdf_xy):
         """(수정됨) 새 항목을 현재 모드에 맞게 안전하게 삽입하고 화면을 새로고침합니다."""
         choice = self.insert_option
@@ -4544,19 +8885,25 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(
                 self, "삽입 완료", f"{insert_no:g}번이 새롭게 삽입되었습니다."
             )
-
+        
     def cancel_insert_mode(self):
-        """삽입 모드를 취소합니다."""
+        """Cancel insert mode."""
         if self.insert_mode:
             self.insert_mode = False
             self.view.setCursor(QtCore.Qt.ArrowCursor)
             self._update_status()
 
+    def handle_escape_key(self):
+        """Handle ESC behavior: exit numbering mode to view mode only."""
+        if self.active_mode == "numbering":
+            self._set_active_mode_from_action("view")
+        self.cancel_insert_mode()
+        self.clear_selection_and_highlight()
+
     def adjust_label_style(self, property_name: str, delta: int):
-        """전역 라벨 스타일의 숫자 속성을 조절하고 화면을 새로고침합니다."""
+        """Adjust label style property and refresh view."""
         current_value = getattr(self.style, property_name)
         new_value = current_value + delta
-        # 값이 비정상적으로 커지거나 작아지지 않도록 최소/최대값 제한
         if "radius" in property_name:
             new_value = max(6, min(64, new_value))
         elif "width" in property_name:
@@ -4564,7 +8911,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         elif "font" in property_name:
             new_value = max(6, min(48, new_value))
         setattr(self.style, property_name, new_value)
-        self.load_page(self.cur_page_index)  # 변경사항을 즉시 반영
+        self.load_page(self.cur_page_index)
         self._set_dirty()
 
     def toggle_preview_mode(self):
@@ -4575,7 +8922,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         else:
             self.set_preview_mode("preview")
             self.a_preview.setChecked(True)
-
+        
     # 추가. 플로우라인  실시간 반영.
     def _update_flow_view(self):
         """기존 흐름도를 지우고, 현재 상태에 맞춰 새로 그립니다."""
@@ -4589,11 +8936,14 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 2. 흐름도 보기가 켜져 있을 때만 새로 그림
         if self.flow_view_enabled:
             self._draw_flow_elements()
-
+    
     # delete_and_renumber_items 삭제후 통합. v3.22에서...
     def toggle_highlighting(self, checked):
         """하이라이트 활성화 상태를 토글합니다."""
         self.highlight_enabled = checked
+        # TableManager의 highlight_enabled도 동기화
+        if hasattr(self, 'table_manager'):
+            self.table_manager.highlight_enabled = checked
         # ===== ▼▼▼ 추가된 부분 시작 ▼▼▼ =====
         # 메뉴와 툴바의 체크 상태를 동기화합니다.
         if hasattr(self, "a_highlight"):
@@ -4603,7 +8953,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # ===== ▲▲▲ 추가된 부분 끝 ▲▲▲ =====
         if not checked:
             self.clear_highlight()  # 기능이 꺼지면 현재 하이라이트를 즉시 제거
-
+      
     def _build_items_dataframe(self):
         return pd.DataFrame(
             [
@@ -4614,7 +8964,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     "Maximum": it.tol_plus,
                     "Minimum": it.tol_minus,
                 }
-                for it in self.items
+            for it in self.items
             ]
         )
         # ===== ▼▼▼ 스탬프 데이터프레임 생성 함수 (새로 추가) ▼▼▼ =====
@@ -4633,9 +8983,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             page_counters[page_index] += 1
             stamp_data.append(
                 {
-                    "No": page_counters[page_index],
-                    "Page": page_index + 1,
-                    "Stamp Type": stamp.stamp_key,
+                "No": page_counters[page_index],
+                "Page": page_index + 1,
+                "Stamp Type": stamp.stamp_key,
                     "Rotation": f"{stamp.rotation:.1f}°",
                 }
             )
@@ -4686,7 +9036,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             )
         except Exception as e:
             _log_error(self, "엑셀 내보내기 오류", e)
-
+        
     def _export_csv(self, path):
         df = self._build_items_dataframe()
         df.to_csv(path, index=False, encoding="utf-8-sig")
@@ -4709,12 +9059,11 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     def _export_current_page_jpg_with_labels(self, path):
         if not self.doc:
             return
-        page = self.doc[self.cur_page_index]
-        pix = page.get_pixmap(matrix=fitz.Matrix(self.render_scale, self.render_scale), alpha=False)
-        img = QtGui.QImage(
-            pix.samples, pix.width, pix.height, pix.stride, QtGui.QImage.Format_RGB888
-        )
-        pm = QtGui.QPixmap.fromImage(img.copy())
+        page = self.doc.get_page(self.cur_page_index)
+        # pypdfium2의 render()는 PIL Image를 반환합니다
+        pil_img = page.render(scale=self.render_scale)
+        img = _pil_to_qimage(pil_img)
+        pm = QtGui.QPixmap.fromImage(img)
         p = QtGui.QPainter(pm)
         pen = QtGui.QPen(self.style.stroke_color)
         pen.setWidth(self.style.stroke_width)
@@ -4742,13 +9091,12 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         """툴바에 액션을 추가합니다. (UIManager로 위임)"""
         return self.ui_manager.add_toolbar_action(toolbar, icon_path_qrc, text, slot, checkable, checked)
 
-    # 스페셜 서식 적용하기 위해 통째로 교체 v2.95에서...
     def open_numbering_settings(self):
         """넘버링 관련 전역 설정을 열고, 변경 시 화면을 새로고칩니다."""
         if self._open_numbering_settings_dialog(self.style):
             self.load_page(self.cur_page_index)
             self._set_dirty()
-    
+
     def _create_color_picker_dialog(self, initial_color, title):
         """기존 색상 선택 팔레트(QColorDialog)에 투명도 슬라이더를 추가한 다이얼로그를 생성합니다."""
         # 기존 QColorDialog를 생성
@@ -4880,16 +9228,35 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 
                 self.load_page(self.cur_page_index)
                 self._set_dirty()
+    
+    def open_label_settings(self, style_object: LabelStyle) -> bool:
+        return self._open_numbering_settings_dialog(style_object)
 
     def _open_numbering_settings_dialog(self, style_object: LabelStyle) -> bool:
         """'넘버링 설정' 대화상자를 엽니다. 성공 시 True를 반환합니다."""
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("넘버링 설정")
         form = QtWidgets.QFormLayout(dlg)
+        form.addRow(QtWidgets.QLabel("<b>\ubaa8\ub4dc\uc120\ud0dd</b>"))
         # --- 1. 넘버링 입력 방식 설정 ---
         cb_with_input = QtWidgets.QCheckBox("넘버링 시 치수 함께 입력", dlg)
         cb_with_input.setChecked(self.input_mode == "with_input")
         form.addRow("입력 방식:", cb_with_input)
+        shape_combo = QtWidgets.QComboBox(dlg)
+        shape_options = [
+            ("circle", "\uc6d0 (Circle)"),
+            ("rectangle", "\uc0ac\uac01\ud615 (Rectangle)"),
+            ("triangle", "\uc0bc\uac01\ud615 (Triangle)"),
+            ("star", "\ubcc4 (Star)"),
+            ("none", "\uc678\uacfd\ub3c4\ud615\uc5c6\uc74c (None)"),
+        ]
+        for key, label in shape_options:
+            shape_combo.addItem(label, key)
+        current_shape = getattr(style_object, "shape", "circle")
+        shape_index = shape_combo.findData(current_shape)
+        if shape_index >= 0:
+            shape_combo.setCurrentIndex(shape_index)
+        form.addRow("\ub118\ubc84\ub9c1 \uc678\uacfd\ud615\uc0c1:", shape_combo)
         separator1 = QtWidgets.QFrame()
         separator1.setFrameShape(QtWidgets.QFrame.HLine)
         form.addRow(separator1)
@@ -4997,11 +9364,16 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel, parent=dlg
         )
         form.addWidget(bb)
-
+        
         def accept():
             # [수정] OK를 누를 때 체크박스 상태에 따라 input_mode를 설정
             new_mode = "with_input" if cb_with_input.isChecked() else "number_only"
             self.set_input_mode(new_mode)
+            selected_shape = shape_combo.currentData()
+            if selected_shape:
+                style_object.shape = selected_shape
+                if style_object is self.style:
+                    self._set_numbering_shape(selected_shape)
             # 기존 스타일 저장 로직
             style_object.radius_view_px = sp_r.value()
             style_object.stroke_width = sp_s.value()
@@ -5059,21 +9431,19 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 3D 뷰포트 파라메터 동기화 (5번째 컬럼)
             # 테이블에는 포맷팅된 값이 표시되지만, 원본 JSON 데이터는 이미 MarkItem에 저장되어 있음
             # 따라서 별도로 동기화할 필요 없음 (이미 저장된 원본 데이터 유지)
-
+            
     # ===== ★★★ 이 함수만 최종 버전으로 교체되었습니다 ★★★ =====
     # ===== 넘버링 흐름도 함께 저장 위해 통째로 교체(중간에 일부 코드 추가)v2.93에서함. =====
-    # 스페셜 서식 적용 위해 통째로 교체. v2.95에서 함.
     # 스페셜 서식 적용 제대로 안되서 다시 교체... 시벌...몇번째여..ㅠㅠㅠ v2.98에서...
     # 스페셜 서식 흐름도 적용 저장 업데이트... 시벌 벌써 v3.00이네..ㅠㅠㅠ v2.99에서...
     def _save_pdf_with_labels(self, path):
         # 최종 완성본: 이미지 생성 방식으로 모든 문제를 해결합니다. (흐름도 포함)
         import math
         from collections import defaultdict
-        import fitz
-
+        
         if not self.doc:
             raise RuntimeError("PDF가 로드되지 않았습니다.")
-        out_doc = fitz.open()
+        out_doc = pdfium.PdfDocument.new()
         # 페이지별로 넘버링과 스탬프 아이템을 미리 그룹화합니다.
         items_by_page = defaultdict(list)
         for item in self.items:
@@ -5083,21 +9453,51 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             stamps_by_page[stamp.page_index].append(stamp)
         # 원본 문서의 모든 페이지를 순회합니다.
         for i in range(len(self.doc)):
-            src_page = self.doc.load_page(i)
+            src_page = self.doc.get_page(i)
             items_on_this_page = items_by_page.get(i, [])
             stamps_on_this_page = stamps_by_page.get(i, [])
             # 해당 페이지에 넘버링과 스탬프가 모두 없으면 원본 그대로 추가합니다.
             if not items_on_this_page and not stamps_on_this_page:
-                out_doc.insert_pdf(self.doc, from_page=i, to_page=i)
+                _pdfium_insert_pdf(out_doc, self.doc, from_page=i, to_page=i)
                 continue
             # --- 넘버링이나 스탬프가 있는 페이지는 이미지로 변환하여 처리 ---
+            # 원본 PDF 페이지 크기 가져오기 (포인트 단위)
+            page_width_pt = src_page.get_width()
+            page_height_pt = src_page.get_height()
+            
             zoom = self.render_scale * 2
-            mat = fitz.Matrix(zoom, zoom)
-            pix = src_page.get_pixmap(matrix=mat, alpha=False)
-            img = QtGui.QImage(
-                pix.samples, pix.width, pix.height, pix.stride, QtGui.QImage.Format_RGB888
-            )
-            pm = QtGui.QPixmap.fromImage(img)
+            # pypdfium2의 render()는 PdfBitmap을 반환합니다
+            bitmap = src_page.render(scale=zoom)
+            
+            # PIL Image를 임시 파일로 저장한 후 QPixmap으로 로드 (크래시 방지)
+            import tempfile
+            import os
+            from PIL import Image
+            
+            try:
+                # PdfBitmap을 PIL Image로 변환
+                pil_image = bitmap.to_pil()
+                if pil_image.mode != "RGB":
+                    pil_image = pil_image.convert("RGB")
+                
+                # 임시 파일에 PIL Image를 직접 저장
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                    tmp_path = tmp_file.name
+                pil_image.save(tmp_path, 'PNG')
+                
+                # QPixmap으로 직접 로드 (QImage 완전히 우회)
+                pm = QtGui.QPixmap(tmp_path)
+                os.unlink(tmp_path)
+                
+                if pm.isNull():
+                    raise ValueError("QPixmap is null")
+            except Exception as e:
+                import traceback
+                print(f"_save_pdf_with_labels: 이미지 변환 실패: {e}")
+                traceback.print_exc()
+                # 실패 시 빈 페이지 생성
+                _pdfium_insert_pdf(out_doc, self.doc, from_page=i, to_page=i)
+                continue
             painter = QtGui.QPainter(pm)
             painter.setRenderHint(QtGui.QPainter.Antialiasing)
             # 1. 흐름도 그리기 (기존 로직 복원)
@@ -5110,7 +9510,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 2. 넘버링 그리기 (기존 로직 복원)
             for it in sorted(items_on_this_page, key=lambda item: item.no):
                 style = it.custom_style if it.custom_style else self.style
-                img_point = self.pdf_to_view(it.pdf_point[0], it.pdf_point[1]) * 2
+                # pdf_to_view는 render_scale을 곱하므로, zoom(render_scale * 2)에 맞추려면 * 2를 추가
+                # 하지만 실제로는 zoom 배율로 렌더링했으므로 pdf_to_view 결과에 zoom/render_scale을 곱해야 함
+                img_point = self.pdf_to_view(it.pdf_point[0], it.pdf_point[1]) * (zoom / self.render_scale)
                 pen = QtGui.QPen(style.stroke_color)
                 pen.setWidth(style.stroke_width * 2)
                 painter.setPen(pen)
@@ -5153,7 +9555,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 )
                 # ▲▲▲ 스케일 계산 완료 ▲▲▲
                 painter.save()
-                img_point_stamp = self.pdf_to_view(st.pdf_point[0], st.pdf_point[1]) * 2
+                img_point_stamp = self.pdf_to_view(st.pdf_point[0], st.pdf_point[1]) * (zoom / self.render_scale)
                 painter.setOpacity(st.opacity)
                 painter.translate(img_point_stamp)
                 painter.rotate(st.rotation)
@@ -5161,16 +9563,112 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 painter.drawPixmap(offset, scaled_pixmap)  # 스케일된 pixmap을 사용
                 painter.restore()
             painter.end()
-            # 이미지 데이터를 PDF 페이지로 변환
-            buffer = QtCore.QBuffer()
-            buffer.open(QtCore.QIODevice.ReadWrite)
-            pm.save(buffer, "PNG")
-            image_bytes = bytes(buffer.data())
-            buffer.close()
-            img_page = out_doc.new_page(width=pm.width(), height=pm.height())
-            img_page.insert_image(img_page.rect, stream=image_bytes)
+
+            # QPixmap을 PIL Image로 변환 (안전한 방법)
+            width = pm.width()
+            height = pm.height()
+            
+            print(f"[DEBUG] _save_pdf_with_labels: 페이지 {i} - Painter 작업 완료, QPixmap 크기={width}x{height}")
+            
+            try:
+                # QPixmap을 임시 파일로 저장한 후 PIL Image로 로드
+                import tempfile
+                import os
+                from PIL import Image
+                
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                    tmp_path = tmp_file.name
+                
+                # QPixmap을 PNG로 저장
+                success = pm.save(tmp_path, 'PNG')
+                print(f"[DEBUG] _save_pdf_with_labels: QPixmap PNG 저장 {'성공' if success else '실패'}, 파일 크기={os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0} bytes")
+                
+                if not success or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+                    raise ValueError("QPixmap PNG 저장 실패")
+                
+                # PIL Image로 로드하고 즉시 메모리로 복사 (파일 핸들 해제)
+                with Image.open(tmp_path) as img:
+                    print(f"[DEBUG] _save_pdf_with_labels: PIL Image 로드 완료, 크기={img.width}x{img.height}, 모드={img.mode}")
+                    if img.mode != "RGB":
+                        pil_img = img.convert("RGB")
+                        print(f"[DEBUG] _save_pdf_with_labels: RGB로 변환 완료")
+                    else:
+                        # 메모리로 복사하여 파일 핸들 해제
+                        pil_img = img.copy()
+                
+                # 파일 핸들이 해제된 후 삭제
+                try:
+                    os.unlink(tmp_path)
+                except PermissionError:
+                    # Windows에서 파일이 아직 사용 중일 수 있으므로 잠시 대기 후 재시도
+                    import time
+                    time.sleep(0.1)
+                    try:
+                        os.unlink(tmp_path)
+                    except:
+                        pass  # 삭제 실패해도 계속 진행
+                
+                # PIL Image를 PDF 페이지로 변환
+                # 원본 PDF 페이지 크기를 사용 (포인트 단위)
+                # 렌더링된 이미지를 원본 페이지 크기에 맞게 스케일링
+                
+                print(f"[DEBUG] _save_pdf_with_labels: 원본 페이지 크기={page_width_pt}x{page_height_pt}, 렌더링 이미지 크기={pil_img.width}x{pil_img.height}")
+                
+                # 임시 PDF로 변환 후 import
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                    pdf_tmp_path = tmp_file.name
+                
+                try:
+                    from reportlab.pdfgen import canvas
+                    from reportlab.lib.utils import ImageReader
+                    
+                    # 원본 페이지 크기로 PDF 생성
+                    c = canvas.Canvas(pdf_tmp_path, pagesize=(page_width_pt, page_height_pt))
+                    img_reader = ImageReader(pil_img)
+                    # 이미지를 원본 페이지 크기에 맞게 그리기
+                    c.drawImage(img_reader, 0, 0, width=page_width_pt, height=page_height_pt, preserveAspectRatio=False)
+                    c.save()
+                    print(f"[DEBUG] _save_pdf_with_labels: Canvas 저장 완료, 파일 크기={os.path.getsize(pdf_tmp_path) if os.path.exists(pdf_tmp_path) else 0} bytes")
+                    
+                    print(f"[DEBUG] _save_pdf_with_labels: 임시 PDF 생성 완료, 파일 크기={os.path.getsize(pdf_tmp_path) if os.path.exists(pdf_tmp_path) else 0} bytes")
+                    
+                    # 변환된 PDF를 읽어서 페이지 import
+                    img_doc = pdfium.PdfDocument(pdf_tmp_path)
+                    print(f"[DEBUG] _save_pdf_with_labels: 임시 PDF 로드 완료, 페이지 수={len(img_doc)}")
+                    if len(img_doc) > 0:
+                        out_doc.import_pages(img_doc, pages=[0])
+                        print(f"[DEBUG] _save_pdf_with_labels: 페이지 import 완료")
+                        img_doc.close()
+                    else:
+                        print(f"[DEBUG] _save_pdf_with_labels: 경고 - 임시 PDF에 페이지가 없음")
+                    os.unlink(pdf_tmp_path)
+                except ImportError as e:
+                    import traceback
+                    print(f"[DEBUG] _save_pdf_with_labels: reportlab ImportError: {e}")
+                    traceback.print_exc()
+                    # reportlab이 없으면 빈 페이지 생성
+                    img_page = out_doc.new_page(width=page_width_pt, height=page_height_pt)
+                    if os.path.exists(pdf_tmp_path):
+                        os.unlink(pdf_tmp_path)
+                except Exception as e:
+                    import traceback
+                    print(f"[DEBUG] _save_pdf_with_labels: PDF 변환 실패: {e}")
+                    traceback.print_exc()
+                    # 실패 시 빈 페이지 생성
+                    img_page = out_doc.new_page(width=page_width_pt, height=page_height_pt)
+                    if os.path.exists(pdf_tmp_path):
+                        os.unlink(pdf_tmp_path)
+            except Exception as e:
+                import traceback
+                print(f"[DEBUG] _save_pdf_with_labels: 이미지 처리 실패: {e}")
+                traceback.print_exc()
+                # 변환 실패 시 빈 페이지 생성 (원본 페이지 크기 사용)
+                try:
+                    img_page = out_doc.new_page(width=page_width_pt, height=page_height_pt)
+                except:
+                    img_page = out_doc.new_page(width=width, height=height)
         if len(out_doc) > 0:
-            out_doc.save(path, garbage=4, clean=True)
+            out_doc.save(path)
         out_doc.close()
 
 
@@ -5178,12 +9676,49 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 #  프로그램 실행 부분
 # =====================================================================
 def main():
+    # 전역 예외 핸들러 설정
+    def exception_hook(exc_type, exc_value, exc_traceback):
+        """프로그램이 예기치 않게 종료되는 것을 방지하기 위한 예외 핸들러"""
+        import traceback
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        print(f"[FATAL] Uncaught exception:\n{error_msg}", file=sys.stderr)
+        # 에러 로그 파일에 기록
+        try:
+            with open("tsn_error.log", "a", encoding="utf-8") as f:
+                f.write(f"[FATAL] Uncaught exception:\n{error_msg}\n" + ("-"*60) + "\n")
+        except:
+            pass
+        # Qt 메시지 박스로도 표시
+        app = QtWidgets.QApplication.instance()
+        if app:
+            try:
+                QtWidgets.QMessageBox.critical(
+                    None, "치명적 오류", 
+                    f"예기치 않은 오류가 발생했습니다:\n\n{exc_type.__name__}: {exc_value}\n\n자세한 내용은 콘솔과 tsn_error.log를 확인하세요."
+                )
+            except:
+                pass
+    
+    sys.excepthook = exception_hook
+    
     app = QtWidgets.QApplication(sys.argv)
     # 이제 main.py를 실행하므로, pdf_to_open 로직은 그대로 둡니다.
     pdf_to_open = sys.argv[1] if len(sys.argv) > 1 else None
-    w = PdfAnnotator(pdf_path=pdf_to_open)
-    w.show()
-    sys.exit(app.exec())
+    try:
+        w = PdfAnnotator(pdf_path=pdf_to_open)
+        w.show()
+        sys.exit(app.exec())
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        QtWidgets.QMessageBox.critical(
+            None, "시작 오류", 
+            f"프로그램 시작 중 오류가 발생했습니다:\n\n{str(e)}\n\n자세한 내용은 콘솔을 확인하세요."
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":

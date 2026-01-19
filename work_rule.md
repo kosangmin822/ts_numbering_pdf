@@ -1,0 +1,5 @@
+- implementation plan은 작업 단위로 계획을 세우고, 항상 새로 작성 후 한글로 주석을 단다.
+- implementation plan에 작업자의 수정 요청이 있을 경우 해당 요청사항을 우선적으로 적용하여 처리 한다.
+- commit 시 기본적으로 현재 커밋의 버전에서 0.01을 버전업 시키고, 멘트에도 명기한다.(ex. 현재버전 v1.45 --> v1.46으로 버전업)
+- 작업 수행 후에는 항상 한글로 최대한 자세한 설명을 한다.
+- WORKLOG_RULE.md 파일을 참조하여 WORKLOG_TEMPLATE.md양식으로 worklog.md에 작업 로그를 기록한다.

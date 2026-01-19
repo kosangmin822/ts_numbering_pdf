@@ -26,7 +26,15 @@ def resource_path(rel_path: str) -> str:
     base = getattr(sys, "_MEIPASS", os.path.abspath("."))
     return os.path.join(base, rel_path)
 
-def dim_prefix(t: str) -> str: return "" if t in ("선형","기타") else t
+def dim_prefix(t: str) -> str:
+    if t in ("선형", "기타"): return ""
+    # "⏤(진직도)" 형식에서 "⏤" 추출
+    if "(" in t:
+        return t.split("(")[0]
+    # 하위 호환성: 공백이 있으면 첫 번째 단어(기호)만 반환
+    if " " in t:
+        return t.split(" ")[0]
+    return t
 def dim_format(t: str, v: str) -> str: return f"{dim_prefix(t)}{v}".strip()
 def strip_prefix_for_value(t: str, s: str) -> str:
     pre = dim_prefix(t); s = (s or "").strip()

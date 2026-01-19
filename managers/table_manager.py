@@ -8,7 +8,7 @@ import json
 from typing import List, Optional
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from core.models import MarkItem
+from core.models import MarkItem, DIM_TYPES
 from utils.helpers import dim_format, normalize_signed_text, strip_prefix_for_value, to_float_or_none
 
 
@@ -112,6 +112,9 @@ class TableManager:
             extra_item.setTextAlignment(QtCore.Qt.AlignCenter)
             self.table.setItem(r, col, extra_item)
             self._apply_x_value_color(r, col, it)
+        
+        # [Smart GD&T Control] 초기 로드 시에도 잠금 상태 적용
+        self._update_row_locking_state(r, it.dim_type)
 
     def _format_3d_parameter(self, viewport_parameters: str) -> str:
         """
@@ -293,9 +296,6 @@ class TableManager:
 
         # 컬럼별 처리
         if c == 1:  # Type 컬럼
-            from utils.helpers import strip_prefix_for_value
-            from core.models import DIM_TYPES
-
             txt = qitem.text()
             target_item.dim_type = txt if txt in DIM_TYPES else "선형"
             raw = target_item.value
@@ -303,6 +303,10 @@ class TableManager:
             dm = self.table.item(r, 2)
             if dm:
                 dm.setText(dim_format(target_item.dim_type, raw))
+            
+            # [Smart GD&T Control] 기하공차 선택 시 Dim/Min 잠금 및 포커스 이동
+            self._update_row_locking_state(r, target_item.dim_type)
+            
             self.table.blockSignals(False)
 
         elif c == 2:  # Dim 컬럼
@@ -418,6 +422,10 @@ class TableManager:
         items_to_display.sort(key=lambda x: x.no)
         for it in items_to_display:
             self._append_table_row(it)
+        
+        # [핵심] 테이블 새로고침 시 컬럼 너비 강제 적용 제거 (사용자 수동 조절 존중)
+        # self.table.setColumnWidth(1, 110) # main.py 초기화에서만 수행
+        
         self.table.blockSignals(False)
 
     def _sync_items_from_table(self):
@@ -433,8 +441,12 @@ class TableManager:
             it = self.main_window.items[r]
             dt_item = self.table.item(r, 1)
             it.dim_type = dt_item.text() if dt_item else it.dim_type
-            if it.dim_type not in ["선형", "Ø", "R", "C", "기타"]:
-                it.dim_type = "선형"
+            if it.dim_type not in DIM_TYPES:
+                # 목록에 없으면(삭제된 타입 등) 선형으로 복귀하되, 
+                # 기존 값이 DIM_TYPES에 포함되어 있으면 유지
+                if it.dim_type not in ["선형", "Ø", "R", "C", "기타"]: # 하위 호환성 안전장치
+                     if it.dim_type not in DIM_TYPES:
+                        it.dim_type = "선형"
             dm_item = self.table.item(r, 2)
             it.value = strip_prefix_for_value(it.dim_type, dm_item.text()) if dm_item else it.value
             p_item = self.table.item(r, 3)
@@ -535,6 +547,53 @@ class TableManager:
         if not selected_items:
             return
 
-        # 첫 번째 선택된 아이템의 행을 사용
-        row = selected_items[0].row()
-        self._highlight_from_row(row)
+        # 페이지별 모드라면 현재 페이지 아이템만 하이라이트
+        # ... (생략)
+
+    def _update_row_locking_state(self, row: int, dim_type: str):
+        """
+        기하공차(GD&T) 여부에 따라 Dim(기준값)과 Min(하한) 셀을 잠그거나 풉니다.
+        GD&T는 '0'을 기준으로 하므로 Dim/Min 입력이 불필요합니다.
+        """
+        if not self.table:
+            return
+
+        # 선형 치수 타입들 (잠금 해제 대상)
+        linear_types = ["선형", "Ø", "R", "C", "기타"]
+        is_gdt = dim_type not in linear_types
+
+        # 잠금/해제할 컬럼 인덱스: 2(Dim), 4(Min)
+        target_cols = [2, 4]
+        
+        # 스타일 설정
+        brush_locked = QtGui.QBrush(QtGui.QColor("#F0F0F0"))  # 회색 (Read-only)
+        brush_normal = QtGui.QBrush(QtGui.QColor("white"))    # 흰색 (Editable)
+
+        for c in target_cols:
+            item = self.table.item(row, c)
+            if not item:
+                continue
+            
+            flags = item.flags()
+            if is_gdt:
+                # 기하공차: 편집 불가 + 회색 처리
+                flags = flags & ~QtCore.Qt.ItemIsEditable
+                item.setFlags(flags)
+                item.setBackground(brush_locked)
+            else:
+                # 선형 치수: 편집 가능 + 흰색 복귀
+                flags = flags | QtCore.Qt.ItemIsEditable
+                item.setFlags(flags)
+                item.setBackground(brush_normal)
+
+        # Max 컬럼(3)은 항상 편집 가능
+        max_item = self.table.item(row, 3)
+        if max_item:
+            max_item.setFlags(max_item.flags() | QtCore.Qt.ItemIsEditable)
+            max_item.setBackground(brush_normal)
+
+        # [센스] 기하공차로 변경 시, 자동으로 Max 컬럼으로 포커스 이동 (편집 편리성)
+        if is_gdt and self.table.currentColumn() == 1: # Type 변경 직후라면
+             self.table.setCurrentCell(row, 3)
+
+

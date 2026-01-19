@@ -10,6 +10,15 @@ from PySide6 import QtGui
 # 아직 helpers.py를 만들지 않았지만, 미리 import 구문을 넣어둡니다.
 from utils.helpers import qrgba, from_rgba
 
+DIM_TYPES = [
+    "선형", "Ø", "R", "C", "기타",
+    "⏤(진직도)", "⏥(평면도)", "○(진원도)", "⌭(원통도)", 
+    "⌒(선의 윤곽도)", "⌓(면의 윤곽도)",
+    "∥(평행도)", "⊥(직각도)", "∠(경사도)",
+    "◎(동심도)", "⌖(위치도)", "⌯(대칭도)",
+    "↗(원주 흔들림)", "⌰(온 흔들림)"
+]
+
 @dataclass
 class MarkItem:
     no: float
