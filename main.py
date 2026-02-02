@@ -9465,39 +9465,58 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             page_width_pt = src_page.get_width()
             page_height_pt = src_page.get_height()
             
-            zoom = self.render_scale * 2
-            # pypdfium2의 render()는 PdfBitmap을 반환합니다
-            bitmap = src_page.render(scale=zoom)
+            # ▼▼▼ [수정] 해상도 적응형 다운샘플링 (Adaptive Downsampling) ▼▼▼
+            # 고해상도(3.0) 시도를 우선하되, 실패 시 점진적으로 해상도를 낮춰서 재시도합니다.
+            zoom_levels = [3.0, 2.0, 1.5, 1.0]
+            success_at_zoom = False
             
-            # PIL Image를 임시 파일로 저장한 후 QPixmap으로 로드 (크래시 방지)
-            import tempfile
-            import os
-            from PIL import Image
-            
-            try:
-                # PdfBitmap을 PIL Image로 변환
-                pil_image = bitmap.to_pil()
-                if pil_image.mode != "RGB":
-                    pil_image = pil_image.convert("RGB")
-                
-                # 임시 파일에 PIL Image를 직접 저장
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
-                    tmp_path = tmp_file.name
-                pil_image.save(tmp_path, 'PNG')
-                
-                # QPixmap으로 직접 로드 (QImage 완전히 우회)
-                pm = QtGui.QPixmap(tmp_path)
-                os.unlink(tmp_path)
-                
-                if pm.isNull():
-                    raise ValueError("QPixmap is null")
-            except Exception as e:
-                import traceback
-                print(f"_save_pdf_with_labels: 이미지 변환 실패: {e}")
-                traceback.print_exc()
-                # 실패 시 빈 페이지 생성
+            for zoom in zoom_levels:
+                try:
+                    # pypdfium2의 render()는 PdfBitmap을 반환합니다
+                    bitmap = src_page.render(scale=zoom)
+                    
+                    # PIL Image를 임시 파일로 저장한 후 QPixmap으로 로드 (크래시 방지)
+                    import tempfile
+                    import os
+                    from PIL import Image
+                    
+                    # PdfBitmap을 PIL Image로 변환
+                    pil_image = bitmap.to_pil()
+                    if pil_image.mode != "RGB":
+                        pil_image = pil_image.convert("RGB")
+                    
+                    # 임시 파일에 PIL Image를 직접 저장
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                        tmp_path = tmp_file.name
+                    pil_image.save(tmp_path, 'PNG')
+                    
+                    # QPixmap으로 직접 로드 (QImage 완전히 우회)
+                    pm = QtGui.QPixmap(tmp_path)
+                    os.unlink(tmp_path)
+                    
+                    if pm.isNull():
+                        raise ValueError(f"QPixmap is null at zoom {zoom}")
+                        
+                    # 여기까지 오면 성공
+                    success_at_zoom = True
+                    break
+                    
+                except Exception as e:
+                    import traceback
+                    print(f"_save_pdf_with_labels: Zoom {zoom}에서 이미지 변환 실패: {e}")
+                    # traceback.print_exc()
+                    if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                        try:
+                            os.unlink(tmp_path)
+                        except:
+                            pass
+                    continue # 다음 zoom 레벨 시도
+
+            if not success_at_zoom:
+                print("_save_pdf_with_labels: 모든 해상도에서 이미지 변환 실패. 원본 페이지 사용.")
                 _pdfium_insert_pdf(out_doc, self.doc, from_page=i, to_page=i)
                 continue
+            # ▲▲▲ 수정 끝 ▲▲▲
             painter = QtGui.QPainter(pm)
             painter.setRenderHint(QtGui.QPainter.Antialiasing)
             # 1. 흐름도 그리기 (기존 로직 복원)
@@ -9510,20 +9529,42 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             # 2. 넘버링 그리기 (기존 로직 복원)
             for it in sorted(items_on_this_page, key=lambda item: item.no):
                 style = it.custom_style if it.custom_style else self.style
-                # pdf_to_view는 render_scale을 곱하므로, zoom(render_scale * 2)에 맞추려면 * 2를 추가
-                # 하지만 실제로는 zoom 배율로 렌더링했으므로 pdf_to_view 결과에 zoom/render_scale을 곱해야 함
-                img_point = self.pdf_to_view(it.pdf_point[0], it.pdf_point[1]) * (zoom / self.render_scale)
+                # 내보내기용 고해상도 zoom을 직접 적용
+                img_point = QtCore.QPointF(it.pdf_point[0] * zoom, it.pdf_point[1] * zoom)
+                
+                # ▼▼▼ [수정] 크기(Radius, Font)도 zoom 비율에 맞춰 스케일링 ▼▼▼
+                # 기존: style.stroke_width * 2
+                # 수정: style.stroke_width * scale_ratio 
+                # 여기서 scale_ratio는 무엇이 되어야 하는가?
+                # style.radius_view_px 는 "화면상 100% (render_scale=1.0) 일 때의 픽셀 크기"라고 가정합니다.
+                # 따라서 export 시에는 zoom 배율만큼 커져야 합니다.
+                
+                # ▼▼▼ [수정] 화면에서의 상대적 크기 비율 유지 ▼▼▼
+                # 화면: Radius / (PDF * render_scale)
+                # Export: NewRadius / (PDF * zoom)
+                # 같게 하려면 -> NewRadius = Radius * (zoom / render_scale)
+                if self.render_scale > 0:
+                    scale_ratio = zoom / self.render_scale
+                else:
+                    scale_ratio = zoom
+                
                 pen = QtGui.QPen(style.stroke_color)
-                pen.setWidth(style.stroke_width * 2)
+                pen.setWidth(max(1, int(style.stroke_width * scale_ratio))) # 최소 1픽셀 보장
                 painter.setPen(pen)
+                
                 brush = QtCore.Qt.NoBrush
                 if not style.fill_none and style.fill_color.alpha() != 0:
                     brush = QtGui.QBrush(style.fill_color)
                 painter.setBrush(brush)
-                font = QtGui.QFont("Arial", style.font_size_view_px * 2, QtGui.QFont.Bold)
-                r = style.radius_view_px * 2
-                painter.drawEllipse(img_point, r, r)
+                
+                # 폰트 크기 및 반지름도 scale_ratio 적용
+                font_size = style.font_size_view_px * scale_ratio
+                radius = style.radius_view_px * scale_ratio
+                
+                font = QtGui.QFont("Arial", int(font_size), QtGui.QFont.Bold)
+                painter.drawEllipse(img_point, radius, radius)
                 painter.setFont(font)
+                # ▲▲▲ 수정 끝 ▲▲▲
                 painter.setPen(QtGui.QPen(style.text_color))
                 fm = QtGui.QFontMetrics(font)
                 text_width = fm.horizontalAdvance(self._format_no(it.no))
@@ -9555,7 +9596,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 )
                 # ▲▲▲ 스케일 계산 완료 ▲▲▲
                 painter.save()
-                img_point_stamp = self.pdf_to_view(st.pdf_point[0], st.pdf_point[1]) * (zoom / self.render_scale)
+                img_point_stamp = QtCore.QPointF(st.pdf_point[0] * zoom, st.pdf_point[1] * zoom)
                 painter.setOpacity(st.opacity)
                 painter.translate(img_point_stamp)
                 painter.rotate(st.rotation)
