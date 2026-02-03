@@ -57,8 +57,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.53"
-TSN_VERSION = "1.53"
+APP_VER = "v1.54"
+TSN_VERSION = "1.54"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 
@@ -9544,7 +9544,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     font_size_pt = style.font_size_view_px * scale_factor
                     stroke_width_pt = style.stroke_width * scale_factor
                     
-                    # 2-1. 원 그리기
+                    # 2-1. 도형 그리기 (Circle, Square, Triangle, Star)
+                    shape_type = getattr(style, "shape", "circle")
+                    
                     # 색상 변환 (QColor -> reportlab Color)
                     qc_s = style.stroke_color
                     sc = Color(qc_s.redF(), qc_s.greenF(), qc_s.blueF(), alpha=qc_s.alphaF())
@@ -9555,14 +9557,48 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                         fc = Color(qc_f.redF(), qc_f.greenF(), qc_f.blueF(), alpha=qc_f.alphaF())
                     
                     c.setStrokeColor(sc)
-                    c.setLineWidth(max(0.5, stroke_width_pt)) # 최소 두께 보정
-                    
+                    c.setLineWidth(max(0.5, stroke_width_pt))
                     if fc:
                         c.setFillColor(fc)
-                        # (x, y, r, fill=1, stroke=1)
-                        c.circle(x_pt, y_pt_bot, radius_pt, fill=1, stroke=1)
-                    else:
-                        c.circle(x_pt, y_pt_bot, radius_pt, fill=0, stroke=1)
+                    
+                    do_fill = 1 if fc else 0
+                    
+                    if shape_type == "circle" or shape_type not in ["rectangle", "triangle", "star", "none"]:
+                        c.circle(x_pt, y_pt_bot, radius_pt, fill=do_fill, stroke=1)
+                    elif shape_type == "rectangle":
+                        # 중심 (x_pt, y_pt_bot) 기준 정사각형
+                        c.rect(x_pt - radius_pt, y_pt_bot - radius_pt, 2 * radius_pt, 2 * radius_pt, fill=do_fill, stroke=1)
+                    elif shape_type == "triangle":
+                        # 중심 기준 정삼각형 (UI 로직 재현)
+                        # p1 = (x, y_bot + r), p2 = (x - r*0.866, y_bot - r*0.5), p3 = (x + r*0.866, y_bot - r*0.5)
+                        p = c.beginPath()
+                        p.moveTo(x_pt, y_pt_bot + radius_pt)
+                        p.lineTo(x_pt - radius_pt * 0.866, y_pt_bot - radius_pt * 0.5)
+                        p.lineTo(x_pt + radius_pt * 0.866, y_pt_bot - radius_pt * 0.5)
+                        p.close()
+                        c.drawPath(p, fill=do_fill, stroke=1)
+                    elif shape_type == "star":
+                        # 5각 별 (UI 로직 재현)
+                        inner_r = radius_pt * 0.4
+                        p = c.beginPath()
+                        angle = -90
+                        for i in range(5):
+                            rad = math.radians(angle)
+                            px = x_pt + radius_pt * math.cos(rad)
+                            py = y_pt_bot - radius_pt * math.sin(rad) # Qt는 y증가가 아래, ReportLab은 y증가가 위. UI는 pt.y() + r * sin(rad) 인데 pt.y()가 top기준이므로 sin(rad)가 양수면 아래로 감. ReportLab에서는 y_pt_bot에서 빼야 아래로 감.
+                            if i == 0: p.moveTo(px, py)
+                            else: p.lineTo(px, py)
+                            angle += 36
+                            
+                            rad = math.radians(angle)
+                            px = x_pt + inner_r * math.cos(rad)
+                            py = y_pt_bot - inner_r * math.sin(rad)
+                            p.lineTo(px, py)
+                            angle += 36
+                        p.close()
+                        c.drawPath(p, fill=do_fill, stroke=1)
+                    # shape_type == "none" 이면 아무것도 그리지 않음
+
                         
                     # 2-2. 텍스트 그리기
                     text_str = self._format_no(it.no)

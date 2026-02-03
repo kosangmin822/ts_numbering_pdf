@@ -529,8 +529,44 @@ Project: Shape-Modeling Based LLM Mold Quotation System
 - User manually executed `pip install pypdf reportlab` in their terminal.
 - Dependencies successfully installed.
 
-### Decision
-- ✅ Acknowledge `.venv` usage. Future dependency additions must be run by the user or targeted to `.venv`.
-  - 사용자가 가상환경을 사용 중임을 인지. 향후 라이브러리 추가 시 사용자에게 직접 설치 요청 필요.
+## Session: 2026-02-03 / Release v1.54
+@agent=Anti-Gravity
+@role=Release Manager
+@scope=Build
+@status=Done
 
+### Intent
+- Create installation files for v1.54.
+  - v1.54 설치 파일 생성
+
+### Context
+- Successfully implemented Vector Overlay export.
+- Dependencies (`pypdf`, `reportlab`) added.
+
+### Changes
+- Updated version to `v1.54` in:
+  - `main.py`
+  - `main_trial.py`
+  - `installer_setup.iss`
+  - `installer_setup_trial.iss`
+- Rebuilt executables (`build_all.py`).
+- Compiled installers (`ISCC`).
+
+### Result
+- Installers created successfully.
+  - `TS_Numbering_PDF_Setup_v1.54_stable.exe`
+  - `TS_Numbering_PDF_Trial_Setup_v1.54.exe`
+
+### Wrong turns
+- ❌ Initial installer creation produced v1.53 named files.
+  - Why wrong: Failed to update `OutputBaseFilename` in `.iss` files due to a tool application error.
+  - Fix: Manually corrected `.iss` files and re-compiled.
+
+
+
+
+## [2026-02-03 10:45] PDF 내보내기 넘버링 도형(Star, Triangle 등) 지원 및 Trial 버전 동기화
+- **의도**: PDF 내보내기 시 별(Star)이나 삼각형(Triangle) 등의 넘버링 도형이 원형(Circle)으로만 나오던 문제를 해결하고, Trial 버전에도 최신 PDF 내보내기 로직을 적용함.
+- **주요 수정 사항**: `main.py` 및 `main_trial.py`의 `_save_pdf_with_labels` 함수에 `shape` 지원 추가. (Circle, Rectangle, Triangle, Star)
+- **결과**: PDF 내보내기 시 사용자가 선택한 도형이 올바르게 렌더링됨.
 
