@@ -57,8 +57,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.52_trial"
-TSN_VERSION = "1.52"
+APP_VER = "v1.53_trial"
+TSN_VERSION = "1.53"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 

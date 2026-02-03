@@ -2,7 +2,7 @@
 ; TS Numbering for PDF v1.29_trial 설치 프로그램
 
 #define MyAppName "TS Numbering for PDF"
-#define MyAppVersion "1.52"
+#define MyAppVersion "1.53"
 #define MyAppPublisher "Taesung Engineering"
 #define MyAppURL "https://www.taesung.co.kr"
 #define MyAppExeName "TS_Numbering_PDF_Trial.exe"
@@ -24,7 +24,7 @@ AllowNoIcons=yes
 LicenseFile=LICENSE
 InfoBeforeFile=README
 OutputDir=installer
-OutputBaseFilename=TS_Numbering_PDF_Trial_Setup_v1.52
+OutputBaseFilename=TS_Numbering_PDF_Trial_Setup_v1.53
 SetupIconFile=resources\icons\icon.ico
 Compression=lzma2
 SolidCompression=yes

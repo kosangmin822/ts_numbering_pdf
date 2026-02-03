@@ -57,8 +57,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.52"
-TSN_VERSION = "1.52"
+APP_VER = "v1.53"
+TSN_VERSION = "1.53"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 
@@ -9437,280 +9437,191 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     # 스페셜 서식 적용 제대로 안되서 다시 교체... 시벌...몇번째여..ㅠㅠㅠ v2.98에서...
     # 스페셜 서식 흐름도 적용 저장 업데이트... 시벌 벌써 v3.00이네..ㅠㅠㅠ v2.99에서...
     def _save_pdf_with_labels(self, path):
-        # 최종 완성본: 이미지 생성 방식으로 모든 문제를 해결합니다. (흐름도 포함)
-        import math
-        from collections import defaultdict
+        """
+        [Vector Overlay 방식]
+        원본 PDF를 pypdf로 읽고, reportlab으로 투명한 오버레이 PDF를 그린 뒤 합칩니다.
+        1. 원본 해상도(벡터) 100% 유지
+        2. 번호/스탬프도 벡터로 저장됨
+        """
+        import io
+        import tempfile
+        from pypdf import PdfReader, PdfWriter, PageObject
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.colors import Color
         
-        if not self.doc:
-            raise RuntimeError("PDF가 로드되지 않았습니다.")
-        out_doc = pdfium.PdfDocument.new()
-        # 페이지별로 넘버링과 스탬프 아이템을 미리 그룹화합니다.
-        items_by_page = defaultdict(list)
-        for item in self.items:
-            items_by_page[item.page_index].append(item)
-        stamps_by_page = defaultdict(list)
-        for stamp in self.stamps:
-            stamps_by_page[stamp.page_index].append(stamp)
-        # 원본 문서의 모든 페이지를 순회합니다.
-        for i in range(len(self.doc)):
-            src_page = self.doc.get_page(i)
-            items_on_this_page = items_by_page.get(i, [])
-            stamps_on_this_page = stamps_by_page.get(i, [])
-            # 해당 페이지에 넘버링과 스탬프가 모두 없으면 원본 그대로 추가합니다.
-            if not items_on_this_page and not stamps_on_this_page:
-                _pdfium_insert_pdf(out_doc, self.doc, from_page=i, to_page=i)
-                continue
-            # --- 넘버링이나 스탬프가 있는 페이지는 이미지로 변환하여 처리 ---
-            # 원본 PDF 페이지 크기 가져오기 (포인트 단위)
-            page_width_pt = src_page.get_width()
-            page_height_pt = src_page.get_height()
+        # 1. 원본 PDF 로드
+        # (pypdfium2가 로드한 파일과 별도로, pypdf용으로 다시 엽니다 - 메모리 버퍼 사용이 안전)
+        try:
+            # 먼저 원본 PDF를 임시 파일로 저장 (pypdf가 읽을 수 있도록)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_src:
+                src_pdf_path = tmp_src.name
+            self.doc.save(src_pdf_path)
             
-            # ▼▼▼ [수정] 해상도 적응형 다운샘플링 (Adaptive Downsampling) ▼▼▼
-            # 고해상도(3.0) 시도를 우선하되, 실패 시 점진적으로 해상도를 낮춰서 재시도합니다.
-            zoom_levels = [3.0, 2.0, 1.5, 1.0]
-            success_at_zoom = False
+            src_reader = PdfReader(src_pdf_path)
+            dst_writer = PdfWriter()
             
-            for zoom in zoom_levels:
-                try:
-                    # pypdfium2의 render()는 PdfBitmap을 반환합니다
-                    bitmap = src_page.render(scale=zoom)
-                    
-                    # PIL Image를 임시 파일로 저장한 후 QPixmap으로 로드 (크래시 방지)
-                    import tempfile
-                    import os
-                    from PIL import Image
-                    
-                    # PdfBitmap을 PIL Image로 변환
-                    pil_image = bitmap.to_pil()
-                    if pil_image.mode != "RGB":
-                        pil_image = pil_image.convert("RGB")
-                    
-                    # 임시 파일에 PIL Image를 직접 저장
-                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
-                        tmp_path = tmp_file.name
-                    pil_image.save(tmp_path, 'PNG')
-                    
-                    # QPixmap으로 직접 로드 (QImage 완전히 우회)
-                    pm = QtGui.QPixmap(tmp_path)
-                    os.unlink(tmp_path)
-                    
-                    if pm.isNull():
-                        raise ValueError(f"QPixmap is null at zoom {zoom}")
-                        
-                    # 여기까지 오면 성공
-                    success_at_zoom = True
-                    break
-                    
-                except Exception as e:
-                    import traceback
-                    print(f"_save_pdf_with_labels: Zoom {zoom}에서 이미지 변환 실패: {e}")
-                    # traceback.print_exc()
-                    if 'tmp_path' in locals() and os.path.exists(tmp_path):
-                        try:
-                            os.unlink(tmp_path)
-                        except:
-                            pass
-                    continue # 다음 zoom 레벨 시도
-
-            if not success_at_zoom:
-                print("_save_pdf_with_labels: 모든 해상도에서 이미지 변환 실패. 원본 페이지 사용.")
-                _pdfium_insert_pdf(out_doc, self.doc, from_page=i, to_page=i)
-                continue
-            # ▲▲▲ 수정 끝 ▲▲▲
-            painter = QtGui.QPainter(pm)
-            painter.setRenderHint(QtGui.QPainter.Antialiasing)
-            # 1. 흐름도 그리기 (기존 로직 복원)
-            if self.flow_view_enabled:
-                sorted_items = sorted(items_on_this_page, key=lambda x: x.no)
-                if sorted_items:
-                    # (흐름도를 그리는 모든 코드가 여기에 포함됩니다)
-                    # ... 시작/끝점, 화살표 등 ...
-                    pass  # 이 부분은 이미 가지고 계신 코드를 그대로 사용하시면 됩니다.
-            # 2. 넘버링 그리기 (기존 로직 복원)
-            for it in sorted(items_on_this_page, key=lambda item: item.no):
-                style = it.custom_style if it.custom_style else self.style
-                # 내보내기용 고해상도 zoom을 직접 적용
-                img_point = QtCore.QPointF(it.pdf_point[0] * zoom, it.pdf_point[1] * zoom)
+            # 페이지별 아이템 정리
+            items_by_page = defaultdict(list)
+            for item in self.items:
+                items_by_page[item.page_index].append(item)
+            stamps_by_page = defaultdict(list)
+            for stamp in self.stamps:
+                stamps_by_page[stamp.page_index].append(stamp)
                 
-                # ▼▼▼ [수정] 크기(Radius, Font)도 zoom 비율에 맞춰 스케일링 ▼▼▼
-                # 기존: style.stroke_width * 2
-                # 수정: style.stroke_width * scale_ratio 
-                # 여기서 scale_ratio는 무엇이 되어야 하는가?
-                # style.radius_view_px 는 "화면상 100% (render_scale=1.0) 일 때의 픽셀 크기"라고 가정합니다.
-                # 따라서 export 시에는 zoom 배율만큼 커져야 합니다.
-                
-                # ▼▼▼ [수정] 화면에서의 상대적 크기 비율 유지 ▼▼▼
-                # 화면: Radius / (PDF * render_scale)
-                # Export: NewRadius / (PDF * zoom)
-                # 같게 하려면 -> NewRadius = Radius * (zoom / render_scale)
-                if self.render_scale > 0:
-                    scale_ratio = zoom / self.render_scale
-                else:
-                    scale_ratio = zoom
-                
-                pen = QtGui.QPen(style.stroke_color)
-                pen.setWidth(max(1, int(style.stroke_width * scale_ratio))) # 최소 1픽셀 보장
-                painter.setPen(pen)
-                
-                brush = QtCore.Qt.NoBrush
-                if not style.fill_none and style.fill_color.alpha() != 0:
-                    brush = QtGui.QBrush(style.fill_color)
-                painter.setBrush(brush)
-                
-                # 폰트 크기 및 반지름도 scale_ratio 적용
-                font_size = style.font_size_view_px * scale_ratio
-                radius = style.radius_view_px * scale_ratio
-                
-                font = QtGui.QFont("Arial", int(font_size), QtGui.QFont.Bold)
-                painter.drawEllipse(img_point, radius, radius)
-                painter.setFont(font)
-                # ▲▲▲ 수정 끝 ▲▲▲
-                painter.setPen(QtGui.QPen(style.text_color))
-                fm = QtGui.QFontMetrics(font)
-                text_width = fm.horizontalAdvance(self._format_no(it.no))
-                text_height = fm.height()
-                text_x = img_point.x() - text_width / 2
-                text_y = img_point.y() - text_height / 2 + fm.ascent()
-                painter.drawText(QtCore.QPointF(text_x, text_y), self._format_no(it.no))
-            # 3. 스탬프 그리기 (신규 추가된 로직)
-            for st in stamps_on_this_page:
-                stamp_info = self.registered_stamps.get(st.stamp_key)
-                if not stamp_info or not isinstance(stamp_info, dict):
-                    continue
-                stamp_path = stamp_info.get("path")
-                if not stamp_path:
-                    continue
-                stamp_pixmap = QtGui.QPixmap(stamp_path)
-                if stamp_pixmap.isNull():
-                    continue
-                # ▼▼▼ [핵심 추가] PDF 저장 시에도 실제 크기 기준으로 스케일 계산 ▼▼▼
-                width_mm = stamp_info.get("width_mm", 18.0)
-                width_points = (width_mm / 25.4) * 72
-                target_pixel_width = width_points * zoom  # painter는 zoom 배율로 그려짐
-                original_pixel_width = stamp_pixmap.width()
-                if original_pixel_width <= 0:
-                    continue
-                # 목표 픽셀 크기에 맞게 QPixmap의 크기를 조절
-                scaled_pixmap = stamp_pixmap.scaledToWidth(
-                    target_pixel_width, QtCore.Qt.SmoothTransformation
-                )
-                # ▲▲▲ 스케일 계산 완료 ▲▲▲
-                painter.save()
-                img_point_stamp = QtCore.QPointF(st.pdf_point[0] * zoom, st.pdf_point[1] * zoom)
-                painter.setOpacity(st.opacity)
-                painter.translate(img_point_stamp)
-                painter.rotate(st.rotation)
-                offset = QtCore.QPointF(-scaled_pixmap.width() / 2, -scaled_pixmap.height() / 2)
-                painter.drawPixmap(offset, scaled_pixmap)  # 스케일된 pixmap을 사용
-                painter.restore()
-            painter.end()
-
-            # QPixmap을 PIL Image로 변환 (안전한 방법)
-            width = pm.width()
-            height = pm.height()
+            total_pages = len(src_reader.pages)
             
-            print(f"[DEBUG] _save_pdf_with_labels: 페이지 {i} - Painter 작업 완료, QPixmap 크기={width}x{height}")
-            
-            try:
-                # QPixmap을 임시 파일로 저장한 후 PIL Image로 로드
-                import tempfile
-                import os
-                from PIL import Image
+            for i in range(total_pages):
+                # 원본 페이지 가져오기
+                src_page = src_reader.pages[i]
                 
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
-                    tmp_path = tmp_file.name
+                # --- 페이지 크기 확인 (UserUnit 등 고려) ---
+                # pypdf에서 mediabox는 [x1, y1, x2, y2]
+                mb = src_page.mediabox
+                page_width = float(mb.width)
+                page_height = float(mb.height)
                 
-                # QPixmap을 PNG로 저장
-                success = pm.save(tmp_path, 'PNG')
-                print(f"[DEBUG] _save_pdf_with_labels: QPixmap PNG 저장 {'성공' if success else '실패'}, 파일 크기={os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0} bytes")
+                # --- 오버레이 PDF 생성 (메모리상에서) ---
+                packet = io.BytesIO()
+                # reportlab 캔버스 생성 (페이지 크기 동일하게)
+                c = canvas.Canvas(packet, pagesize=(page_width, page_height))
                 
-                if not success or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
-                    raise ValueError("QPixmap PNG 저장 실패")
+                items_on_this_page = items_by_page.get(i, [])
+                stamps_on_this_page = stamps_by_page.get(i, [])
                 
-                # PIL Image로 로드하고 즉시 메모리로 복사 (파일 핸들 해제)
-                with Image.open(tmp_path) as img:
-                    print(f"[DEBUG] _save_pdf_with_labels: PIL Image 로드 완료, 크기={img.width}x{img.height}, 모드={img.mode}")
-                    if img.mode != "RGB":
-                        pil_img = img.convert("RGB")
-                        print(f"[DEBUG] _save_pdf_with_labels: RGB로 변환 완료")
-                    else:
-                        # 메모리로 복사하여 파일 핸들 해제
-                        pil_img = img.copy()
-                
-                # 파일 핸들이 해제된 후 삭제
-                try:
-                    os.unlink(tmp_path)
-                except PermissionError:
-                    # Windows에서 파일이 아직 사용 중일 수 있으므로 잠시 대기 후 재시도
-                    import time
-                    time.sleep(0.1)
+                # --- 1. 스탬프 그리기 ---
+                for stamp in stamps_on_this_page:
+                    stamp_info = self.registered_stamps.get(stamp.stamp_key)
+                    if not stamp_info: continue
+                    stamp_path = stamp_info.get("path")
+                    if not stamp_path or not os.path.exists(stamp_path): continue
+                    
+                    # 좌표 변환: Top-Left (뷰) -> Bottom-Left (PDF)
+                    # stamp.pdf_point는 (x, y) 튜플 (Top-Left 기준)
+                    x_pt = stamp.pdf_point[0]
+                    y_pt_top = stamp.pdf_point[1]
+                    y_pt_bot = page_height - y_pt_top
+                    
+                    # 크기 계산 (mm -> point)
+                    width_mm = stamp_info.get("width_mm", 18.0)
+                    width_pt = (width_mm / 25.4) * 72
+                    
+                    # 이미지 원본 비율 유지를 위해 높이 계산
                     try:
-                        os.unlink(tmp_path)
+                        with Image.open(stamp_path) as im:
+                            w_px, h_px = im.size
+                            aspect = h_px / w_px if w_px > 0 else 1.0
+                            height_pt = width_pt * aspect
                     except:
-                        pass  # 삭제 실패해도 계속 진행
-                
-                # PIL Image를 PDF 페이지로 변환
-                # 원본 PDF 페이지 크기를 사용 (포인트 단위)
-                # 렌더링된 이미지를 원본 페이지 크기에 맞게 스케일링
-                
-                print(f"[DEBUG] _save_pdf_with_labels: 원본 페이지 크기={page_width_pt}x{page_height_pt}, 렌더링 이미지 크기={pil_img.width}x{pil_img.height}")
-                
-                # 임시 PDF로 변환 후 import
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                    pdf_tmp_path = tmp_file.name
-                
-                try:
-                    from reportlab.pdfgen import canvas
-                    from reportlab.lib.utils import ImageReader
+                        height_pt = width_pt # 실패시 정사각형
+
+                    # reportlab의 drawImage는 좌하단 기준
+                    # 회전 구현을 위해선 saveState/restoreState + translate/rotate 필요
+                    c.saveState()
+                    c.translate(x_pt, y_pt_bot) # 중심으로 이동
+                    c.rotate(-stamp.rotation) # CCW? CW? -> reportlab은 CCW, Qt는 CW(보통). 부호 확인 필요
+                    # 투명도 적용 (reportlab 지원: fillAlpha)
+                    c.setFillAlpha(stamp.opacity)
+                    # drawImage(path, x, y, w, h, mask='auto', anchor='c' 등은 안됨, 직접 좌표조정)
+                    # (0,0)에 그릴 때 중심이 오도록: -w/2, -h/2
+                    c.drawImage(stamp_path, -width_pt/2, -height_pt/2, width=width_pt, height=height_pt, mask='auto', preserveAspectRatio=True)
+                    c.restoreState()
+
+                # --- 2. 넘버링 그리기 ---
+                for it in sorted(items_on_this_page, key=lambda x: x.no):
+                    style = it.custom_style if it.custom_style else self.style
                     
-                    # 원본 페이지 크기로 PDF 생성
-                    c = canvas.Canvas(pdf_tmp_path, pagesize=(page_width_pt, page_height_pt))
-                    img_reader = ImageReader(pil_img)
-                    # 이미지를 원본 페이지 크기에 맞게 그리기
-                    c.drawImage(img_reader, 0, 0, width=page_width_pt, height=page_height_pt, preserveAspectRatio=False)
-                    c.save()
-                    print(f"[DEBUG] _save_pdf_with_labels: Canvas 저장 완료, 파일 크기={os.path.getsize(pdf_tmp_path) if os.path.exists(pdf_tmp_path) else 0} bytes")
+                    x_pt = it.pdf_point[0]
+                    y_pt_top = it.pdf_point[1]
+                    y_pt_bot = page_height - y_pt_top
+
+                    # 크기 보정:
+                    # 화면상의 픽셀 크기(radius, font_size)는 'render_scale'이 적용된 상태의 픽셀값.
+                    # 이를 PDF의 Point 단위로 환산하려면 render_scale로 나눠야 함.
+                    # (예: 화면에서 20px로 보임, render_scale=2.0 -> 실제로는 10pt 크기여야 함)
+                    scale_factor = 1.0 / self.render_scale if self.render_scale > 0 else 1.0
                     
-                    print(f"[DEBUG] _save_pdf_with_labels: 임시 PDF 생성 완료, 파일 크기={os.path.getsize(pdf_tmp_path) if os.path.exists(pdf_tmp_path) else 0} bytes")
+                    radius_pt = style.radius_view_px * scale_factor
+                    font_size_pt = style.font_size_view_px * scale_factor
+                    stroke_width_pt = style.stroke_width * scale_factor
                     
-                    # 변환된 PDF를 읽어서 페이지 import
-                    img_doc = pdfium.PdfDocument(pdf_tmp_path)
-                    print(f"[DEBUG] _save_pdf_with_labels: 임시 PDF 로드 완료, 페이지 수={len(img_doc)}")
-                    if len(img_doc) > 0:
-                        out_doc.import_pages(img_doc, pages=[0])
-                        print(f"[DEBUG] _save_pdf_with_labels: 페이지 import 완료")
-                        img_doc.close()
+                    # 2-1. 원 그리기
+                    # 색상 변환 (QColor -> reportlab Color)
+                    qc_s = style.stroke_color
+                    sc = Color(qc_s.redF(), qc_s.greenF(), qc_s.blueF(), alpha=qc_s.alphaF())
+                    
+                    qc_f = style.fill_color
+                    fc = None
+                    if not style.fill_none and qc_f.alpha() > 0:
+                        fc = Color(qc_f.redF(), qc_f.greenF(), qc_f.blueF(), alpha=qc_f.alphaF())
+                    
+                    c.setStrokeColor(sc)
+                    c.setLineWidth(max(0.5, stroke_width_pt)) # 최소 두께 보정
+                    
+                    if fc:
+                        c.setFillColor(fc)
+                        # (x, y, r, fill=1, stroke=1)
+                        c.circle(x_pt, y_pt_bot, radius_pt, fill=1, stroke=1)
                     else:
-                        print(f"[DEBUG] _save_pdf_with_labels: 경고 - 임시 PDF에 페이지가 없음")
-                    os.unlink(pdf_tmp_path)
-                except ImportError as e:
-                    import traceback
-                    print(f"[DEBUG] _save_pdf_with_labels: reportlab ImportError: {e}")
-                    traceback.print_exc()
-                    # reportlab이 없으면 빈 페이지 생성
-                    img_page = out_doc.new_page(width=page_width_pt, height=page_height_pt)
-                    if os.path.exists(pdf_tmp_path):
-                        os.unlink(pdf_tmp_path)
-                except Exception as e:
-                    import traceback
-                    print(f"[DEBUG] _save_pdf_with_labels: PDF 변환 실패: {e}")
-                    traceback.print_exc()
-                    # 실패 시 빈 페이지 생성
-                    img_page = out_doc.new_page(width=page_width_pt, height=page_height_pt)
-                    if os.path.exists(pdf_tmp_path):
-                        os.unlink(pdf_tmp_path)
-            except Exception as e:
-                import traceback
-                print(f"[DEBUG] _save_pdf_with_labels: 이미지 처리 실패: {e}")
-                traceback.print_exc()
-                # 변환 실패 시 빈 페이지 생성 (원본 페이지 크기 사용)
-                try:
-                    img_page = out_doc.new_page(width=page_width_pt, height=page_height_pt)
-                except:
-                    img_page = out_doc.new_page(width=width, height=height)
-        if len(out_doc) > 0:
-            out_doc.save(path)
-        out_doc.close()
+                        c.circle(x_pt, y_pt_bot, radius_pt, fill=0, stroke=1)
+                        
+                    # 2-2. 텍스트 그리기
+                    text_str = self._format_no(it.no)
+                    
+                    # 폰트 설정 (기본 Helvetica-Bold 사용, 한글 필요시 등록 절차 복잡하므로 일단 영문/숫자 위주 가정)
+                    # TODO: 한글 폰트(Arial 등) 필요시 reportlab에 ttf 등록해야 함. 여기서는 기본 폰트 사용.
+                    c.setFont("Helvetica-Bold", font_size_pt)
+                    c.setFillColor(style.text_color.name()) # Hex string ok? -> reportlab takes hex string like #RRGGBB
+                    
+                    # 텍스트 중앙 정렬을 위한 너비/높이 계산
+                    text_width = c.stringWidth(text_str, "Helvetica-Bold", font_size_pt)
+                    # 높이는 폰트 사이즈의 약 0.7~0.8 정도. 정확히는 ascent/descent 고려해야 하나 근사치 사용
+                    text_height = font_size_pt * 0.35 # Baseline shift
+                    
+                    c.drawCentredString(x_pt, y_pt_bot - text_height, text_str)
+
+                # 캔버스 저장 -> PDF 데이터 생성
+                c.save()
+                packet.seek(0)
+                
+                # --- 오버레이 병합 ---
+                overlay_pdf = PdfReader(packet)
+                if len(overlay_pdf.pages) > 0:
+                    overlay_page = overlay_pdf.pages[0]
+                    # 원본 페이지 위에 오버레이 병합
+                    src_page.merge_page(overlay_page, over=True)
+                
+                # 병합된 페이지를 결과 PDF에 추가
+                dst_writer.add_page(src_page)
+                
+            # 최종 저장
+            with open(path, "wb") as f_out:
+                dst_writer.write(f_out)
+                
+            # 임시 파일 정리
+            os.unlink(src_pdf_path)
+            
+            QtWidgets.QMessageBox.information(self, "완료", "PDF 내보내기가 완료되었습니다.\n(Vector Overlay 방식)")
+        
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(self, "오류", f"파일 저장 중 오류가 발생했습니다.\n{e}")
+            
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # =====================================================================

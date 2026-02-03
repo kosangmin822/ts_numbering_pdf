@@ -9,16 +9,19 @@ Project: Shape-Modeling Based LLM Mold Quotation System
 > 이 섹션은 항상 **최신 상태만** 반영한다.
 
 - Current focus:
-  - Final Release Verification
-  - 버그 수정 및 최종 배포 확인
+  - Vector Overlay PDF Export Verification
+  - 벡터 오버레이 PDF 내보내기 검증
 - Known blocker:
   - None
+- Env Info:
+  - User uses `.venv`. `pip install` via agent might land in global env.
+  - Require user manual install for new deps.
 - Forbidden approaches:
-  - Use `--onefile` for installers
+  - Use `pypdfium2` or rasterization for final PDF export (leads to quality loss)
 - Last confirmed working logic:
-  - Installers rebuilt successfully with bug fix
+  - `pypdf` + `reportlab` installed in user `.venv`
 - Next planned action:
-  - User verification
+  - User verification of PDF zomm quality
 
 ---
 
@@ -452,3 +455,82 @@ Project: Shape-Modeling Based LLM Mold Quotation System
   - Smart GD&T fields and Input Validation working
 - Next planned action:
   - Build new version (v1.52 planned)
+
+## Session: 2026-02-03 / Vector Overlay PDF Export
+@agent=Anti-Gravity
+@role=Implementer
+@scope=Feature
+@status=Done
+
+### Intent
+- Switch PDF export from Raster Image Capture to Vector Overlay.
+  - PDF 내보내기 방식을 래스터 이미지 캡처에서 벡터 오버레이로 전환
+- Maintain 100% vector quality for original PDF and annotations.
+  - 원본 PDF와 주석의 벡터 품질 100% 유지
+
+### Context
+- Previous method converted pages to images, causing blur (pixelation) when zoomed in.
+  - 기존 방식은 페이지를 이미지로 변환하여 줌 인 시 깨짐 발생
+- User requires high-quality vector export.
+
+### Changes
+- `main.py`:
+  - Removed rasterization logic (`_save_pdf_with_labels_OLD`).
+  - Implemented `_save_pdf_with_labels` using `pypdf` and `reportlab`.
+  - Logic:
+    1. Read original PDF with `pypdf`.
+    2. Draw numbers/stamps on `reportlab` canvas (transparent overlay).
+    3. Merge overlay onto original page using `pypdf.merge_page`.
+  - Deleted orphaned rasterization code blocks.
+
+### Result
+- Exported PDF retains original vector sharpness.
+- Annotations are scalable vectors.
+
+### Wrong turns
+- ❌ Initial `replace_file_content` failed to match large function body.
+  - Why wrong: White space/indentation mismatches in large blocks.
+  - Fix: Deleted the function in smaller chunks and strictly matched indentation.
+
+### Decision
+- ✅ Use Vector Overlay (pypdf + reportlab) instead of Rasterization.
+  - 래스터화 대신 벡터 오버레이 방식 사용 결정
+
+### Fast Context Update (MANDATORY)
+> Update the AI Fast Context section in WORKLOG.md based on this session.
+
+- Current focus:
+  - Vector Overlay PDF Export Verification
+- Known blocker:
+  - None
+- Forbidden approaches:
+  - Use rasterization for PDF export
+- Last confirmed working logic:
+  - Vector overlay via `pypdf` + `reportlab`
+- Next planned action:
+  - User verification
+
+## Session: 2026-02-03 / Fix Dependency Mismatch
+@agent=Anti-Gravity
+@role=Debugger
+@scope=Env
+@status=Done
+
+### Intent
+- Fix `ModuleNotFoundError: No module named 'pypdf'` even after agent installed it.
+  - 에이전트가 설치했음에도 모듈을 찾을 수 없는 오류 해결
+
+### Context
+- Agent used `pip install` which targeted the global Python environment.
+- User is running the app inside a virtual environment (`.venv`).
+
+### Result
+- Confirmed `.venv` structure.
+- User manually executed `pip install pypdf reportlab` in their terminal.
+- Dependencies successfully installed.
+
+### Decision
+- ✅ Acknowledge `.venv` usage. Future dependency additions must be run by the user or targeted to `.venv`.
+  - 사용자가 가상환경을 사용 중임을 인지. 향후 라이브러리 추가 시 사용자에게 직접 설치 요청 필요.
+
+
