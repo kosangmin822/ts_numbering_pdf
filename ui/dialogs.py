@@ -358,23 +358,29 @@ class ShortcutHelpDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.critical(self, "저장 실패", f"엑셀 파일 저장 중 오류 발생:\n{e}")
 
 class NumberingModeDialog(QtWidgets.QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, default_choice="global"):
         super().__init__(parent)
         self.setWindowTitle("넘버링 방식 선택")
-        self.choice = "global"
+        self.choice = default_choice if default_choice in ("global", "page_specific") else "global"
         layout = QtWidgets.QVBoxLayout(self)
-        label = QtWidgets.QLabel("2페이지 이상 작업을 할 경우 모드 설정입니다.\n넘버링 방식을 선택해주세요.")
+        label = QtWidgets.QLabel("PDF에 적용할 넘버링 방식을 선택해주세요.")
         label.setAlignment(QtCore.Qt.AlignCenter)
         layout.addWidget(label)
         button_style = "QPushButton { font-size: 14px; padding: 10px; }"
-        btn_global = QtWidgets.QPushButton("전체 페이지 이어서 넘버링 (P.1 (1, 2), P.2(3, 4) ...)")
+        btn_global = QtWidgets.QPushButton("전체 페이지 이어서 넘버링")
         btn_global.setStyleSheet(button_style)
         btn_global.clicked.connect(self.select_global)
         layout.addWidget(btn_global)
-        btn_page = QtWidgets.QPushButton("페이지마다 새로 넘버링 (P.1(1, 2) / P.2(1, 2), ...)")
+        btn_page = QtWidgets.QPushButton("페이지마다 새로 넘버링")
         btn_page.setStyleSheet(button_style)
         btn_page.clicked.connect(self.select_page)
         layout.addWidget(btn_page)
+        if self.choice == "global":
+            btn_global.setDefault(True)
+            btn_global.setAutoDefault(True)
+        else:
+            btn_page.setDefault(True)
+            btn_page.setAutoDefault(True)
         self.setMinimumWidth(400)
     def select_global(self):
         self.choice = "global"
@@ -382,8 +388,6 @@ class NumberingModeDialog(QtWidgets.QDialog):
     def select_page(self):
         self.choice = "page_specific"
         self.accept()
-        
-
 
 # ui/dialogs.py 파일 맨 아래에 추가
 class SaveOptionsDialog(QtWidgets.QDialog):

@@ -570,3 +570,13 @@ Project: Shape-Modeling Based LLM Mold Quotation System
 - **주요 수정 사항**: `main.py` 및 `main_trial.py`의 `_save_pdf_with_labels` 함수에 `shape` 지원 추가. (Circle, Rectangle, Triangle, Star)
 - **결과**: PDF 내보내기 시 사용자가 선택한 도형이 올바르게 렌더링됨.
 
+
+## [2026-02-03 12:45] v1.55 설치 프로그램(Stable/Trial) 빌드 및 생성
+- **의도**: PDF 도형 지원 기능이 포함된 최신 버전을 v1.55로 공식 릴리즈하기 위해 설치 파일을 생성함.
+- **주요 수정 사항**: 
+    - `main.py`, `main_trial.py` 버전을 v1.55로 업데이트.
+    - Inno Setup 스크립트(`.iss`)의 버전 및 출력 파일명 업데이트.
+- **결과**: 
+    - `installer/TS_Numbering_PDF_Setup_v1.55_stable.exe` 생성 완료.
+    - `installer/TS_Numbering_PDF_Trial_Setup_v1.55.exe` 생성 완료.
+

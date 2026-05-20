@@ -3,6 +3,7 @@ TS Numbering Tool (v1.51) - Refactored Version
 """
 from __future__ import annotations
 import copy
+import csv
 import json
 import math
 import os
@@ -57,8 +58,8 @@ from utils.helpers import (
 # --- 상수 정의 ---
 
 APP_NAME = "TS Numbering for PDF"
-APP_VER = "v1.54"
-TSN_VERSION = "1.54"
+APP_VER = "v1.55"
+TSN_VERSION = "1.55"
 TSN_PDF_NAME = "source.pdf"
 TSN_META_NAME = "project.json"
 
@@ -624,6 +625,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.stamp_opacity_max = new_settings["opacity_max"]
             self.stamp_rotation_min = new_settings["rotation_min"]
             self.stamp_rotation_max = new_settings["rotation_max"]
+            self._save_persistent_settings()
             self._set_dirty()  # 설정이 변경되었으므로 저장 필요
     
     def open_stamp_manager(self):
@@ -645,6 +647,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.registered_stamps = dialog.get_stamps()
             self.current_stamp_index = 0
             QtCore.QTimer.singleShot(0, self._update_stamp_button_icon)
+            self._save_persistent_settings()
             self.statusBar().showMessage(
                 f"{len(self.registered_stamps)}개의 스탬프가 등록되었습니다."
             )
@@ -669,6 +672,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if hasattr(self, "a_flow_menu"):
             self.a_flow_menu.setChecked(checked)
         self.load_page(self.cur_page_index)
+        self._save_persistent_settings()
         
     def toggle_numbering_view(self, checked):
         """넘버링 보기 상태를 변경하고, 화면 전체를 새로고침합니다."""
@@ -685,6 +689,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if hasattr(self, "a_numbering_view_menu"):
             self.a_numbering_view_menu.setChecked(checked)
         self.load_page(self.cur_page_index)
+        self._save_persistent_settings()
         
     def toggle_stamps_view(self, checked):
         """스탬프 보기 상태를 변경하고, 화면 전체를 새로고침합니다."""
@@ -694,6 +699,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if hasattr(self, "a_stamps_view_menu"):
             self.a_stamps_view_menu.setChecked(checked)
         self.load_page(self.cur_page_index)
+        self._save_persistent_settings()
     
     def _format_no(self, no: float) -> str:
         """정수면 '11', 소수면 '11.5'처럼 깔끔하게 표시."""
@@ -2358,6 +2364,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.active_mode = available_modes[next_index]
         # 5. UI를 새 모드에 맞게 업데이트합니다.
         self._sync_ui_to_current_mode()
+        self._save_persistent_settings()
         
     def _set_active_mode_from_action(self, mode: str):
         """
@@ -2377,16 +2384,15 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if hasattr(self, "a_mode_stamp"):
             self.a_mode_stamp.setChecked(mode == "stamp")
         self._sync_ui_to_current_mode()
+        self._save_persistent_settings()
     
     def _set_numbering_mode(self, input_mode: str):
         """
-        넘버링 모드의 입력 방식을 설정하고, 활성 모드를 넘버링 모드로 전환합니다.
+        Set the numbering input mode and switch to numbering mode.
         """
         self.set_input_mode(input_mode)
-        # 활성 모드를 넘버링 모드로 전환
         if self.active_mode != "numbering":
             self.active_mode = "numbering"
-            # 모드선택 메뉴 동기화
             if hasattr(self, "a_mode_view"):
                 self.a_mode_view.setChecked(False)
             if hasattr(self, "a_mode_stamp"):
@@ -2395,11 +2401,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 self.a_mode_numbering_menu.setChecked(True)
             self._sync_ui_to_current_mode()
         else:
-            # 이미 넘버링 모드인 경우에도 체크 상태만 업데이트
             if hasattr(self, "a_mode_numbering_menu"):
                 self.a_mode_numbering_menu.setChecked(True)
-        
-    # ===== ▼▼▼ 스탬프 버튼 관련 함수 3개 (새로 추가) ▼▼▼ =====
+        self._save_persistent_settings()
+
     def _get_current_stamp_key(self) -> Optional[str]:
         """현재 인덱스에 해당하는 스탬프의 키(이름)를 반환합니다. (StampManager로 위임)"""
         return self.stamp_manager.get_current_stamp_key()
@@ -2410,7 +2415,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
     def _cycle_next_stamp(self):
         """다음 스탬프로 순환시킵니다. (StampManager로 위임)"""
-        return self.stamp_manager.cycle_next_stamp()
+        result = self.stamp_manager.cycle_next_stamp()
+        self._save_persistent_settings()
+        return result
         
     # ===== ▲▲▲ 여기까지 추가 ▲▲▲ =====
         # ... _cycle_next_stamp 함수 아래에 추가 ...
@@ -2433,6 +2440,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             stamp_keys = list(self.registered_stamps.keys())
             self.current_stamp_index = stamp_keys.index(stamp_key)
             self._update_stamp_button_icon()
+            self._save_persistent_settings()
 
     def _show_stamp_context_menu(self, pos):
         """스탬프 버튼 위치에 우클릭 메뉴를 표시합니다."""
@@ -2553,6 +2561,9 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     f"평가판이 시작되었습니다. {days_left}일 동안 사용하실 수 있습니다.",
                 )
         self.setWindowTitle(f"{APP_NAME} ({APP_VER}){trial_message}")
+        self._persistent_settings_path = self._get_persistent_settings_path()
+        self._persistent_settings_cache = {}
+        self._is_applying_persistent_settings = False
         self.resize(1400, 800)  # 윈도우 크기를 줄여서 테이블에 맞춤
         # ▼▼▼ 탭 위젯 설정 코드 (삽입) ▼▼▼
         # 1. 2D 뷰어 생성
@@ -3114,6 +3125,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         """
         )
         # --- 8. 최종 상태 업데이트 ---
+        self._load_persistent_settings()
         if pdf_path:
             self.import_pdf_from_path(pdf_path)
         self._apply_initial_layout()
@@ -3121,6 +3133,408 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._update_undo_redo_hint()
         self._update_status()
         # ▲▲▲ 여기까지 삽입 ▲▲▲
+
+    def _get_persistent_settings_path(self) -> Path:
+        if getattr(sys, "frozen", False):
+            appdata_root = Path(os.getenv("APPDATA", str(Path.home())))
+            base_dir = appdata_root / APP_NAME
+        else:
+            base_dir = Path(__file__).resolve().parent
+        base_dir.mkdir(parents=True, exist_ok=True)
+        return base_dir / "default_settings.csv"
+
+    @staticmethod
+    def _coerce_bool(value, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+        return default
+
+    @staticmethod
+    def _coerce_int(value, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _coerce_float(value, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _set_checked_silently(widget, checked: bool):
+        if widget is None:
+            return
+        try:
+            widget.blockSignals(True)
+            widget.setChecked(bool(checked))
+        finally:
+            widget.blockSignals(False)
+
+    def _build_persistent_settings_rows(self):
+        rows = []
+        for key, value in self.style.to_dict().items():
+            rows.append(("style", key, value))
+
+        rows.extend(
+            [
+                ("numbering", "mode", self.numbering_mode),
+                ("numbering", "input_mode", self.input_mode),
+                ("numbering", "preview_mode", self.preview_mode),
+                ("numbering", "next_no", self.next_no),
+                ("view", "show_numbering", self.view_show_numbering),
+                ("view", "show_stamps", self.view_show_stamps),
+                ("view", "show_flow", self.flow_view_enabled),
+                ("view", "highlight_enabled", self.highlight_enabled),
+                ("view", "active_mode", self.active_mode),
+                (
+                    "view",
+                    "detail_view",
+                    bool(getattr(self, "cb_detail_view", None) and self.cb_detail_view.isChecked()),
+                ),
+                (
+                    "view",
+                    "inspection_values",
+                    bool(
+                        getattr(self, "cb_inspection_values", None)
+                        and self.cb_inspection_values.isChecked()
+                    ),
+                ),
+                ("stamp", "opacity", self.stamp_opacity),
+                ("stamp", "rotation", self.stamp_rotation),
+                ("stamp", "opacity_random", self.stamp_opacity_random),
+                ("stamp", "rotation_random", self.stamp_rotation_random),
+                ("stamp", "opacity_min", self.stamp_opacity_min),
+                ("stamp", "opacity_max", self.stamp_opacity_max),
+                ("stamp", "rotation_min", self.stamp_rotation_min),
+                ("stamp", "rotation_max", self.stamp_rotation_max),
+                ("stamp", "registered_stamps", self.registered_stamps),
+                ("stamp", "current_stamp_index", self.current_stamp_index),
+                ("autosave", "enabled", self.autosave_enabled),
+                ("autosave", "interval_min", self.autosave_interval_min),
+                ("autosave", "save_option", self.autosave_save_option),
+                ("layout", "viewer_layout_mode", self.viewer_layout_mode),
+                ("layout", "auto_highres", self.auto_highres),
+                (
+                    "snap",
+                    "endpoint",
+                    bool(
+                        getattr(self, "snap_endpoint_cb", None)
+                        and self.snap_endpoint_cb.isChecked()
+                    ),
+                ),
+                (
+                    "snap",
+                    "midpoint",
+                    bool(
+                        getattr(self, "snap_midpoint_cb", None)
+                        and self.snap_midpoint_cb.isChecked()
+                    ),
+                ),
+                (
+                    "snap",
+                    "center",
+                    bool(
+                        getattr(self, "snap_center_cb", None)
+                        and self.snap_center_cb.isChecked()
+                    ),
+                ),
+                (
+                    "snap",
+                    "near",
+                    bool(
+                        getattr(self, "snap_near_cb", None)
+                        and self.snap_near_cb.isChecked()
+                    ),
+                ),
+            ]
+        )
+        return rows
+
+    def _save_persistent_settings(self):
+        if self._is_applying_persistent_settings:
+            return
+
+        rows = self._build_persistent_settings_rows()
+        try:
+            with self._persistent_settings_path.open(
+                "w", newline="", encoding="utf-8-sig"
+            ) as csv_file:
+                writer = csv.DictWriter(csv_file, fieldnames=["category", "key", "value"])
+                writer.writeheader()
+                for category, key, value in rows:
+                    writer.writerow(
+                        {
+                            "category": category,
+                            "key": key,
+                            "value": json.dumps(value, ensure_ascii=False),
+                        }
+                    )
+            self._persistent_settings_cache = {
+                f"{category}.{key}": value for category, key, value in rows
+            }
+        except Exception as e:
+            print(f"[settings] save failed: {e}")
+
+    def _load_persistent_settings(self):
+        if not self._persistent_settings_path.exists():
+            self._save_persistent_settings()
+            return
+
+        settings_map = {}
+        try:
+            with self._persistent_settings_path.open(
+                "r", newline="", encoding="utf-8-sig"
+            ) as csv_file:
+                for row in csv.DictReader(csv_file):
+                    category = (row.get("category") or "").strip()
+                    key = (row.get("key") or "").strip()
+                    if not category or not key:
+                        continue
+                    raw_value = row.get("value", "")
+                    try:
+                        value = json.loads(raw_value)
+                    except json.JSONDecodeError:
+                        value = raw_value
+                    settings_map[f"{category}.{key}"] = value
+        except Exception as e:
+            print(f"[settings] load failed: {e}")
+            return
+
+        self._persistent_settings_cache = settings_map
+        self._apply_persistent_settings(settings_map)
+
+    def _apply_persistent_settings(self, settings_map=None):
+        settings_map = dict(settings_map or self._persistent_settings_cache or {})
+        if not settings_map:
+            return
+
+        self._is_applying_persistent_settings = True
+        try:
+            style_data = self.style.to_dict()
+            for key in list(style_data.keys()):
+                full_key = f"style.{key}"
+                if full_key in settings_map:
+                    style_data[key] = settings_map[full_key]
+            self.style.from_dict(style_data)
+
+            self.numbering_mode = str(
+                settings_map.get("numbering.mode", self.numbering_mode)
+            )
+            if self.numbering_mode not in {"global", "page_specific"}:
+                self.numbering_mode = "global"
+
+            input_mode = str(settings_map.get("numbering.input_mode", self.input_mode))
+            if input_mode not in {"number_only", "with_input"}:
+                input_mode = "number_only"
+
+            preview_mode = str(
+                settings_map.get("numbering.preview_mode", self.preview_mode)
+            )
+            if preview_mode not in {"preview", "crosshair"}:
+                preview_mode = "preview"
+
+            self.next_no = max(
+                1.0,
+                self._coerce_float(
+                    settings_map.get("numbering.next_no", self.next_no), self.next_no
+                ),
+            )
+
+            self.view_show_numbering = self._coerce_bool(
+                settings_map.get("view.show_numbering", self.view_show_numbering),
+                self.view_show_numbering,
+            )
+            self.view_show_stamps = self._coerce_bool(
+                settings_map.get("view.show_stamps", self.view_show_stamps),
+                self.view_show_stamps,
+            )
+            self.flow_view_enabled = self._coerce_bool(
+                settings_map.get("view.show_flow", self.flow_view_enabled),
+                self.flow_view_enabled,
+            )
+            if not self.view_show_numbering:
+                self.flow_view_enabled = False
+
+            self.highlight_enabled = self._coerce_bool(
+                settings_map.get("view.highlight_enabled", self.highlight_enabled),
+                self.highlight_enabled,
+            )
+
+            self.stamp_opacity = self._coerce_float(
+                settings_map.get("stamp.opacity", self.stamp_opacity), self.stamp_opacity
+            )
+            self.stamp_rotation = self._coerce_float(
+                settings_map.get("stamp.rotation", self.stamp_rotation), self.stamp_rotation
+            )
+            self.stamp_opacity_random = self._coerce_bool(
+                settings_map.get("stamp.opacity_random", self.stamp_opacity_random),
+                self.stamp_opacity_random,
+            )
+            self.stamp_rotation_random = self._coerce_bool(
+                settings_map.get("stamp.rotation_random", self.stamp_rotation_random),
+                self.stamp_rotation_random,
+            )
+            self.stamp_opacity_min = self._coerce_float(
+                settings_map.get("stamp.opacity_min", self.stamp_opacity_min),
+                self.stamp_opacity_min,
+            )
+            self.stamp_opacity_max = self._coerce_float(
+                settings_map.get("stamp.opacity_max", self.stamp_opacity_max),
+                self.stamp_opacity_max,
+            )
+            self.stamp_rotation_min = self._coerce_float(
+                settings_map.get("stamp.rotation_min", self.stamp_rotation_min),
+                self.stamp_rotation_min,
+            )
+            self.stamp_rotation_max = self._coerce_float(
+                settings_map.get("stamp.rotation_max", self.stamp_rotation_max),
+                self.stamp_rotation_max,
+            )
+
+            registered_stamps = settings_map.get(
+                "stamp.registered_stamps", self.registered_stamps
+            )
+            if isinstance(registered_stamps, dict):
+                self.registered_stamps = registered_stamps
+
+            self.current_stamp_index = max(
+                0,
+                self._coerce_int(
+                    settings_map.get("stamp.current_stamp_index", self.current_stamp_index),
+                    self.current_stamp_index,
+                ),
+            )
+
+            autosave_enabled = self._coerce_bool(
+                settings_map.get("autosave.enabled", self.autosave_enabled),
+                self.autosave_enabled,
+            )
+            autosave_interval = max(
+                1,
+                self._coerce_int(
+                    settings_map.get("autosave.interval_min", self.autosave_interval_min),
+                    self.autosave_interval_min,
+                ),
+            )
+            autosave_save_option = str(
+                settings_map.get("autosave.save_option", self.autosave_save_option)
+            )
+
+            viewer_layout_mode = str(
+                settings_map.get("layout.viewer_layout_mode", self.viewer_layout_mode)
+            )
+            if viewer_layout_mode not in {"tab", "horizontal_split", "vertical_split"}:
+                viewer_layout_mode = "tab"
+
+            self.auto_highres = self._coerce_bool(
+                settings_map.get("layout.auto_highres", self.auto_highres),
+                self.auto_highres,
+            )
+
+            active_mode = str(settings_map.get("view.active_mode", self.active_mode))
+            if active_mode not in {"view", "numbering", "stamp"}:
+                active_mode = "view"
+            if active_mode == "numbering" and not self.view_show_numbering:
+                active_mode = "view"
+            if active_mode == "stamp" and not self.view_show_stamps:
+                active_mode = "view"
+
+            self.set_input_mode(input_mode)
+            self.active_mode = active_mode
+            self.set_preview_mode(preview_mode)
+            self._apply_autosave_settings(
+                autosave_enabled,
+                autosave_interval,
+                autosave_save_option,
+                show_status=False,
+            )
+            self._set_viewer_layout(viewer_layout_mode)
+
+            self._set_checked_silently(
+                getattr(self, "action_toggle_numbering_view", None), self.view_show_numbering
+            )
+            self._set_checked_silently(
+                getattr(self, "a_numbering_view_menu", None), self.view_show_numbering
+            )
+            self._set_checked_silently(
+                getattr(self, "action_toggle_stamps_view", None), self.view_show_stamps
+            )
+            self._set_checked_silently(
+                getattr(self, "a_stamps_view_menu", None), self.view_show_stamps
+            )
+            self._set_checked_silently(
+                getattr(self, "action_toggle_flow_view", None), self.flow_view_enabled
+            )
+            self._set_checked_silently(
+                getattr(self, "a_flow_menu", None), self.flow_view_enabled
+            )
+            self._set_checked_silently(
+                getattr(self, "action_highlight_toolbar", None), self.highlight_enabled
+            )
+            self._set_checked_silently(getattr(self, "a_highlight", None), self.highlight_enabled)
+            self._set_checked_silently(getattr(self, "a_auto_hi", None), self.auto_highres)
+
+            detail_view = self._coerce_bool(settings_map.get("view.detail_view", True), True)
+            inspection_values = self._coerce_bool(
+                settings_map.get("view.inspection_values", True), True
+            )
+            self._set_checked_silently(getattr(self, "cb_detail_view", None), detail_view)
+            self._set_checked_silently(
+                getattr(self, "cb_inspection_values", None), inspection_values
+            )
+
+            self._set_checked_silently(
+                getattr(self, "snap_endpoint_cb", None),
+                self._coerce_bool(settings_map.get("snap.endpoint", True), True),
+            )
+            self._set_checked_silently(
+                getattr(self, "snap_midpoint_cb", None),
+                self._coerce_bool(settings_map.get("snap.midpoint", True), True),
+            )
+            self._set_checked_silently(
+                getattr(self, "snap_center_cb", None),
+                self._coerce_bool(settings_map.get("snap.center", True), True),
+            )
+            self._set_checked_silently(
+                getattr(self, "snap_near_cb", None),
+                self._coerce_bool(settings_map.get("snap.near", True), True),
+            )
+
+            if hasattr(self, "cb_inspection_values"):
+                self.cb_inspection_values.setEnabled(detail_view)
+            if not detail_view:
+                self._clear_detail_box()
+
+            if hasattr(self, "cb_separate_numbering"):
+                self._set_checked_silently(
+                    self.cb_separate_numbering,
+                    self.numbering_mode == "page_specific",
+                )
+                self.cb_separate_numbering.setEnabled(True)
+
+            self._update_stamp_selector()
+            if self.registered_stamps:
+                self.current_stamp_index %= len(self.registered_stamps)
+            else:
+                self.current_stamp_index = 0
+
+            self._sync_ui_to_current_mode()
+            self._refresh_preview_text()
+            self._update_status()
+            self._update_stamp_button_icon()
+        finally:
+            self._is_applying_persistent_settings = False
 
     def copy_format(self):
         """Copy custom style from the selected row."""
@@ -3427,6 +3841,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                     self._preview_text.hide()
             else:  # 'preview' 모드일 경우
                 self.view.setCursor(QtCore.Qt.BlankCursor)
+        self._save_persistent_settings()
     
     # ▼▼▼ 3D 뷰어 관련 메서드들 ▼▼▼
     def _ensure_3d_backend(self):
@@ -3700,6 +4115,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             
             # 미리보기 제거
             self._clear_snap_preview()
+            self._save_persistent_settings()
             
             # 기존 측정 결과 제거
             self._clear_measurements()
@@ -6280,7 +6696,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.redo_stack.clear()
         # 전역 스타일 및 설정 초기화
         self.style = LabelStyle()
+        previous_apply_state = self._is_applying_persistent_settings
+        self._is_applying_persistent_settings = True
         self.set_input_mode("number_only")
+        self._is_applying_persistent_settings = previous_apply_state
         # 전역 스탬프 설정 초기화
         self.stamp_opacity = 1.0
         self.stamp_rotation = 0.0
@@ -6294,6 +6713,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if hasattr(self, "cb_separate_numbering"):
             self.cb_separate_numbering.setEnabled(True)
             self.cb_separate_numbering.setChecked(False)
+        self._apply_persistent_settings()
         self._refresh_preview_text()
         self._update_undo_redo_hint()
         self._update_status()
@@ -6526,20 +6946,26 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         # 현재 모드가 넘버링 모드라면 프리뷰 복구 시도 (선택적)
         if self.active_mode == "numbering":
              self.preview_mode = "preview"
+        self._save_persistent_settings()
 
-    def _apply_autosave_settings(self, enabled: bool, interval_min: int, save_option: str):
+    def _apply_autosave_settings(
+        self, enabled: bool, interval_min: int, save_option: str, show_status: bool = True
+    ):
         self.autosave_enabled = bool(enabled)
         self.autosave_interval_min = max(1, int(interval_min))
         self.autosave_save_option = save_option if save_option in ("link", "embed") else "link"
         if self.autosave_enabled:
             self.autosave_timer.start(self.autosave_interval_min * 60 * 1000)
             autosave_name = self._format_autosave_filename()
-            self.statusBar().showMessage(
-                f"Auto save enabled ({self.autosave_interval_min} min, {autosave_name})", 3000
-            )
+            if show_status:
+                self.statusBar().showMessage(
+                    f"Auto save enabled ({self.autosave_interval_min} min, {autosave_name})", 3000
+                )
         else:
             self.autosave_timer.stop()
-            self.statusBar().showMessage("Auto save disabled", 3000)
+            if show_status:
+                self.statusBar().showMessage("Auto save disabled", 3000)
+        self._save_persistent_settings()
 
     def _format_autosave_filename(self) -> str:
         project_name = self.project_name or "project"
@@ -6760,9 +7186,10 @@ class PdfAnnotator(QtWidgets.QMainWindow):
 
         # ▼▼▼ [핵심 수정] 페이지 수와 상관없이 항상 넘버링 방식을 물어봅니다. ▼▼▼
         print(f"[DEBUG] import_pdf_from_path: NumberingModeDialog 표시 전")
-        dialog = NumberingModeDialog(self)
+        dialog = NumberingModeDialog(self, default_choice=self.numbering_mode)
         if dialog.exec():
             self.numbering_mode = dialog.choice
+            self._save_persistent_settings()
             print(f"[DEBUG] import_pdf_from_path: 넘버링 모드 선택됨: {self.numbering_mode}")
         else:
             print(f"[DEBUG] import_pdf_from_path: 넘버링 모드 선택 취소")
@@ -7169,6 +7596,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             return
         
         self.viewer_layout_mode = mode
+        self._save_persistent_settings()
         
         # 기존 위젯들을 부모에서 안전하게 분리
         view_widget = self.view
@@ -7472,6 +7900,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self.auto_highres = on
         if on:
             self._maybe_rerender_for_zoom(self.view._scale())
+        self._save_persistent_settings()
 
     def rerender_now(self):
         if not self.doc:
@@ -7503,6 +7932,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.next_no = int(n)
             self._refresh_preview_text()
             self._update_status()
+            self._save_persistent_settings()
 
     # 숫자만 입력되도록 수정. V2.87에서 수정...
     # insert 기능 위해 on_clicked 함수 변경.(통갈이) v3.14...
@@ -8036,6 +8466,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self._clear_detail_box()
         elif self._detail_box_item is not None:
             self._show_detail_box(self._detail_box_item)
+        self._save_persistent_settings()
 
     def _clear_detail_box(self):
         for item in getattr(self, "_detail_box_items", []):
@@ -8913,6 +9344,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         setattr(self.style, property_name, new_value)
         self.load_page(self.cur_page_index)
         self._set_dirty()
+        self._save_persistent_settings()
 
     def toggle_preview_mode(self):
         """프리뷰 모드(프리뷰/십자선)를 전환합니다."""
@@ -8954,6 +9386,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         if not checked:
             self.clear_highlight()  # 기능이 꺼지면 현재 하이라이트를 즉시 제거
       
+        self._save_persistent_settings()
+
     def _build_items_dataframe(self):
         return pd.DataFrame(
             [
@@ -9228,6 +9662,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
                 
                 self.load_page(self.cur_page_index)
                 self._set_dirty()
+                self._save_persistent_settings()
     
     def open_label_settings(self, style_object: LabelStyle) -> bool:
         return self._open_numbering_settings_dialog(style_object)
@@ -9390,6 +9825,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             style_object.flow_line_color = temp_style.flow_line_color
             style_object.flow_line_style = combo_flow_style.currentText()
             style_object.flow_show_start_end = cb_show_start_end.isChecked()
+            if style_object is self.style:
+                self._save_persistent_settings()
             dlg.accept()
 
         bb.accepted.connect(accept)
@@ -9409,6 +9846,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
             self.action_mode_switch.setChecked(mode == "with_input")
         # ===== ▲▲▲ 추가된 부분 끝 ▲▲▲ =====
         self._on_zoom_changed(self.view._scale())
+        self._save_persistent_settings()
 
     def _update_status(self):
         # 현재 활성 모드에 따라 표시할 텍스트를 결정합니다.

@@ -1,0 +1,44 @@
+﻿category,key,value
+style,radius_view_px,12
+style,stroke_width,2
+style,font_size_view_px,12
+style,fill_color,"[255, 255, 255, 0]"
+style,stroke_color,"[255, 0, 0, 255]"
+style,text_color,"[255, 0, 0, 255]"
+style,fill_none,true
+style,flow_line_opacity,0.5
+style,flow_line_color,"[85, 85, 85, 255]"
+style,flow_line_style,"""solid"""
+style,flow_show_start_end,false
+style,flow_arrow_style,"""arrow"""
+style,shape,"""circle"""
+numbering,mode,"""global"""
+numbering,input_mode,"""number_only"""
+numbering,preview_mode,"""preview"""
+numbering,next_no,1
+view,show_numbering,true
+view,show_stamps,true
+view,show_flow,false
+view,highlight_enabled,true
+view,active_mode,"""view"""
+view,detail_view,true
+view,inspection_values,true
+stamp,opacity,1.0
+stamp,rotation,0.0
+stamp,opacity_random,true
+stamp,rotation_random,true
+stamp,opacity_min,0.9
+stamp,opacity_max,1.0
+stamp,rotation_min,-5.0
+stamp,rotation_max,5.0
+stamp,registered_stamps,{}
+stamp,current_stamp_index,0
+autosave,enabled,false
+autosave,interval_min,5
+autosave,save_option,"""link"""
+layout,viewer_layout_mode,"""tab"""
+layout,auto_highres,true
+snap,endpoint,true
+snap,midpoint,true
+snap,center,true
+snap,near,true
