@@ -29,6 +29,9 @@ PyInstaller.__main__.run([
     '--hidden-import=matplotlib',
     '--hidden-import=scipy',
     '--hidden-import=PIL',
+    '--collect-all=numpy',
+    '--collect-all=pandas',
+    '--collect-all=scipy',
     '--collect-all=pyvista',  # pyvista의 모든 데이터 파일 수집
     '--collect-all=vtk',  # vtk의 모든 데이터 파일 수집
     '--noconfirm',  # 기존 빌드 덮어쓰기
