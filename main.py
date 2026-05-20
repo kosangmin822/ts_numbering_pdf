@@ -593,6 +593,8 @@ class PdfAnnotator(QtWidgets.QMainWindow):
     
     def _update_stamp_selector(self):
         """self.registered_stamps 목록을 툴바의 ComboBox에 반영합니다."""
+        if not hasattr(self, "stamp_selector"):
+            return
         self.stamp_selector.clear()
         if not self.registered_stamps:
             self.stamp_selector.addItem("- 스탬프 없음 -")
@@ -2564,6 +2566,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         self._persistent_settings_path = self._get_persistent_settings_path()
         self._persistent_settings_cache = {}
         self._is_applying_persistent_settings = False
+        self._persistent_settings_ready = False
         self.resize(1400, 800)  # 윈도우 크기를 줄여서 테이블에 맞춤
         # ▼▼▼ 탭 위젯 설정 코드 (삽입) ▼▼▼
         # 1. 2D 뷰어 생성
@@ -3125,6 +3128,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         """
         )
         # --- 8. 최종 상태 업데이트 ---
+        self._persistent_settings_ready = True
         self._load_persistent_settings()
         if pdf_path:
             self.import_pdf_from_path(pdf_path)
@@ -3262,7 +3266,7 @@ class PdfAnnotator(QtWidgets.QMainWindow):
         return rows
 
     def _save_persistent_settings(self):
-        if self._is_applying_persistent_settings:
+        if self._is_applying_persistent_settings or not self._persistent_settings_ready:
             return
 
         rows = self._build_persistent_settings_rows()
